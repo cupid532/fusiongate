@@ -102,16 +102,16 @@ func routeStrategy(routes []resolvedRoute) RoutingStrategy {
 }
 
 // prepareRoutes builds a deterministic request-local failover plan. Priority mode
-// sorts high-to-low and preserves drag order inside a tier. Round robin rotates the
-// drag order once per new request. Adaptive mode leaves final selection to health scoring.
+// sorts channels by provider priority from high to low. Channels at the same
+// priority keep their creation order. The remaining logic performs automatic failover.
 func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []resolvedRoute {
 	planned := append([]resolvedRoute(nil), routes...)
 	sort.SliceStable(planned, func(i, j int) bool {
-		if strategy == StrategyPriorityFailover && planned[i].Route.Priority != planned[j].Route.Priority {
-			return planned[i].Route.Priority > planned[j].Route.Priority
+		if strategy == StrategyPriorityFailover && planned[i].Provider.Priority != planned[j].Provider.Priority {
+			return planned[i].Provider.Priority > planned[j].Provider.Priority
 		}
-		if planned[i].Route.SortOrder != planned[j].Route.SortOrder {
-			return planned[i].Route.SortOrder < planned[j].Route.SortOrder
+		if planned[i].Provider.ID != planned[j].Provider.ID {
+			return planned[i].Provider.ID < planned[j].Provider.ID
 		}
 		return planned[i].Route.ID < planned[j].Route.ID
 	})

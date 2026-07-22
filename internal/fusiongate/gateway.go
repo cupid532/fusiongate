@@ -157,14 +157,13 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]resolvedRoute, error) {
 	rows, err := a.db.QueryContext(ctx, `
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,r.input_price_micros,r.output_price_micros,
-       COALESCE(rp.strategy,'priority_failover'),p.id,p.name,p.type,p.base_url,p.credential,p.enabled,p.priority,p.weight,p.status,p.notes,
+       p.id,p.name,p.type,p.base_url,p.credential,p.enabled,p.priority,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
        p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,'')
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
-LEFT JOIN route_policies rp ON rp.public_name=r.public_name
 WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1
-ORDER BY r.sort_order,r.id`, model)
+ORDER BY p.priority DESC,p.id,r.id`, model)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +175,7 @@ ORDER BY r.sort_order,r.id`, model)
 		var credential []byte
 		if err := rows.Scan(
 			&z.Route.ID, &z.Route.ProviderID, &z.Route.PublicName, &z.Route.UpstreamModel, &z.Route.Capabilities, &routeEnabled,
-			&z.Route.Priority, &z.Route.SortOrder, &z.Route.InputPriceMicros, &z.Route.OutputPriceMicros, &z.Route.Strategy,
+			&z.Route.Priority, &z.Route.SortOrder, &z.Route.InputPriceMicros, &z.Route.OutputPriceMicros,
 			&z.Provider.ID, &z.Provider.Name, &z.Provider.Type, &z.Provider.BaseURL, &credential, &providerEnabled,
 			&z.Provider.Priority, &z.Provider.Weight, &z.Provider.Status, &z.Provider.Notes,
 			&z.Provider.PassthroughMode, &z.Provider.ClientPolicy, &z.Provider.MaxConcurrency, &z.Provider.RequestTimeoutMS,
@@ -328,7 +327,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		fail(w, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
 		return
 	}
-	strategy := routeStrategy(routes)
+	strategy := StrategyPriorityFailover
 	routes = a.prepareRoutes(routes, strategy)
 	gatewayID := requestID()
 	tried := map[int64]bool{}

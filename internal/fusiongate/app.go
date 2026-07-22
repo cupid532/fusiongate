@@ -166,7 +166,7 @@ func (a *App) migrate(ctx context.Context) error {
   CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS providers (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, base_url TEXT NOT NULL,
-    credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 100,
+    credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0,
     weight INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'unknown', notes TEXT NOT NULL DEFAULT '',
     passthrough_mode TEXT NOT NULL DEFAULT 'normalized', client_policy TEXT NOT NULL DEFAULT 'any',
     max_concurrency INTEGER NOT NULL DEFAULT 0, request_timeout_ms INTEGER NOT NULL DEFAULT 120000,
@@ -380,8 +380,6 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
 	mux.HandleFunc("/api/admin/providers/", a.admin(a.providerByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
-	mux.HandleFunc("/api/admin/routes/reorder", a.admin(a.reorderRoutes))
-	mux.HandleFunc("/api/admin/route-policies", a.admin(a.routePolicies))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))
 	mux.HandleFunc("/api/admin/keys", a.admin(a.keys))
 	mux.HandleFunc("/api/admin/keys/", a.admin(a.keyByID))

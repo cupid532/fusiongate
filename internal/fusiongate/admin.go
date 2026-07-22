@@ -126,7 +126,7 @@ func validProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id) FROM providers p ORDER BY p.priority,p.id`)
+		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id) FROM providers p ORDER BY p.priority DESC,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -179,9 +179,6 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "unsafe_upstream", err.Error())
 			return
 		}
-		if in.Priority == 0 {
-			in.Priority = 100
-		}
 		if in.Weight == 0 {
 			in.Weight = 100
 		}
@@ -200,8 +197,8 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if in.CooldownSeconds == 0 {
 			in.CooldownSeconds = 30
 		}
-		if in.Weight < 1 || in.MaxConcurrency < 0 || in.RequestTimeoutMS < 1000 || in.FailureThreshold < 1 || in.CooldownSeconds < 1 || !validPassthroughMode(in.PassthroughMode) || !validClientPolicy(in.ClientPolicy) {
-			fail(w, http.StatusBadRequest, "invalid_request", "invalid weight, forwarding mode, client policy, concurrency, timeout, failure threshold, or cooldown")
+		if in.Priority < 0 || in.Weight < 1 || in.MaxConcurrency < 0 || in.RequestTimeoutMS < 1000 || in.FailureThreshold < 1 || in.CooldownSeconds < 1 || !validPassthroughMode(in.PassthroughMode) || !validClientPolicy(in.ClientPolicy) {
+			fail(w, http.StatusBadRequest, "invalid_request", "invalid priority, weight, forwarding mode, client policy, concurrency, timeout, failure threshold, or cooldown")
 			return
 		}
 		encrypted, err := a.encrypt(in.Credential)
@@ -312,7 +309,7 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if (in.Weight != nil && *in.Weight < 1) || (in.MaxConcurrency != nil && *in.MaxConcurrency < 0) || (in.RequestTimeoutMS != nil && *in.RequestTimeoutMS < 1000) || (in.FailureThreshold != nil && *in.FailureThreshold < 1) || (in.CooldownSeconds != nil && *in.CooldownSeconds < 1) || (in.PassthroughMode != nil && !validPassthroughMode(*in.PassthroughMode)) || (in.ClientPolicy != nil && !validClientPolicy(*in.ClientPolicy)) {
+		if (in.Priority != nil && *in.Priority < 0) || (in.Weight != nil && *in.Weight < 1) || (in.MaxConcurrency != nil && *in.MaxConcurrency < 0) || (in.RequestTimeoutMS != nil && *in.RequestTimeoutMS < 1000) || (in.FailureThreshold != nil && *in.FailureThreshold < 1) || (in.CooldownSeconds != nil && *in.CooldownSeconds < 1) || (in.PassthroughMode != nil && !validPassthroughMode(*in.PassthroughMode)) || (in.ClientPolicy != nil && !validClientPolicy(*in.ClientPolicy)) {
 			fail(w, http.StatusBadRequest, "invalid_request", "invalid provider scheduling or forwarding configuration")
 			return
 		}
@@ -385,12 +382,11 @@ func (a *App) routes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	case http.MethodGet:
 		rows, err := a.db.Query(`
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
-       r.input_price_micros,r.output_price_micros,p.name,p.type,COALESCE(rp.strategy,'priority_failover'),
+       r.input_price_micros,r.output_price_micros,p.name,p.type,
        p.enabled,p.status,p.last_latency_ms,p.consecutive_failures
 FROM model_routes r
 JOIN providers p ON p.id=r.provider_id
-LEFT JOIN route_policies rp ON rp.public_name=r.public_name
-ORDER BY r.public_name,r.sort_order,r.id`)
+ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -400,7 +396,7 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 		for rows.Next() {
 			var x Route
 			var en, providerEnabled int
-			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder, &x.InputPriceMicros, &x.OutputPriceMicros, &x.ProviderName, &x.ProviderType, &x.Strategy, &providerEnabled, &x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFailures); err != nil {
+			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder, &x.InputPriceMicros, &x.OutputPriceMicros, &x.ProviderName, &x.ProviderType, &providerEnabled, &x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFailures); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}

@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
 func releaseSelectedRoute(a *App, z resolvedRoute) {
@@ -20,12 +19,12 @@ func releaseSelectedRoute(a *App, z resolvedRoute) {
 
 func schedulerRoute(id, providerID int64, model string, priority, order int) resolvedRoute {
 	return resolvedRoute{
-		Route:    Route{ID: id, ProviderID: providerID, PublicName: model, Priority: priority, SortOrder: order},
-		Provider: Provider{ID: providerID, Weight: 100, FailureThreshold: 3, CooldownSeconds: 30},
+		Route:    Route{ID: id, ProviderID: providerID, PublicName: model, SortOrder: order},
+		Provider: Provider{ID: providerID, Priority: priority, Weight: 100, FailureThreshold: 3, CooldownSeconds: 30},
 	}
 }
 
-func TestPriorityFailoverUsesDescendingPriorityThenDragOrder(t *testing.T) {
+func TestPriorityFailoverUsesProviderPriorityThenCreationOrder(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +121,7 @@ func TestAdaptivePrefersStableLowLatencyRoute(t *testing.T) {
 	}
 }
 
-func TestRoutePausePriorityZeroPolicyAndReorderAPI(t *testing.T) {
+func TestLegacyRoutePauseRemainsBackwardCompatible(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -154,39 +153,6 @@ func TestRoutePausePriorityZeroPolicyAndReorderAPI(t *testing.T) {
 		t.Fatalf("resolved after pause = %+v, %v", resolved, err)
 	}
 
-	policy := httptest.NewRequest(http.MethodPatch, "/api/admin/route-policies", strings.NewReader(`{"public_name":"model","strategy":"ordered_round_robin"}`))
-	rec = httptest.NewRecorder()
-	a.routePolicies(rec, policy, adminCtx{})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("policy status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	resolved, err = a.resolve(context.Background(), "model", "chat")
-	if err != nil || routeStrategy(resolved) != StrategyOrderedRoundRobin {
-		t.Fatalf("resolved strategy = %q, %v", routeStrategy(resolved), err)
-	}
-
-	orderBody := `{"public_name":"model","route_ids":[` + intString(r2) + `,` + intString(r1) + `]}`
-	reorder := httptest.NewRequest(http.MethodPatch, "/api/admin/routes/reorder", strings.NewReader(orderBody))
-	rec = httptest.NewRecorder()
-	a.reorderRoutes(rec, reorder, adminCtx{})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("reorder status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var firstID int64
-	if err := a.db.QueryRow(`SELECT id FROM model_routes WHERE public_name='model' ORDER BY sort_order LIMIT 1`).Scan(&firstID); err != nil {
-		t.Fatal(err)
-	}
-	if firstID != r2 {
-		t.Fatalf("first route=%d want %d", firstID, r2)
-	}
-
-	invalid := httptest.NewRequest(http.MethodPatch, "/api/admin/routes/reorder", strings.NewReader(`{"public_name":"model","route_ids":[`+intString(r1)+`,`+intString(r1)+`]}`))
-	rec = httptest.NewRecorder()
-	a.reorderRoutes(rec, invalid, adminCtx{})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("duplicate reorder status=%d", rec.Code)
-	}
-
 	resume := httptest.NewRequest(http.MethodPatch, "/api/admin/routes/"+intString(r1), strings.NewReader(`{"enabled":true}`))
 	rec = httptest.NewRecorder()
 	a.routeByID(rec, resume, adminCtx{})
@@ -199,46 +165,6 @@ func TestRoutePausePriorityZeroPolicyAndReorderAPI(t *testing.T) {
 	}
 }
 
-func TestInvalidRoutingStrategyRejected(t *testing.T) {
-	a, err := New(testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
-	p := insertTestProvider(t, a, "one", "openai_compatible", "http://one.test", "one", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p, "model", "one", "chat", 0)
-	req := httptest.NewRequest(http.MethodPatch, "/api/admin/route-policies", strings.NewReader(`{"public_name":"model","strategy":"random"}`))
-	rec := httptest.NewRecorder()
-	a.routePolicies(rec, req, adminCtx{})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestRoundRobinCursorConcurrentAccess(t *testing.T) {
-	a, err := New(testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
-	routes := []resolvedRoute{schedulerRoute(1, 1, "model", 0, 0), schedulerRoute(2, 2, "model", 0, 1)}
-	done := make(chan struct{}, 20)
-	for range 20 {
-		go func() {
-			for range 50 {
-				_ = a.prepareRoutes(routes, StrategyOrderedRoundRobin)
-			}
-			done <- struct{}{}
-		}()
-	}
-	for range 20 {
-		select {
-		case <-done:
-		case <-time.After(2 * time.Second):
-			t.Fatal("round robin cursor deadlocked")
-		}
-	}
-}
 func TestModelsHideRoutesWhoseProviderIsDisabled(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
