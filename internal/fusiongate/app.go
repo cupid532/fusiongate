@@ -67,6 +67,7 @@ type Provider struct {
 	LastSuccessAt       string `json:"last_success_at,omitempty"`
 	LastFailureAt       string `json:"last_failure_at,omitempty"`
 	Inflight            int    `json:"inflight"`
+	ModelCount          int    `json:"model_count"`
 }
 
 type Route struct {

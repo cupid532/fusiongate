@@ -125,7 +125,7 @@ func validProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT id,name,type,base_url,enabled,priority,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,consecutive_failures,COALESCE(circuit_open_until,''),last_error,last_latency_ms,COALESCE(last_success_at,''),COALESCE(last_failure_at,'') FROM providers ORDER BY priority,id`)
+		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id) FROM providers p ORDER BY p.priority,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -135,7 +135,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		for rows.Next() {
 			var p Provider
 			var enabled int
-			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastSuccessAt, &p.LastFailureAt); err != nil {
+			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -161,6 +161,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			RequestTimeoutMS int    `json:"request_timeout_ms"`
 			FailureThreshold int    `json:"failure_threshold"`
 			CooldownSeconds  int    `json:"cooldown_seconds"`
+			AutoDiscover     *bool  `json:"auto_discover"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -217,19 +218,47 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		id, _ := res.LastInsertId()
-		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "message": "provider created; credential is encrypted at rest"})
+		response := map[string]any{"id": id, "message": "provider created; credential is encrypted at rest"}
+		if in.AutoDiscover == nil || *in.AutoDiscover {
+			discovery, discoveryErr := a.discoverAndImportModels(r.Context(), id)
+			if discoveryErr != nil {
+				response["model_discovery"] = map[string]any{"status": "failed", "error": discoveryErr.Error()}
+			} else {
+				response["model_discovery"] = map[string]any{"status": "ok", "discovered": discovery.Discovered, "added": discovery.Added, "existing": discovery.Existing, "skipped": discovery.Skipped}
+			}
+		}
+		writeJSON(w, http.StatusCreated, response)
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
 	}
 }
 
 func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
-	idText := strings.TrimPrefix(r.URL.Path, "/api/admin/providers/")
+	suffix := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/providers/"), "/")
+	parts := strings.Split(suffix, "/")
+	idText := parts[0]
 	if !isID(idText) {
 		fail(w, http.StatusNotFound, "not_found", "provider not found")
 		return
 	}
 	id, _ := strconv.ParseInt(idText, 10, 64)
+	if len(parts) == 2 && parts[1] == "discover-models" {
+		if r.Method != http.MethodPost {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+			return
+		}
+		result, err := a.discoverAndImportModels(r.Context(), id)
+		if err != nil {
+			fail(w, discoveryErrorStatus(err), "model_discovery_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if len(parts) != 1 {
+		fail(w, http.StatusNotFound, "not_found", "provider action not found")
+		return
+	}
 	switch r.Method {
 	case http.MethodDelete:
 		res, err := a.db.Exec(`DELETE FROM providers WHERE id=?`, id)
