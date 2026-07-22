@@ -9,7 +9,7 @@
 - Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
 - 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 只保存 SHA-256 哈希，创建时仅显示一次。
-- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini；保存渠道时自动读取上游模型列表并创建同名路由，也可随时手动重新识别；OAuth 类型明确标为未接入适配器。
+- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini；保存渠道时自动读取上游模型候选列表，由管理员勾选后批量创建路由，也可随时手动重新识别；公开模型名统一规范为小写，上游真实模型 ID 保持原样；OAuth 类型明确标为未接入适配器。
 - 公共模型 / 别名与多条候选路由；优先级分层、平滑加权轮询、EWMA 延迟修正和最少并发修正。
 - 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、单探针半开恢复、指数冷却、`Retry-After`。
 - 安全故障转移：连接/超时、429、部分路由错误与 5xx 可切换备用；空流或首字节前断流可切换，首字节发出后绝不拼接第二家响应；图片传输结果不确定时不自动重放。
@@ -34,7 +34,7 @@ go run ./cmd/fusiongate
 
 打开 `http://127.0.0.1:8787`，登录后依次：
 
-1. 添加 Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），系统会自动识别模型并建立同名路由。
+1. 添加 Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），系统会自动识别可用模型但不会直接添加；在候选弹窗中勾选需要的模型并确认导入。公开模型名会统一转为小写。
 2. 按需创建额外别名，例如公开名 `smart` → 上游模型 `gpt-4.1`。
 3. 创建下游 API Key，并立即复制一次性显示的 Key。
 4. 在任意 OpenAI SDK / 客户端中使用：

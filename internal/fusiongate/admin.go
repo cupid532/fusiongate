@@ -220,11 +220,11 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		id, _ := res.LastInsertId()
 		response := map[string]any{"id": id, "message": "provider created; credential is encrypted at rest"}
 		if in.AutoDiscover == nil || *in.AutoDiscover {
-			discovery, discoveryErr := a.discoverAndImportModels(r.Context(), id)
+			discovery, discoveryErr := a.discoverProviderModels(r.Context(), id)
 			if discoveryErr != nil {
 				response["model_discovery"] = map[string]any{"status": "failed", "error": discoveryErr.Error()}
 			} else {
-				response["model_discovery"] = map[string]any{"status": "ok", "discovered": discovery.Discovered, "added": discovery.Added, "existing": discovery.Existing, "skipped": discovery.Skipped}
+				response["model_discovery"] = map[string]any{"status": "ok", "discovered": discovery.Discovered, "skipped": discovery.Skipped, "models": discovery.Models}
 			}
 		}
 		writeJSON(w, http.StatusCreated, response)
@@ -247,9 +247,29 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 			return
 		}
-		result, err := a.discoverAndImportModels(r.Context(), id)
+		result, err := a.discoverProviderModels(r.Context(), id)
 		if err != nil {
 			fail(w, discoveryErrorStatus(err), "model_discovery_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "import-models" {
+		if r.Method != http.MethodPost {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+			return
+		}
+		var in struct {
+			Models []string `json:"models"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		result, err := a.importSelectedModels(r.Context(), id, in.Models)
+		if err != nil {
+			fail(w, modelImportErrorStatus(err), "model_import_failed", err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
@@ -364,7 +384,7 @@ func (a *App) routes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, 400, "invalid_request", err.Error())
 			return
 		}
-		in.PublicName = strings.TrimSpace(in.PublicName)
+		in.PublicName = strings.ToLower(strings.TrimSpace(in.PublicName))
 		in.UpstreamModel = strings.TrimSpace(in.UpstreamModel)
 		if in.ProviderID < 1 || in.PublicName == "" || in.UpstreamModel == "" {
 			fail(w, 400, "invalid_request", "provider_id, public_name, and upstream_model are required")

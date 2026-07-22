@@ -14,21 +14,33 @@ import (
 	"time"
 )
 
-const maxModelDiscoveryBody = 8 << 20
+const (
+	maxModelDiscoveryBody   = 8 << 20
+	maxModelImportSelection = 5000
+)
+
+var errSelectedModelsUnavailable = errors.New("one or more selected models are no longer available")
 
 type discoveredModel struct {
 	ID                      string   `json:"id"`
+	UpstreamID              string   `json:"-"`
 	DisplayName             string   `json:"display_name,omitempty"`
 	Capabilities            string   `json:"capabilities"`
+	Existing                bool     `json:"existing,omitempty"`
 	SupportedGenerationAPIs []string `json:"-"`
 }
 
 type modelDiscoveryResult struct {
 	Discovered int               `json:"discovered"`
-	Added      int               `json:"added"`
-	Existing   int               `json:"existing"`
 	Skipped    int               `json:"skipped"`
-	Models     []discoveredModel `json:"models,omitempty"`
+	Models     []discoveredModel `json:"models"`
+}
+
+type modelImportResult struct {
+	Selected int `json:"selected"`
+	Added    int `json:"added"`
+	Existing int `json:"existing"`
+	Missing  int `json:"missing"`
 }
 
 type discoveryProvider struct {
@@ -120,8 +132,7 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 		req.Header.Set("x-api-key", p.Credential)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	case "gemini":
-		// The Gemini API accepts the key in the query string. Keeping it out of
-		// headers also matches the gateway's existing Gemini credential adapter.
+		// Gemini accepts the key in the query string.
 	}
 }
 
@@ -165,23 +176,23 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 	out := make([]discoveredModel, 0, len(entries))
 	seen := map[string]bool{}
 	for _, rawEntry := range entries {
-		var id string
+		var upstreamID string
 		var displayName string
 		var methods []string
 		var stringEntry string
 		if json.Unmarshal(rawEntry, &stringEntry) == nil {
-			id = stringEntry
+			upstreamID = stringEntry
 		} else {
 			var entry discoveryModelEntry
 			if err := json.Unmarshal(rawEntry, &entry); err != nil {
 				continue
 			}
-			id = entry.ID
-			if id == "" {
-				id = entry.Name
+			upstreamID = entry.ID
+			if upstreamID == "" {
+				upstreamID = entry.Name
 			}
-			if id == "" {
-				id = entry.Model
+			if upstreamID == "" {
+				upstreamID = entry.Model
 			}
 			displayName = entry.DisplayName
 			if displayName == "" {
@@ -189,16 +200,17 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 			}
 			methods = entry.SupportedGenerationMethods
 		}
-		id = strings.TrimSpace(strings.TrimPrefix(id, "models/"))
-		if id == "" || seen[id] {
+		upstreamID = strings.TrimSpace(strings.TrimPrefix(upstreamID, "models/"))
+		publicID := strings.ToLower(upstreamID)
+		if publicID == "" || seen[publicID] {
 			continue
 		}
-		capabilities, importable := discoveredCapabilities(id, providerType, methods)
+		capabilities, importable := discoveredCapabilities(upstreamID, providerType, methods)
 		if !importable {
 			capabilities = "unsupported"
 		}
-		seen[id] = true
-		out = append(out, discoveredModel{ID: id, DisplayName: displayName, Capabilities: capabilities, SupportedGenerationAPIs: methods})
+		seen[publicID] = true
+		out = append(out, discoveredModel{ID: publicID, UpstreamID: upstreamID, DisplayName: strings.TrimSpace(displayName), Capabilities: capabilities, SupportedGenerationAPIs: methods})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, envelope.NextPageToken, nil
@@ -280,7 +292,7 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 	return nil, lastErr
 }
 
-func (a *App) discoverAndImportModels(parent context.Context, providerID int64) (modelDiscoveryResult, error) {
+func (a *App) discoverProviderModels(parent context.Context, providerID int64) (modelDiscoveryResult, error) {
 	p, err := a.loadDiscoveryProvider(parent, providerID)
 	if err != nil {
 		return modelDiscoveryResult{}, err
@@ -291,25 +303,102 @@ func (a *App) discoverAndImportModels(parent context.Context, providerID int64) 
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	models, err := a.fetchDiscoveredModels(ctx, p)
+	allModels, err := a.fetchDiscoveredModels(ctx, p)
 	if err != nil {
 		return modelDiscoveryResult{}, err
 	}
-	result := modelDiscoveryResult{Discovered: len(models), Models: models}
-	tx, err := a.db.BeginTx(parent, nil)
+
+	existing := map[string]bool{}
+	rows, err := a.db.QueryContext(parent, `SELECT public_name FROM model_routes WHERE provider_id=?`, providerID)
 	if err != nil {
 		return modelDiscoveryResult{}, err
 	}
-	defer func() { _ = tx.Rollback() }()
-	stamp := now()
-	for _, model := range models {
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return modelDiscoveryResult{}, err
+		}
+		existing[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	if err := rows.Close(); err != nil {
+		return modelDiscoveryResult{}, err
+	}
+
+	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels))}
+	for _, model := range allModels {
 		if model.Capabilities == "unsupported" {
 			result.Skipped++
 			continue
 		}
-		res, err := tx.ExecContext(parent, `INSERT OR IGNORE INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,input_price_micros,output_price_micros,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, model.ID, providerID, model.ID, model.Capabilities, 1, 100, 0, 0, stamp, stamp)
+		model.Existing = existing[model.ID]
+		result.Models = append(result.Models, model)
+	}
+	result.Discovered = len(result.Models)
+	return result, nil
+}
+
+func normalizeSelectedModels(selected []string) ([]string, error) {
+	if len(selected) == 0 {
+		return nil, errors.New("select at least one model")
+	}
+	if len(selected) > maxModelImportSelection {
+		return nil, fmt.Errorf("too many selected models; maximum is %d", maxModelImportSelection)
+	}
+	out := make([]string, 0, len(selected))
+	seen := map[string]bool{}
+	for _, value := range selected {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil, errors.New("select at least one model")
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func (a *App) importSelectedModels(parent context.Context, providerID int64, selected []string) (modelImportResult, error) {
+	normalized, err := normalizeSelectedModels(selected)
+	if err != nil {
+		return modelImportResult{}, err
+	}
+	discovery, err := a.discoverProviderModels(parent, providerID)
+	if err != nil {
+		return modelImportResult{}, err
+	}
+	available := make(map[string]discoveredModel, len(discovery.Models))
+	for _, model := range discovery.Models {
+		available[model.ID] = model
+	}
+	missing := make([]string, 0)
+	for _, id := range normalized {
+		if _, ok := available[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return modelImportResult{Selected: len(normalized), Missing: len(missing)}, fmt.Errorf("%w: %s", errSelectedModelsUnavailable, strings.Join(missing, ", "))
+	}
+
+	result := modelImportResult{Selected: len(normalized)}
+	tx, err := a.db.BeginTx(parent, nil)
+	if err != nil {
+		return modelImportResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stamp := now()
+	for _, id := range normalized {
+		model := available[id]
+		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,input_price_micros,output_price_micros,created_at,updated_at)
+SELECT ?,?,?,?,?,?,?,?,?,?
+WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(public_name)=?)`, model.ID, providerID, model.UpstreamID, model.Capabilities, 1, 100, 0, 0, stamp, stamp, providerID, model.ID)
 		if err != nil {
-			return modelDiscoveryResult{}, err
+			return modelImportResult{}, err
 		}
 		rows, _ := res.RowsAffected()
 		if rows == 1 {
@@ -319,7 +408,7 @@ func (a *App) discoverAndImportModels(parent context.Context, providerID int64) 
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return modelDiscoveryResult{}, err
+		return modelImportResult{}, err
 	}
 	return result, nil
 }
@@ -332,4 +421,17 @@ func discoveryErrorStatus(err error) int {
 		return http.StatusUnprocessableEntity
 	}
 	return http.StatusBadGateway
+}
+
+func modelImportErrorStatus(err error) int {
+	if errors.Is(err, sql.ErrNoRows) {
+		return http.StatusNotFound
+	}
+	if errors.Is(err, errSelectedModelsUnavailable) {
+		return http.StatusConflict
+	}
+	if strings.Contains(err.Error(), "select at least") || strings.Contains(err.Error(), "too many selected") {
+		return http.StatusBadRequest
+	}
+	return discoveryErrorStatus(err)
 }
