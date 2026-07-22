@@ -218,6 +218,19 @@ func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bo
 	return id, attemptID
 }
 
+func (a *App) recordFirstByte(id int64, start time.Time) {
+	if id == 0 {
+		return
+	}
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	if _, err := a.db.Exec(`UPDATE request_ledger SET first_byte_ms=? WHERE id=? AND first_byte_ms IS NULL`, elapsed, id); err != nil {
+		a.log.Error("ledger first byte update", "error", err)
+	}
+}
+
 func (a *App) endLedger(id int64, success bool, status int, errorType string, start time.Time, usage Usage) {
 	if id == 0 {
 		return
@@ -306,7 +319,7 @@ func textContent(value any) string {
 	return ""
 }
 
-type routeExecutor func(resolvedRoute, string) attemptResult
+type routeExecutor func(resolvedRoute, string, func()) attemptResult
 
 func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, routes []resolvedRoute, protocol string, stream bool, execute routeExecutor) {
 	routes = filterClientRoutes(routes, r)
@@ -344,9 +357,9 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			return
 		}
 		tried[z.Route.ID] = true
-		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, gatewayID, attempt, previousReason)
 		started := time.Now()
-		result := execute(z, attemptID)
+		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, gatewayID, attempt, previousReason)
+		result := execute(z, attemptID, func() { a.recordFirstByte(ledgerID, started) })
 		latency := time.Since(started)
 		a.completeRoute(z, result, latency)
 		status := result.Status
@@ -373,7 +386,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 	}
 }
 
-func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z resolvedRoute, requestID, endpoint string, stream, safeTransportRetry bool) attemptResult {
+func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z resolvedRoute, requestID, endpoint string, stream, safeTransportRetry bool, onFirstByte func()) attemptResult {
 	transparent := z.Provider.PassthroughMode == "transparent"
 	body := raw
 	var err error
@@ -383,7 +396,7 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 			return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 		}
 	}
-	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, ParseOpenAIUse: true, GatewayID: requestID, SafeTransportRetry: safeTransportRetry})
+	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, ParseOpenAIUse: true, GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte})
 }
 
 func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
@@ -411,27 +424,27 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		fail(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
-	a.runRoutes(w, r, key, routes, "openai_chat", stream, func(z resolvedRoute, rid string) attemptResult {
+	a.runRoutes(w, r, key, routes, "openai_chat", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		switch z.Provider.Type {
 		case "openai", "openrouter", "openai_compatible":
-			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true)
+			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
 		case "anthropic":
 			if stream || z.Provider.PassthroughMode == "transparent" {
 				return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
 			}
-			return a.chatAnthropic(w, r, body, z, rid)
+			return a.chatAnthropic(w, r, body, z, rid, onFirstByte)
 		case "gemini":
 			if stream || z.Provider.PassthroughMode == "transparent" {
 				return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
 			}
-			return a.chatGemini(w, r, body, z, rid)
+			return a.chatGemini(w, r, body, z, rid, onFirstByte)
 		default:
 			return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
 		}
 	})
 }
 
-func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[string]any, z resolvedRoute, rid string) attemptResult {
+func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[string]any, z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 	messages, _ := body["messages"].([]any)
 	outMessages := []map[string]any{}
 	system := ""
@@ -476,6 +489,7 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, err), Err: err}
 	}
 	defer resp.Body.Close()
+	resp.Body = observeFirstByte(resp.Body, onFirstByte)
 	if retryableStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
 		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
@@ -515,7 +529,7 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
 }
 
-func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string]any, z resolvedRoute, rid string) attemptResult {
+func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string]any, z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 	messages, _ := body["messages"].([]any)
 	contents := []map[string]any{}
 	for _, value := range messages {
@@ -544,6 +558,7 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, err), Err: err}
 	}
 	defer resp.Body.Close()
+	resp.Body = observeFirstByte(resp.Body, onFirstByte)
 	if retryableStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
 		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
@@ -621,8 +636,8 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		return
 	}
 	stream, _ := body["stream"].(bool)
-	a.runRoutes(w, r, key, compatible, protocol, stream, func(z resolvedRoute, rid string) attemptResult {
-		return a.openAIProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry)
+	a.runRoutes(w, r, key, compatible, protocol, stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		return a.openAIProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte)
 	})
 }
 
@@ -657,7 +672,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 		return
 	}
 	stream, _ := body["stream"].(bool)
-	a.runRoutes(w, r, key, compatible, "anthropic_messages", stream, func(z resolvedRoute, rid string) attemptResult {
+	a.runRoutes(w, r, key, compatible, "anthropic_messages", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		transparent := z.Provider.PassthroughMode == "transparent"
 		encoded := raw
 		if !transparent {
@@ -671,7 +686,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 			}
 		}
-		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, GatewayID: rid, SafeTransportRetry: true})
+		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte})
 	})
 }
 

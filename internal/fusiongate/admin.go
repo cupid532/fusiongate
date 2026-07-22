@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -430,33 +431,51 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
+func normalizeModelList(value string) string {
+	seen := map[string]bool{}
+	models := make([]string, 0)
+	for _, model := range strings.Split(value, ",") {
+		model = strings.ToLower(strings.TrimSpace(model))
+		if model == "" || seen[model] {
+			continue
+		}
+		seen[model] = true
+		models = append(models, model)
+	}
+	return strings.Join(models, ",")
+}
+
 func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
-	case "GET":
-		rows, err := a.db.Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at FROM api_keys ORDER BY id DESC`)
+	case http.MethodGet:
+		rows, err := a.db.Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL FROM api_keys ORDER BY id DESC`)
 		if err != nil {
-			fail(w, 500, "database_error", err.Error())
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
 		defer rows.Close()
 		out := []APIKey{}
 		for rows.Next() {
 			var x APIKey
-			var aa, ai, rv int
+			var aa, ai, rv, canReveal int
 			var ex, cr string
-			if err := rows.Scan(&x.ID, &x.Name, &x.Prefix, &aa, &x.AllowModels, &x.DenyModels, &ai, &x.RPMLimit, &rv, &ex, &cr); err != nil {
-				fail(w, 500, "database_error", err.Error())
+			if err := rows.Scan(&x.ID, &x.Name, &x.Prefix, &aa, &x.AllowModels, &x.DenyModels, &ai, &x.RPMLimit, &rv, &ex, &cr, &canReveal); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
 			x.AllowAll = strBool(aa)
 			x.AllowImages = strBool(ai)
 			x.Revoked = strBool(rv)
+			x.CanReveal = strBool(canReveal)
 			x.ExpiresAt = parseTime(ex)
-			x.CreatedAt = *parseTime(cr)
+			createdAt := parseTime(cr)
+			if createdAt != nil {
+				x.CreatedAt = *createdAt
+			}
 			out = append(out, x)
 		}
-		writeJSON(w, 200, out)
-	case "POST":
+		writeJSON(w, http.StatusOK, out)
+	case http.MethodPost:
 		var in struct {
 			Name        string `json:"name"`
 			AllowModels string `json:"allow_models"`
@@ -468,56 +487,102 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		}
 
 		if err := readJSON(r, &in); err != nil {
-			fail(w, 400, "invalid_request", err.Error())
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if strings.TrimSpace(in.Name) == "" {
-			fail(w, 400, "invalid_request", "name is required")
+		in.Name = strings.TrimSpace(in.Name)
+		if in.Name == "" {
+			fail(w, http.StatusBadRequest, "invalid_request", "name is required")
 			return
 		}
 		if in.RPMLimit <= 0 {
 			in.RPMLimit = 120
 		}
+		in.AllowModels = normalizeModelList(in.AllowModels)
+		in.DenyModels = normalizeModelList(in.DenyModels)
+		if in.AllowAll {
+			in.AllowModels = ""
+		}
 		raw := "fg_" + hex.EncodeToString(randomBytes(24))
 		sum := sha256.Sum256([]byte(raw))
 		prefix := raw[:11]
+		encrypted, err := a.encrypt(raw)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "encryption_error", "could not protect API key")
+			return
+		}
 		var exp any = nil
 		if in.ExpiresAt != "" {
 			if _, e := time.Parse(time.RFC3339, in.ExpiresAt); e != nil {
-				fail(w, 400, "invalid_request", "expires_at must be RFC3339")
+				fail(w, http.StatusBadRequest, "invalid_request", "expires_at must be RFC3339")
 				return
 			}
 			exp = in.ExpiresAt
 		}
-		res, err := a.db.Exec(`INSERT INTO api_keys(name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, in.Name, prefix, hex.EncodeToString(sum[:]), boolInt(in.AllowAll), in.AllowModels, in.DenyModels, boolInt(in.AllowImages), in.RPMLimit, exp, now())
+		res, err := a.db.Exec(`INSERT INTO api_keys(name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,expires_at,created_at,encrypted_key) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, in.Name, prefix, hex.EncodeToString(sum[:]), boolInt(in.AllowAll), in.AllowModels, in.DenyModels, boolInt(in.AllowImages), in.RPMLimit, exp, now(), encrypted)
 		if err != nil {
-			fail(w, 500, "database_error", err.Error())
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
 		id, _ := res.LastInsertId()
-		writeJSON(w, 201, map[string]any{"id": id, "key": raw, "message": "Copy this key now. It is stored only as a hash."})
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "key": raw, "can_reveal": true, "message": "API key created and encrypted for administrator recovery."})
 	default:
-		fail(w, 405, "method_not_allowed", "GET or POST required")
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
 	}
 }
+
 func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/admin/keys/")
-	if r.Method != "DELETE" || !isID(id) {
-		fail(w, 405, "method_not_allowed", "DELETE /api/admin/keys/{id} required")
+	remainder := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/keys/"), "/")
+	parts := strings.Split(remainder, "/")
+	if len(parts) == 2 && parts[1] == "reveal" && isID(parts[0]) {
+		if r.Method != http.MethodPost {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST /api/admin/keys/{id}/reveal required")
+			return
+		}
+		var encrypted []byte
+		var revoked int
+		err := a.db.QueryRow(`SELECT encrypted_key,revoked FROM api_keys WHERE id=?`, parts[0]).Scan(&encrypted, &revoked)
+		if err == sql.ErrNoRows {
+			fail(w, http.StatusNotFound, "not_found", "key not found")
+			return
+		}
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if strBool(revoked) {
+			fail(w, http.StatusGone, "key_revoked", "revoked keys cannot be revealed")
+			return
+		}
+		if len(encrypted) == 0 {
+			fail(w, http.StatusConflict, "key_not_recoverable", "this legacy key was stored only as a hash; create a replacement key")
+			return
+		}
+		raw, err := a.decrypt(encrypted)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "decryption_error", "could not decrypt API key")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"key": raw})
 		return
 	}
-	res, err := a.db.Exec(`UPDATE api_keys SET revoked=1 WHERE id=?`, id)
+	if len(parts) != 1 || !isID(parts[0]) || r.Method != http.MethodDelete {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "DELETE /api/admin/keys/{id} or POST /api/admin/keys/{id}/reveal required")
+		return
+	}
+	res, err := a.db.Exec(`UPDATE api_keys SET revoked=1 WHERE id=?`, parts[0])
 	if err != nil {
-		fail(w, 500, "database_error", err.Error())
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		fail(w, 404, "not_found", "key not found")
+		fail(w, http.StatusNotFound, "not_found", "key not found")
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
+
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var p, m, k, total, today, failures int
 	var cost int64
@@ -526,17 +591,21 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	a.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0`).Scan(&k)
 	a.db.QueryRow(`SELECT COUNT(*),COALESCE(SUM(cost_micros),0) FROM request_ledger`).Scan(&total, &cost)
 	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=?`, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&today)
-	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=? AND success=0`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339)).Scan(&failures)
+	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=? AND completed_at IS NOT NULL AND success=0`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339)).Scan(&failures)
 	writeJSON(w, 200, map[string]any{"providers": p, "models": m, "keys": k, "requests": total, "today_requests": today, "failures_24h": failures, "cost_micros": cost})
 }
 func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodGet {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		return
+	}
 	limit := 50
 	if s := r.URL.Query().Get("limit"); s != "" {
 		if x, e := strconv.Atoi(s); e == nil && x > 0 && x <= 200 {
 			limit = x
 		}
 	}
-	rows, err := a.db.Query(`SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cost_micros,l.cost_type,COALESCE(p.name,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id ORDER BY l.id DESC LIMIT ?`, limit)
+	rows, err := a.db.Query(`SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cost_micros,l.cost_type,COALESCE(p.name,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id ORDER BY l.id DESC LIMIT ?`, limit)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
 		return
@@ -545,13 +614,18 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency int
-		var rid, gatewayID, retryReason, created, pm, um, proto, et, ct, providerName string
+		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName string
+		var firstByte sql.NullInt64
 		var input, output, cost int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cost, &ct, &providerName); err != nil {
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cost, &ct, &providerName); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "created_at": created, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cost_micros": cost, "cost_type": ct})
+		var firstByteMS any
+		if firstByte.Valid {
+			firstByteMS = firstByte.Int64
+		}
+		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cost_micros": cost, "cost_type": ct})
 	}
 	writeJSON(w, 200, out)
 }

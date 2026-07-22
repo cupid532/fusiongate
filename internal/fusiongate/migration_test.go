@@ -49,7 +49,8 @@ CREATE TABLE request_ledger (
 	defer a.Close()
 	for table, columns := range map[string][]string{
 		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms"},
-		"request_ledger": {"gateway_request_id", "attempt", "retry_reason"},
+		"api_keys":       {"encrypted_key"},
+		"request_ledger": {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms"},
 	} {
 		rows, err := a.db.Query("PRAGMA table_info(" + table + ")")
 		if err != nil {

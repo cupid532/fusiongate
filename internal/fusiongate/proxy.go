@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,6 +24,28 @@ type proxyOptions struct {
 	ParseOpenAIUse     bool
 	GatewayID          string
 	SafeTransportRetry bool
+	OnFirstByte        func()
+}
+
+type firstByteReadCloser struct {
+	io.ReadCloser
+	once        sync.Once
+	onFirstByte func()
+}
+
+func (r *firstByteReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 && r.onFirstByte != nil {
+		r.once.Do(r.onFirstByte)
+	}
+	return n, err
+}
+
+func observeFirstByte(body io.ReadCloser, onFirstByte func()) io.ReadCloser {
+	if body == nil || onFirstByte == nil {
+		return body
+	}
+	return &firstByteReadCloser{ReadCloser: body, onFirstByte: onFirstByte}
 }
 
 var hopByHopHeaders = map[string]bool{
@@ -183,6 +206,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: http.StatusBadGateway, Retryable: options.SafeTransportRetry, Reason: reason, Err: err}
 	}
 	defer resp.Body.Close()
+	resp.Body = observeFirstByte(resp.Body, options.OnFirstByte)
 
 	if retryableStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))

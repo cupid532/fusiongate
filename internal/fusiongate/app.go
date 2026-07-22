@@ -96,6 +96,7 @@ type APIKey struct {
 	RPMLimit    int        `json:"rpm_limit"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
+	CanReveal   bool       `json:"can_reveal"`
 	Raw         string     `json:"key,omitempty"`
 }
 
@@ -173,7 +174,7 @@ func (a *App) migrate(ctx context.Context) error {
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
     allow_all INTEGER NOT NULL DEFAULT 1, allow_models TEXT NOT NULL DEFAULT '', deny_models TEXT NOT NULL DEFAULT '',
     allow_images INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 120, revoked INTEGER NOT NULL DEFAULT 0,
-    expires_at TEXT, created_at TEXT NOT NULL, last_used_at TEXT);
+    expires_at TEXT, created_at TEXT NOT NULL, last_used_at TEXT, encrypted_key BLOB);
   CREATE TABLE IF NOT EXISTS request_ledger (
     id INTEGER PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, completed_at TEXT,
     api_key_id INTEGER, provider_id INTEGER, route_id INTEGER, public_model TEXT NOT NULL, upstream_model TEXT NOT NULL,
@@ -181,7 +182,8 @@ func (a *App) migrate(ctx context.Context) error {
     error_type TEXT NOT NULL DEFAULT '', latency_ms INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     cost_micros INTEGER NOT NULL DEFAULT 0, cost_type TEXT NOT NULL DEFAULT 'unknown',
-    gateway_request_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 1, retry_reason TEXT NOT NULL DEFAULT '');
+    gateway_request_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 1, retry_reason TEXT NOT NULL DEFAULT '',
+    first_byte_ms INTEGER);
   CREATE INDEX IF NOT EXISTS idx_ledger_created ON request_ledger(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
   `)
@@ -204,6 +206,8 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "first_byte_ms", "INTEGER"},
+		{"api_keys", "encrypted_key", "BLOB"},
 	} {
 		if err := ensureColumn(ctx, a.db, column.table, column.name, column.ddl); err != nil {
 			return err

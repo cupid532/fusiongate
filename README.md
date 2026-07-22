@@ -8,7 +8,7 @@
 
 - Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
-- 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 只保存 SHA-256 哈希，创建时仅显示一次。
+- 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
 - Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini；保存渠道时自动读取上游模型候选列表，由管理员勾选后批量创建路由，也可随时手动重新识别；公开模型名统一规范为小写，上游真实模型 ID 保持原样；OAuth 类型明确标为未接入适配器。
 - 公共模型 / 别名与多条候选路由；优先级分层、平滑加权轮询、EWMA 延迟修正和最少并发修正。
 - 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、单探针半开恢复、指数冷却、`Retry-After`。
@@ -18,7 +18,8 @@
   - OpenAI Compatible：Chat、Responses、Images；Chat / Responses 支持安全流式转发。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
   - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 原生代理。
-- API Key 模型白名单/拒绝规则、RPM 限流、撤销、图片权限。
+- API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、撤销、图片权限与安全再次复制。
+- 请求账本实时显示进行中请求、动态运行时间、每次故障转移尝试及上游首字节耗时。
 - 请求尝试账本按 `gateway_request_id` 聚合，记录 attempt、Provider、重试来源、状态、Token、延迟与费用，不记录 prompt / completion 正文；费用标记为 `actual`、`estimated` 或 `unknown`。
 - SSRF 默认保护：只接受 HTTPS 上游；解析并校验全部 DNS 地址，阻止 localhost、私网、链路本地、未指定和组播地址，限制重定向且禁止跨主机携带凭据。
 - Docker Compose 与非 root 容器配置。
@@ -36,7 +37,7 @@ go run ./cmd/fusiongate
 
 1. 添加 Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），系统会自动识别可用模型但不会直接添加；在候选弹窗中勾选需要的模型并确认导入。公开模型名会统一转为小写。
 2. 按需创建额外别名，例如公开名 `smart` → 上游模型 `gpt-4.1`。
-3. 创建下游 API Key，并立即复制一次性显示的 Key。
+3. 创建下游 API Key，从实时模型列表勾选允许/拒绝权限；完整 Key 可在管理员控制台再次复制。
 4. 在任意 OpenAI SDK / 客户端中使用：
 
 ```bash
