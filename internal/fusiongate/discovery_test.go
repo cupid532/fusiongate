@@ -72,7 +72,7 @@ func TestProviderCreationDiscoversCandidatesWithoutCreatingRoutes(t *testing.T) 
 	}
 }
 
-func TestImportSelectedModelsIsSelectiveLowercasesPublicNameAndPreservesUpstreamID(t *testing.T) {
+func TestImportSelectedModelsIsSelectiveAndLowercasesAllModelIDs(t *testing.T) {
 	var rootCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -134,7 +134,7 @@ func TestImportSelectedModelsIsSelectiveLowercasesPublicNameAndPreservesUpstream
 		}
 		got = append(got, [2]string{publicName, upstreamModel})
 	}
-	want := [][2]string{{"model-a", "MODEL-A"}, {"model-b", "Model-B"}}
+	want := [][2]string{{"model-a", "model-a"}, {"model-b", "model-b"}}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("routes = %#v, want %#v", got, want)
 	}
@@ -202,12 +202,12 @@ func TestImportModelsEndpointOnlyAddsCheckedModels(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID).Scan(&publicName, &upstreamModel); err != nil {
 		t.Fatal(err)
 	}
-	if publicName != "alpha-model" || upstreamModel != "Alpha-Model" {
+	if publicName != "alpha-model" || upstreamModel != "alpha-model" {
 		t.Fatalf("public=%q upstream=%q", publicName, upstreamModel)
 	}
 }
 
-func TestManualRouteLowercasesOnlyPublicName(t *testing.T) {
+func TestManualRouteLowercasesPublicAndUpstreamModel(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestManualRouteLowercasesOnlyPublicName(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID).Scan(&publicName, &upstreamModel); err != nil {
 		t.Fatal(err)
 	}
-	if publicName != "gpt-custom" || upstreamModel != "GPT-Custom" {
+	if publicName != "gpt-custom" || upstreamModel != "gpt-custom" {
 		t.Fatalf("public=%q upstream=%q", publicName, upstreamModel)
 	}
 }

@@ -394,9 +394,9 @@ func (a *App) importSelectedModels(parent context.Context, providerID int64, sel
 	stamp := now()
 	for _, id := range normalized {
 		model := available[id]
-		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,input_price_micros,output_price_micros,created_at,updated_at)
-SELECT ?,?,?,?,?,?,?,?,?,?
-WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(public_name)=?)`, model.ID, providerID, model.UpstreamID, model.Capabilities, 1, 100, 0, 0, stamp, stamp, providerID, model.ID)
+		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
+SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?
+WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(public_name)=?)`, model.ID, providerID, strings.ToLower(model.UpstreamID), model.Capabilities, 1, 0, model.ID, 0, 0, stamp, stamp, providerID, model.ID)
 		if err != nil {
 			return modelImportResult{}, err
 		}
@@ -405,6 +405,9 @@ WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(publi
 			result.Added++
 		} else {
 			result.Existing++
+		}
+		if _, err := tx.ExecContext(parent, `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, model.ID, StrategyPriorityFailover, stamp); err != nil {
+			return modelImportResult{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {

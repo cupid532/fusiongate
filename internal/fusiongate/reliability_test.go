@@ -129,7 +129,7 @@ func TestSmoothWeightedRoundRobin(t *testing.T) {
 	}
 	counts := map[int64]int{}
 	for i := 0; i < 400; i++ {
-		z, _, ok := a.acquireRoute(routes, map[int64]bool{})
+		z, _, ok := a.acquireRoute(routes, map[int64]bool{}, StrategyAdaptive)
 		if !ok {
 			t.Fatal("no route")
 		}
@@ -152,27 +152,27 @@ func TestCircuitBreakerHalfOpenRecovery(t *testing.T) {
 	providerID := insertTestProvider(t, a, "circuit", "openai_compatible", "http://example.test", "x", 1, 1, "normalized", "any", 0, 2, 1)
 	z := resolvedRoute{Route: Route{ID: 10, ProviderID: providerID, Priority: 1}, Provider: Provider{ID: providerID, Priority: 1, Weight: 1, FailureThreshold: 2, CooldownSeconds: 1}}
 	for i := 0; i < 2; i++ {
-		picked, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{})
+		picked, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}, StrategyPriorityFailover)
 		if !ok {
 			t.Fatal("expected route before threshold")
 		}
 		a.completeRoute(picked, attemptResult{Status: 500, Retryable: true, Reason: "upstream_server_error"}, time.Millisecond)
 	}
-	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}); ok {
+	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}, StrategyPriorityFailover); ok {
 		t.Fatal("open circuit was selected")
 	}
 	a.routeMu.Lock()
 	a.providerStates[providerID].CircuitOpenUntil = time.Now().Add(-time.Millisecond)
 	a.routeMu.Unlock()
-	probe, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{})
+	probe, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}, StrategyPriorityFailover)
 	if !ok {
 		t.Fatal("half-open probe not allowed")
 	}
-	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}); ok {
+	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}, StrategyPriorityFailover); ok {
 		t.Fatal("second half-open probe was allowed")
 	}
 	a.completeRoute(probe, attemptResult{Status: 200, Handled: true}, time.Millisecond)
-	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}); !ok {
+	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}, StrategyPriorityFailover); !ok {
 		t.Fatal("circuit did not recover after successful probe")
 	}
 }
@@ -189,11 +189,11 @@ func TestConcurrencyLimitFallsBack(t *testing.T) {
 		{Route: Route{ID: 1, ProviderID: p1, Priority: 1}, Provider: Provider{ID: p1, Priority: 1, Weight: 1, MaxConcurrency: 1}},
 		{Route: Route{ID: 2, ProviderID: p2, Priority: 1}, Provider: Provider{ID: p2, Priority: 2, Weight: 1, MaxConcurrency: 1}},
 	}
-	first, _, ok := a.acquireRoute(routes, map[int64]bool{})
+	first, _, ok := a.acquireRoute(routes, map[int64]bool{}, StrategyPriorityFailover)
 	if !ok || first.Provider.ID != p1 {
 		t.Fatalf("first route = %#v", first)
 	}
-	second, _, ok := a.acquireRoute(routes, map[int64]bool{})
+	second, _, ok := a.acquireRoute(routes, map[int64]bool{}, StrategyPriorityFailover)
 	if !ok || second.Provider.ID != p2 {
 		t.Fatalf("fallback route = %#v", second)
 	}

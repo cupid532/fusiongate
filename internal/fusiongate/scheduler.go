@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -77,43 +78,102 @@ func (a *App) stateForLocked(p Provider) *providerRuntime {
 	return state
 }
 
-// acquireRoute implements priority-tier failover plus health-adjusted smooth weighted
-// round robin inside a tier. Saturated and open-circuit providers are excluded.
-func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool) (resolvedRoute, routeAvailability, bool) {
+type RoutingStrategy string
+
+const (
+	StrategyPriorityFailover  RoutingStrategy = "priority_failover"
+	StrategyOrderedRoundRobin RoutingStrategy = "ordered_round_robin"
+	StrategyAdaptive          RoutingStrategy = "adaptive"
+)
+
+func validRoutingStrategy(v string) bool {
+	switch RoutingStrategy(v) {
+	case StrategyPriorityFailover, StrategyOrderedRoundRobin, StrategyAdaptive:
+		return true
+	}
+	return false
+}
+
+func routeStrategy(routes []resolvedRoute) RoutingStrategy {
+	if len(routes) > 0 && validRoutingStrategy(routes[0].Route.Strategy) {
+		return RoutingStrategy(routes[0].Route.Strategy)
+	}
+	return StrategyPriorityFailover
+}
+
+// prepareRoutes builds a deterministic request-local failover plan. Priority mode
+// sorts high-to-low and preserves drag order inside a tier. Round robin rotates the
+// drag order once per new request. Adaptive mode leaves final selection to health scoring.
+func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []resolvedRoute {
+	planned := append([]resolvedRoute(nil), routes...)
+	sort.SliceStable(planned, func(i, j int) bool {
+		if strategy == StrategyPriorityFailover && planned[i].Route.Priority != planned[j].Route.Priority {
+			return planned[i].Route.Priority > planned[j].Route.Priority
+		}
+		if planned[i].Route.SortOrder != planned[j].Route.SortOrder {
+			return planned[i].Route.SortOrder < planned[j].Route.SortOrder
+		}
+		return planned[i].Route.ID < planned[j].Route.ID
+	})
+	if strategy != StrategyOrderedRoundRobin || len(planned) < 2 {
+		return planned
+	}
+	model := planned[0].Route.PublicName
+	a.routeMu.Lock()
+	start := a.roundRobinCursor[model] % len(planned)
+	a.roundRobinCursor[model] = (start + 1) % len(planned)
+	a.routeMu.Unlock()
+	return append(append([]resolvedRoute(nil), planned[start:]...), planned[:start]...)
+}
+
+func (a *App) routeSelectableLocked(z resolvedRoute, state *providerRuntime, nowTime time.Time, availability *routeAvailability) bool {
+	if state.CircuitOpenUntil.After(nowTime) {
+		wait := time.Until(state.CircuitOpenUntil)
+		if availability.RetryAfter == 0 || wait < availability.RetryAfter {
+			availability.RetryAfter = wait
+		}
+		availability.Reason = "circuit_open"
+		return false
+	}
+	if !state.CircuitOpenUntil.IsZero() && state.HalfOpenProbe {
+		availability.Reason = "half_open_probe_inflight"
+		return false
+	}
+	if z.Provider.MaxConcurrency > 0 && state.Inflight >= z.Provider.MaxConcurrency {
+		availability.Reason = "provider_saturated"
+		return false
+	}
+	return true
+}
+
+func reserveRouteLocked(z resolvedRoute, state *providerRuntime) resolvedRoute {
+	state.Inflight++
+	if !state.CircuitOpenUntil.IsZero() {
+		state.HalfOpenProbe = true
+	}
+	return z
+}
+
+// acquireRoute selects one route from a request-local plan while excluding routes
+// already attempted by this request and providers that are saturated or circuit-open.
+func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strategy RoutingStrategy) (resolvedRoute, routeAvailability, bool) {
 	nowTime := time.Now()
 	a.routeMu.Lock()
 	defer a.routeMu.Unlock()
 
-	tierRoute, tierProvider := math.MaxInt, math.MaxInt
-	var retryAfter time.Duration
-	reason := "no_eligible_route"
-	for _, z := range routes {
-		if tried[z.Route.ID] {
-			continue
-		}
-		state := a.stateForLocked(z.Provider)
-		if state.CircuitOpenUntil.After(nowTime) {
-			wait := time.Until(state.CircuitOpenUntil)
-			if retryAfter == 0 || wait < retryAfter {
-				retryAfter = wait
+	availability := routeAvailability{Reason: "no_eligible_route"}
+	if strategy != StrategyAdaptive {
+		for _, z := range routes {
+			if tried[z.Route.ID] {
+				continue
 			}
-			reason = "circuit_open"
-			continue
+			state := a.stateForLocked(z.Provider)
+			if !a.routeSelectableLocked(z, state, nowTime, &availability) {
+				continue
+			}
+			return reserveRouteLocked(z, state), routeAvailability{}, true
 		}
-		if !state.CircuitOpenUntil.IsZero() && state.HalfOpenProbe {
-			reason = "half_open_probe_inflight"
-			continue
-		}
-		if z.Provider.MaxConcurrency > 0 && state.Inflight >= z.Provider.MaxConcurrency {
-			reason = "provider_saturated"
-			continue
-		}
-		if z.Route.Priority < tierRoute || (z.Route.Priority == tierRoute && z.Provider.Priority < tierProvider) {
-			tierRoute, tierProvider = z.Route.Priority, z.Provider.Priority
-		}
-	}
-	if tierRoute == math.MaxInt {
-		return resolvedRoute{}, routeAvailability{RetryAfter: retryAfter, Reason: reason}, false
+		return resolvedRoute{}, availability, false
 	}
 
 	var selected resolvedRoute
@@ -121,44 +181,37 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool) (resolv
 	best := -math.MaxFloat64
 	total := 0.0
 	for _, z := range routes {
-		if tried[z.Route.ID] || z.Route.Priority != tierRoute || z.Provider.Priority != tierProvider {
+		if tried[z.Route.ID] {
 			continue
 		}
 		state := a.stateForLocked(z.Provider)
-		if state.CircuitOpenUntil.After(nowTime) || (!state.CircuitOpenUntil.IsZero() && state.HalfOpenProbe) {
-			continue
-		}
-		if z.Provider.MaxConcurrency > 0 && state.Inflight >= z.Provider.MaxConcurrency {
+		if !a.routeSelectableLocked(z, state, nowTime, &availability) {
 			continue
 		}
 		weight := float64(z.Provider.Weight)
 		if weight <= 0 {
 			weight = 1
 		}
-		// Prefer low-latency and low-inflight providers without starving slower peers.
 		latencyFactor := 1.0
 		if state.EWMALatencyMS > 0 {
-			latencyFactor = math.Max(0.25, 1000.0/(1000.0+state.EWMALatencyMS))
+			latencyFactor = math.Max(0.18, 1200.0/(1200.0+state.EWMALatencyMS))
 		}
-		failureFactor := math.Pow(0.65, float64(state.ConsecutiveFailures))
-		effective := weight * latencyFactor * failureFactor / float64(state.Inflight+1)
+		failureFactor := math.Pow(0.55, float64(state.ConsecutiveFailures))
+		loadFactor := 1.0 / float64(state.Inflight+1)
+		effective := weight * latencyFactor * failureFactor * loadFactor
 		state.Current += effective
 		total += effective
-		if state.Current > best {
+		if state.Current > best || (state.Current == best && (z.Route.SortOrder < selected.Route.SortOrder || selectedState == nil)) {
 			best = state.Current
 			selected = z
 			selectedState = state
 		}
 	}
 	if selectedState == nil {
-		return resolvedRoute{}, routeAvailability{RetryAfter: retryAfter, Reason: reason}, false
+		return resolvedRoute{}, availability, false
 	}
 	selectedState.Current -= total
-	selectedState.Inflight++
-	if !selectedState.CircuitOpenUntil.IsZero() {
-		selectedState.HalfOpenProbe = true
-	}
-	return selected, routeAvailability{}, true
+	return reserveRouteLocked(selected, selectedState), routeAvailability{}, true
 }
 
 func isNeutralResult(result attemptResult) bool {

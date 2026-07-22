@@ -29,15 +29,16 @@ type Config struct {
 }
 
 type App struct {
-	db             *sql.DB
-	cfg            Config
-	aead           cipher.AEAD
-	client         *http.Client
-	log            *slog.Logger
-	mu             sync.Mutex
-	rate           map[string]*rateWindow
-	routeMu        sync.Mutex
-	providerStates map[int64]*providerRuntime
+	db               *sql.DB
+	cfg              Config
+	aead             cipher.AEAD
+	client           *http.Client
+	log              *slog.Logger
+	mu               sync.Mutex
+	rate             map[string]*rateWindow
+	routeMu          sync.Mutex
+	providerStates   map[int64]*providerRuntime
+	roundRobinCursor map[string]int
 }
 type rateWindow struct {
 	At    time.Time
@@ -82,6 +83,14 @@ type Route struct {
 	OutputPriceMicros int64  `json:"output_price_micros"`
 	ProviderName      string `json:"provider_name,omitempty"`
 	ProviderType      string `json:"provider_type,omitempty"`
+	ProviderEnabled   bool   `json:"provider_enabled"`
+	SortOrder         int    `json:"sort_order"`
+	Strategy          string `json:"strategy,omitempty"`
+	ProviderStatus    string `json:"provider_status,omitempty"`
+	ProviderLatencyMS int64  `json:"provider_latency_ms"`
+	ProviderFailures  int    `json:"provider_failures"`
+	ProviderInflight  int    `json:"provider_inflight"`
+	HealthScore       int    `json:"health_score"`
 }
 
 type APIKey struct {
@@ -139,7 +148,7 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}}
+	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -168,8 +177,11 @@ func (a *App) migrate(ctx context.Context) error {
   CREATE TABLE IF NOT EXISTS model_routes (
     id INTEGER PRIMARY KEY, public_name TEXT NOT NULL, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     upstream_model TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT 'chat,stream', enabled INTEGER NOT NULL DEFAULT 1,
-    priority INTEGER NOT NULL DEFAULT 100, input_price_micros INTEGER NOT NULL DEFAULT 0, output_price_micros INTEGER NOT NULL DEFAULT 0,
+    priority INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
+    input_price_micros INTEGER NOT NULL DEFAULT 0, output_price_micros INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(public_name,provider_id,upstream_model));
+  CREATE TABLE IF NOT EXISTS route_policies (
+    public_name TEXT PRIMARY KEY, strategy TEXT NOT NULL DEFAULT 'priority_failover', updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
     allow_all INTEGER NOT NULL DEFAULT 1, allow_models TEXT NOT NULL DEFAULT '', deny_models TEXT NOT NULL DEFAULT '',
@@ -187,6 +199,10 @@ func (a *App) migrate(ctx context.Context) error {
   CREATE INDEX IF NOT EXISTS idx_ledger_created ON request_ledger(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
   `)
+	if err != nil {
+		return err
+	}
+	hadSortOrder, err := hasColumn(ctx, a.db, "model_routes", "sort_order")
 	if err != nil {
 		return err
 	}
@@ -208,13 +224,41 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "first_byte_ms", "INTEGER"},
 		{"api_keys", "encrypted_key", "BLOB"},
+		{"model_routes", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := ensureColumn(ctx, a.db, column.table, column.name, column.ddl); err != nil {
 			return err
 		}
 	}
-	_, err = a.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_ledger_gateway_request ON request_ledger(gateway_request_id, attempt)`)
+	if !hadSortOrder {
+		if _, err := a.db.ExecContext(ctx, `UPDATE model_routes SET sort_order=id`); err != nil {
+			return err
+		}
+	}
+	_, err = a.db.ExecContext(ctx, `
+CREATE INDEX IF NOT EXISTS idx_ledger_gateway_request ON request_ledger(gateway_request_id, attempt);
+CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_order, id);`)
 	return err
+}
+
+func hasColumn(ctx context.Context, db *sql.DB, table, name string) (bool, error) {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return false, err
+		}
+		if columnName == name {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 func ensureColumn(ctx context.Context, db *sql.DB, table, name, ddl string) error {
@@ -336,6 +380,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
 	mux.HandleFunc("/api/admin/providers/", a.admin(a.providerByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
+	mux.HandleFunc("/api/admin/routes/reorder", a.admin(a.reorderRoutes))
+	mux.HandleFunc("/api/admin/route-policies", a.admin(a.routePolicies))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))
 	mux.HandleFunc("/api/admin/keys", a.admin(a.keys))
 	mux.HandleFunc("/api/admin/keys/", a.admin(a.keyByID))

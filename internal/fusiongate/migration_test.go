@@ -39,6 +39,13 @@ CREATE TABLE request_ledger (
 	if err != nil {
 		t.Fatal(err)
 	}
+	stamp := "2026-07-22T00:00:00Z"
+	if _, err := db.Exec(`INSERT INTO providers(id,name,type,base_url,credential,created_at,updated_at) VALUES(1,'legacy','openai_compatible','https://example.test',X'00',?,?)`, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_routes(id,public_name,provider_id,upstream_model,created_at,updated_at) VALUES(7,'legacy-model',1,'legacy-a',?,?),(12,'legacy-model',1,'legacy-b',?,?)`, stamp, stamp, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +56,7 @@ CREATE TABLE request_ledger (
 	defer a.Close()
 	for table, columns := range map[string][]string{
 		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms"},
+		"model_routes":   {"sort_order"},
 		"api_keys":       {"encrypted_key"},
 		"request_ledger": {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms"},
 	} {
@@ -72,5 +80,29 @@ CREATE TABLE request_ledger (
 				t.Errorf("%s.%s was not migrated", table, column)
 			}
 		}
+	}
+	var policyTable string
+	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='route_policies'`).Scan(&policyTable); err != nil {
+		t.Fatalf("route_policies table was not migrated: %v", err)
+	}
+	if policyTable != "route_policies" {
+		t.Fatalf("route_policies table = %q", policyTable)
+	}
+	rows, err := a.db.Query(`SELECT id,sort_order FROM model_routes ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := [][2]int64{{7, 7}, {12, 12}}
+	var got [][2]int64
+	for rows.Next() {
+		var id, order int64
+		if err := rows.Scan(&id, &order); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, [2]int64{id, order})
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("migrated route order = %v, want %v", got, want)
 	}
 }

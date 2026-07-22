@@ -348,87 +348,305 @@ func maybeBool(v *bool) any {
 }
 func isID(v string) bool { _, e := strconv.ParseInt(v, 10, 64); return e == nil }
 
+func routeHealthScore(status string, latency int64, failures, inflight int) int {
+	score := 100
+	switch status {
+	case "circuit_open":
+		return 0
+	case "auth_expired":
+		score = 8
+	case "rate_limited":
+		score = 35
+	case "degraded":
+		score = 62
+	case "unknown", "":
+		score = 78
+	}
+	score -= failures * 12
+	if latency > 0 {
+		penalty := int(latency / 250)
+		if penalty > 24 {
+			penalty = 24
+		}
+		score -= penalty
+	}
+	score -= inflight * 3
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
+
 func (a *App) routes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
-	case "GET":
-		rows, err := a.db.Query(`SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.input_price_micros,r.output_price_micros,p.name,p.type FROM model_routes r JOIN providers p ON p.id=r.provider_id ORDER BY r.public_name,r.priority`)
+	case http.MethodGet:
+		rows, err := a.db.Query(`
+SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
+       r.input_price_micros,r.output_price_micros,p.name,p.type,COALESCE(rp.strategy,'priority_failover'),
+       p.enabled,p.status,p.last_latency_ms,p.consecutive_failures
+FROM model_routes r
+JOIN providers p ON p.id=r.provider_id
+LEFT JOIN route_policies rp ON rp.public_name=r.public_name
+ORDER BY r.public_name,r.sort_order,r.id`)
 		if err != nil {
-			fail(w, 500, "database_error", err.Error())
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
 		defer rows.Close()
 		out := []Route{}
 		for rows.Next() {
 			var x Route
-			var en int
-			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.InputPriceMicros, &x.OutputPriceMicros, &x.ProviderName, &x.ProviderType); err != nil {
-				fail(w, 500, "database_error", err.Error())
+			var en, providerEnabled int
+			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder, &x.InputPriceMicros, &x.OutputPriceMicros, &x.ProviderName, &x.ProviderType, &x.Strategy, &providerEnabled, &x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFailures); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
 			x.Enabled = strBool(en)
+			x.ProviderEnabled = strBool(providerEnabled)
+			x.ProviderInflight = a.providerInflight(x.ProviderID)
+			if x.ProviderEnabled {
+				x.HealthScore = routeHealthScore(x.ProviderStatus, x.ProviderLatencyMS, x.ProviderFailures, x.ProviderInflight)
+			}
 			out = append(out, x)
 		}
-		writeJSON(w, 200, out)
-	case "POST":
+		writeJSON(w, http.StatusOK, out)
+	case http.MethodPost:
 		var in struct {
 			ProviderID        int64  `json:"provider_id"`
 			PublicName        string `json:"public_name"`
 			UpstreamModel     string `json:"upstream_model"`
 			Capabilities      string `json:"capabilities"`
 			Enabled           *bool  `json:"enabled"`
-			Priority          int    `json:"priority"`
+			Priority          *int   `json:"priority"`
 			InputPriceMicros  int64  `json:"input_price_micros"`
 			OutputPriceMicros int64  `json:"output_price_micros"`
 		}
-
 		if err := readJSON(r, &in); err != nil {
-			fail(w, 400, "invalid_request", err.Error())
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
 		in.PublicName = strings.ToLower(strings.TrimSpace(in.PublicName))
-		in.UpstreamModel = strings.TrimSpace(in.UpstreamModel)
+		in.UpstreamModel = strings.ToLower(strings.TrimSpace(in.UpstreamModel))
 		if in.ProviderID < 1 || in.PublicName == "" || in.UpstreamModel == "" {
-			fail(w, 400, "invalid_request", "provider_id, public_name, and upstream_model are required")
+			fail(w, http.StatusBadRequest, "invalid_request", "provider_id, public_name, and upstream_model are required")
 			return
 		}
 		if in.Capabilities == "" {
 			in.Capabilities = "chat,stream"
 		}
-		if in.Priority == 0 {
-			in.Priority = 100
+		priority := 0
+		if in.Priority != nil {
+			priority = *in.Priority
 		}
-		en := true
+		if priority < 0 {
+			fail(w, http.StatusBadRequest, "invalid_priority", "priority must be zero or greater")
+			return
+		}
+		enabled := true
 		if in.Enabled != nil {
-			en = *in.Enabled
+			enabled = *in.Enabled
 		}
-		res, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,input_price_micros,output_price_micros,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, in.PublicName, in.ProviderID, in.UpstreamModel, in.Capabilities, boolInt(en), in.Priority, in.InputPriceMicros, in.OutputPriceMicros, now(), now())
+		tx, err := a.db.BeginTx(r.Context(), nil)
 		if err != nil {
-			fail(w, 409, "route_conflict", err.Error())
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		defer tx.Rollback()
+		var sortOrder int
+		if err := tx.QueryRow(`SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?`, in.PublicName).Scan(&sortOrder); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		res, err := tx.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, in.PublicName, in.ProviderID, in.UpstreamModel, in.Capabilities, boolInt(enabled), priority, sortOrder, in.InputPriceMicros, in.OutputPriceMicros, now(), now())
+		if err != nil {
+			fail(w, http.StatusConflict, "route_conflict", err.Error())
+			return
+		}
+		if _, err := tx.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, in.PublicName, StrategyPriorityFailover, now()); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
 		id, _ := res.LastInsertId()
-		writeJSON(w, 201, map[string]any{"id": id})
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 	default:
-		fail(w, 405, "method_not_allowed", "GET or POST required")
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
 	}
 }
+
 func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/admin/routes/")
-	if r.Method != "DELETE" || !isID(id) {
-		fail(w, 405, "method_not_allowed", "DELETE /api/admin/routes/{id} required")
+	if !isID(id) {
+		fail(w, http.StatusNotFound, "not_found", "route not found")
 		return
 	}
-	res, err := a.db.Exec(`DELETE FROM model_routes WHERE id=?`, id)
+	switch r.Method {
+	case http.MethodPatch:
+		var in struct {
+			Enabled  *bool `json:"enabled"`
+			Priority *int  `json:"priority"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if in.Enabled == nil && in.Priority == nil {
+			fail(w, http.StatusBadRequest, "invalid_request", "enabled or priority is required")
+			return
+		}
+		if in.Priority != nil && *in.Priority < 0 {
+			fail(w, http.StatusBadRequest, "invalid_priority", "priority must be zero or greater")
+			return
+		}
+		res, err := a.db.Exec(`UPDATE model_routes SET enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),updated_at=? WHERE id=?`, maybeBool(in.Enabled), in.Priority, now(), id)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			fail(w, http.StatusNotFound, "not_found", "route not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case http.MethodDelete:
+		var publicName string
+		if err := a.db.QueryRow(`SELECT public_name FROM model_routes WHERE id=?`, id).Scan(&publicName); err != nil {
+			if err == sql.ErrNoRows {
+				fail(w, http.StatusNotFound, "not_found", "route not found")
+			} else {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			}
+			return
+		}
+		if _, err := a.db.Exec(`DELETE FROM model_routes WHERE id=?`, id); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		_, _ = a.db.Exec(`DELETE FROM route_policies WHERE public_name=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, publicName, publicName)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")
+	}
+}
+
+func (a *App) reorderRoutes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodPatch {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH required")
+		return
+	}
+	var in struct {
+		PublicName string  `json:"public_name"`
+		RouteIDs   []int64 `json:"route_ids"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	in.PublicName = strings.ToLower(strings.TrimSpace(in.PublicName))
+	if in.PublicName == "" || len(in.RouteIDs) == 0 {
+		fail(w, http.StatusBadRequest, "invalid_request", "public_name and route_ids are required")
+		return
+	}
+	seen := make(map[int64]bool, len(in.RouteIDs))
+	for _, id := range in.RouteIDs {
+		if id < 1 || seen[id] {
+			fail(w, http.StatusBadRequest, "invalid_order", "route_ids must be unique positive IDs")
+			return
+		}
+		seen[id] = true
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		fail(w, 500, "database_error", err.Error())
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		fail(w, 404, "not_found", "route not found")
+	defer tx.Rollback()
+	rows, err := tx.Query(`SELECT id FROM model_routes WHERE public_name=?`, in.PublicName)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	actual := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		actual[id] = true
+	}
+	rows.Close()
+	if len(actual) != len(seen) {
+		fail(w, http.StatusBadRequest, "invalid_order", "route_ids must contain every route for this public model")
+		return
+	}
+	for id := range seen {
+		if !actual[id] {
+			fail(w, http.StatusBadRequest, "invalid_order", "route_ids contains a route from another public model")
+			return
+		}
+	}
+	for order, id := range in.RouteIDs {
+		if _, err := tx.Exec(`UPDATE model_routes SET sort_order=?,updated_at=? WHERE id=?`, order, now(), id); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	a.routeMu.Lock()
+	delete(a.roundRobinCursor, in.PublicName)
+	a.routeMu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *App) routePolicies(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PUT or PATCH required")
+		return
+	}
+	var in struct {
+		PublicName string `json:"public_name"`
+		Strategy   string `json:"strategy"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	in.PublicName = strings.ToLower(strings.TrimSpace(in.PublicName))
+	if in.PublicName == "" || !validRoutingStrategy(in.Strategy) {
+		fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, or adaptive")
+		return
+	}
+	var exists int
+	if err := a.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, in.PublicName).Scan(&exists); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	if exists == 0 {
+		fail(w, http.StatusNotFound, "not_found", "public model not found")
+		return
+	}
+	if _, err := a.db.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO UPDATE SET strategy=excluded.strategy,updated_at=excluded.updated_at`, in.PublicName, in.Strategy, now()); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	if in.Strategy == string(StrategyOrderedRoundRobin) {
+		a.routeMu.Lock()
+		delete(a.roundRobinCursor, in.PublicName)
+		a.routeMu.Unlock()
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func normalizeModelList(value string) string {
@@ -587,7 +805,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var p, m, k, total, today, failures int
 	var cost int64
 	a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE enabled=1`).Scan(&p)
-	a.db.QueryRow(`SELECT COUNT(DISTINCT public_name) FROM model_routes WHERE enabled=1`).Scan(&m)
+	a.db.QueryRow(`SELECT COUNT(DISTINCT r.public_name) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1`).Scan(&m)
 	a.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0`).Scan(&k)
 	a.db.QueryRow(`SELECT COUNT(*),COALESCE(SUM(cost_micros),0) FROM request_ledger`).Scan(&total, &cost)
 	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=?`, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&today)
