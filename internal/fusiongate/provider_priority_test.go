@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestProviderCreationDefaultsPriorityToZero(t *testing.T) {
+func TestProviderCreationDefaultsPriorityToOne(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -31,8 +31,8 @@ func TestProviderCreationDefaultsPriorityToZero(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT priority FROM providers WHERE name='default-priority'`).Scan(&priority); err != nil {
 		t.Fatal(err)
 	}
-	if priority != 0 {
-		t.Fatalf("default provider priority=%d, want 0", priority)
+	if priority != 1 {
+		t.Fatalf("default provider priority=%d, want 1", priority)
 	}
 }
 
@@ -106,5 +106,34 @@ func TestProviderPriorityRejectsNegativeValues(t *testing.T) {
 	a.providerByID(rec, req, adminCtx{})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("negative priority status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProviderCreationAcceptsExplicitZeroPriority(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/providers", strings.NewReader(`{
+		"name":"zero-priority",
+		"type":"openai_compatible",
+		"baseURL":"http://provider.test",
+		"credential":"secret",
+		"priority":0,
+		"auto_discover":false
+	}`))
+	rec := httptest.NewRecorder()
+	a.providers(rec, req, adminCtx{})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var priority int
+	if err := a.db.QueryRow(`SELECT priority FROM providers WHERE name='zero-priority'`).Scan(&priority); err != nil {
+		t.Fatal(err)
+	}
+	if priority != 0 {
+		t.Fatalf("explicit provider priority=%d, want 0", priority)
 	}
 }

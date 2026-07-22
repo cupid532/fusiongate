@@ -327,7 +327,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		fail(w, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
 		return
 	}
-	strategy := StrategyPriorityFailover
+	strategy := a.globalRoutingStrategy()
 	routes = a.prepareRoutes(routes, strategy)
 	gatewayID := requestID()
 	tried := map[int64]bool{}

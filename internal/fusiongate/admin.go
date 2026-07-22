@@ -154,7 +154,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			Credential       string `json:"credential"`
 			Notes            string `json:"notes"`
 			Enabled          *bool  `json:"enabled"`
-			Priority         int    `json:"priority"`
+			Priority         *int   `json:"priority"`
 			Weight           int    `json:"weight"`
 			PassthroughMode  string `json:"passthrough_mode"`
 			ClientPolicy     string `json:"client_policy"`
@@ -179,6 +179,10 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "unsafe_upstream", err.Error())
 			return
 		}
+		priority := 1
+		if in.Priority != nil {
+			priority = *in.Priority
+		}
 		if in.Weight == 0 {
 			in.Weight = 100
 		}
@@ -197,7 +201,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if in.CooldownSeconds == 0 {
 			in.CooldownSeconds = 30
 		}
-		if in.Priority < 0 || in.Weight < 1 || in.MaxConcurrency < 0 || in.RequestTimeoutMS < 1000 || in.FailureThreshold < 1 || in.CooldownSeconds < 1 || !validPassthroughMode(in.PassthroughMode) || !validClientPolicy(in.ClientPolicy) {
+		if priority < 0 || in.Weight < 1 || in.MaxConcurrency < 0 || in.RequestTimeoutMS < 1000 || in.FailureThreshold < 1 || in.CooldownSeconds < 1 || !validPassthroughMode(in.PassthroughMode) || !validClientPolicy(in.ClientPolicy) {
 			fail(w, http.StatusBadRequest, "invalid_request", "invalid priority, weight, forwarding mode, client policy, concurrency, timeout, failure threshold, or cooldown")
 			return
 		}
@@ -210,7 +214,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if in.Enabled != nil {
 			enabled = *in.Enabled
 		}
-		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.Name, in.Type, in.BaseURL, encrypted, boolInt(enabled), in.Priority, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, now(), now())
+		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.Name, in.Type, in.BaseURL, encrypted, boolInt(enabled), priority, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, now(), now())
 		if err != nil {
 			fail(w, http.StatusConflict, "provider_conflict", err.Error())
 			return
@@ -784,7 +788,17 @@ func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "DELETE /api/admin/keys/{id} or POST /api/admin/keys/{id}/reveal required")
 		return
 	}
-	res, err := a.db.Exec(`UPDATE api_keys SET revoked=1 WHERE id=?`, parts[0])
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE request_ledger SET api_key_id=NULL WHERE api_key_id=?`, parts[0]); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	res, err := tx.Exec(`DELETE FROM api_keys WHERE id=?`, parts[0])
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -794,19 +808,63 @@ func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		fail(w, http.StatusNotFound, "not_found", "key not found")
 		return
 	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var p, m, k, total, today, failures int
-	var cost int64
+	var input, output, cached, reasoning int64
 	a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE enabled=1`).Scan(&p)
 	a.db.QueryRow(`SELECT COUNT(DISTINCT r.public_name) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1`).Scan(&m)
 	a.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0`).Scan(&k)
-	a.db.QueryRow(`SELECT COUNT(*),COALESCE(SUM(cost_micros),0) FROM request_ledger`).Scan(&total, &cost)
+	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&total)
+	a.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(reasoning_tokens),0) FROM request_ledger WHERE completed_at IS NOT NULL`).Scan(&input, &output, &cached, &reasoning)
 	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=?`, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&today)
 	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=? AND completed_at IS NOT NULL AND success=0`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339)).Scan(&failures)
-	writeJSON(w, 200, map[string]any{"providers": p, "models": m, "keys": k, "requests": total, "today_requests": today, "failures_24h": failures, "cost_micros": cost})
+	writeJSON(w, 200, map[string]any{"providers": p, "models": m, "keys": k, "requests": total, "today_requests": today, "failures_24h": failures, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output})
+}
+
+func (a *App) globalRoutingStrategy() RoutingStrategy {
+	var value string
+	if err := a.db.QueryRow(`SELECT value FROM settings WHERE key='routing_strategy'`).Scan(&value); err == nil && validRoutingStrategy(value) {
+		return RoutingStrategy(value)
+	}
+	return StrategyPriorityFailover
+}
+
+func (a *App) routing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]string{"strategy": string(a.globalRoutingStrategy())})
+	case http.MethodPatch:
+		var in struct {
+			Strategy string `json:"strategy"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if !validRoutingStrategy(in.Strategy) {
+			fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, or adaptive")
+			return
+		}
+		if _, err := a.db.Exec(`INSERT INTO settings(key,value) VALUES('routing_strategy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, in.Strategy); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if in.Strategy == string(StrategyOrderedRoundRobin) {
+			a.routeMu.Lock()
+			a.roundRobinCursor = map[string]int{}
+			a.routeMu.Unlock()
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"strategy": in.Strategy})
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or PATCH required")
+	}
 }
 func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	if r.Method != http.MethodGet {
@@ -819,7 +877,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			limit = x
 		}
 	}
-	rows, err := a.db.Query(`SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cost_micros,l.cost_type,COALESCE(p.name,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id ORDER BY l.id DESC LIMIT ?`, limit)
+	rows, err := a.db.Query(`SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,COALESCE(p.name,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id ORDER BY l.id DESC LIMIT ?`, limit)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
 		return
@@ -830,8 +888,8 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		var id, attempt, stream, success, status, latency int
 		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName string
 		var firstByte sql.NullInt64
-		var input, output, cost int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cost, &ct, &providerName); err != nil {
+		var input, output, cached, reasoning, cost int64
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &providerName); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -839,7 +897,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if firstByte.Valid {
 			firstByteMS = firstByte.Int64
 		}
-		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cost_micros": cost, "cost_type": ct})
+		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct})
 	}
 	writeJSON(w, 200, out)
 }

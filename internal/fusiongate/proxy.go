@@ -48,6 +48,65 @@ func observeFirstByte(body io.ReadCloser, onFirstByte func()) io.ReadCloser {
 	return &firstByteReadCloser{ReadCloser: body, onFirstByte: onFirstByte}
 }
 
+// sseUsageObserver passively reads OpenAI-style SSE events for their final usage
+// payload. It never changes the response bytes sent to the downstream client.
+type sseUsageObserver struct {
+	pending []byte
+	usage   Usage
+}
+
+const maxUsageSSEEvent = 1 << 20
+
+func (o *sseUsageObserver) Write(p []byte) (int, error) {
+	// Normalize only the observer copy so both LF and CRLF SSE delimiters work.
+	o.pending = append(o.pending, bytes.ReplaceAll(p, []byte("\r"), nil)...)
+	for {
+		end := bytes.Index(o.pending, []byte("\n\n"))
+		if end < 0 {
+			if len(o.pending) > maxUsageSSEEvent {
+				o.pending = o.pending[:0]
+			}
+			break
+		}
+		o.observeEvent(o.pending[:end])
+		o.pending = o.pending[end+2:]
+	}
+	return len(p), nil
+}
+
+func (o *sseUsageObserver) finish() Usage {
+	if len(o.pending) > 0 {
+		o.observeEvent(o.pending)
+		o.pending = nil
+	}
+	return o.usage
+}
+
+func (o *sseUsageObserver) observeEvent(event []byte) {
+	if len(event) > maxUsageSSEEvent {
+		return
+	}
+	var data []string
+	for _, line := range strings.Split(strings.TrimSpace(string(event)), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "data:") {
+			data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	payload := strings.Join(data, "\n")
+	if payload == "" || payload == "[DONE]" {
+		return
+	}
+	var decoded map[string]any
+	if json.Unmarshal([]byte(payload), &decoded) != nil {
+		return
+	}
+	usage := parseOpenAIUsage(decoded)
+	if usage.Input != 0 || usage.Output != 0 || usage.Cached != 0 || usage.Reasoning != 0 {
+		o.usage = usage
+	}
+}
+
 var hopByHopHeaders = map[string]bool{
 	"Connection":          true,
 	"Keep-Alive":          true,
@@ -239,25 +298,34 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
 		w.WriteHeader(resp.StatusCode)
+		var usageObserver *sseUsageObserver
+		out := io.Writer(w)
+		if options.ParseOpenAIUse && !options.Transparent {
+			usageObserver = &sseUsageObserver{usage: Usage{CostType: "unknown"}}
+			out = io.MultiWriter(w, usageObserver)
+		}
 		if n > 0 {
-			if _, err := w.Write(first[:n]); err != nil {
+			if _, err := out.Write(first[:n]); err != nil {
 				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: err}
 			}
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}
 		}
-		if readErr == io.EOF {
-			return attemptResult{Status: resp.StatusCode, Handled: true, Usage: Usage{CostType: "unknown"}}
-		}
-		_, copyErr := io.Copy(w, resp.Body)
-		if copyErr != nil {
-			if downstreamCanceled(incoming) {
-				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_canceled", Err: copyErr}
+		if readErr != io.EOF {
+			if _, copyErr := io.Copy(out, resp.Body); copyErr != nil {
+				if downstreamCanceled(incoming) {
+					return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_canceled", Err: copyErr}
+				}
+				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "upstream_stream_interrupted", Err: copyErr}
 			}
-			return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "upstream_stream_interrupted", Err: copyErr}
 		}
-		return attemptResult{Status: resp.StatusCode, Handled: true, Usage: Usage{CostType: "unknown"}}
+		usage := Usage{CostType: "unknown"}
+		if usageObserver != nil {
+			usage = usageObserver.finish()
+			cost(z, &usage)
+		}
+		return attemptResult{Status: resp.StatusCode, Handled: true, Usage: usage}
 	}
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBufferedUpstreamBody+1))

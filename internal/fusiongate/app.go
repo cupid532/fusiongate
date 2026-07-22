@@ -166,7 +166,7 @@ func (a *App) migrate(ctx context.Context) error {
   CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS providers (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, base_url TEXT NOT NULL,
-    credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 0,
+    credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 1,
     weight INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'unknown', notes TEXT NOT NULL DEFAULT '',
     passthrough_mode TEXT NOT NULL DEFAULT 'normalized', client_policy TEXT NOT NULL DEFAULT 'any',
     max_concurrency INTEGER NOT NULL DEFAULT 0, request_timeout_ms INTEGER NOT NULL DEFAULT 120000,
@@ -200,6 +200,9 @@ func (a *App) migrate(ctx context.Context) error {
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
   `)
 	if err != nil {
+		return err
+	}
+	if _, err := a.db.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('routing_strategy','priority_failover') ON CONFLICT(key) DO NOTHING`); err != nil {
 		return err
 	}
 	hadSortOrder, err := hasColumn(ctx, a.db, "model_routes", "sort_order")
@@ -384,6 +387,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/keys", a.admin(a.keys))
 	mux.HandleFunc("/api/admin/keys/", a.admin(a.keyByID))
 	mux.HandleFunc("/api/admin/dashboard", a.admin(a.dashboard))
+	mux.HandleFunc("/api/admin/routing", a.admin(a.routing))
 	mux.HandleFunc("/api/admin/requests", a.admin(a.requests))
 	mux.HandleFunc("/v1/models", a.api(a.models))
 	mux.HandleFunc("/v1/chat/completions", a.api(a.chat))
