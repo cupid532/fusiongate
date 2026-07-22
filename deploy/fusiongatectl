@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+FUSIONGATE_HOME="${FUSIONGATE_HOME:-/opt/fusiongate}"
+APP_DIR="$FUSIONGATE_HOME/app"
+COMPOSE_FILE="$APP_DIR/deploy/compose.production.yml"
+COMPOSE_ENV="$FUSIONGATE_HOME/config/compose.env"
+BACKUP_DIR="${FUSIONGATE_BACKUP_DIR:-/var/backups/fusiongate}"
+
+compose() {
+  docker compose --project-directory "$APP_DIR" --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" "$@"
+}
+
+require_install() {
+  [[ -f "$FUSIONGATE_HOME/.fusiongate-install" && -f "$COMPOSE_FILE" ]] || {
+    echo "FusionGate is not installed at $FUSIONGATE_HOME" >&2
+    exit 1
+  }
+}
+
+require_root() {
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || {
+    echo "This command requires root. Use: sudo fusiongatectl $*" >&2
+    exit 1
+  }
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  start|stop|restart)
+    require_root "$cmd"
+    require_install
+    compose "$cmd"
+    ;;
+  status)
+    require_install
+    compose ps
+    ;;
+  logs)
+    require_install
+    compose logs -f --tail "${1:-200}"
+    ;;
+  health)
+    require_install
+    domain="$(sed -n 's/^FUSIONGATE_DOMAIN=//p' "$COMPOSE_ENV" | head -1)"
+    curl -fsS "https://${domain}/healthz"
+    echo
+    ;;
+  update)
+    require_root "$cmd"
+    require_install
+    exec "$APP_DIR/deploy/install.sh" --update
+    ;;
+  backup)
+    require_root "$cmd"
+    require_install
+    install -d -m 0700 "$BACKUP_DIR"
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    archive="$BACKUP_DIR/fusiongate-$stamp.tar.gz"
+    compose stop fusiongate
+    trap 'compose start fusiongate >/dev/null 2>&1 || true' EXIT
+    tar -C "$FUSIONGATE_HOME" -czf "$archive" data config
+    chmod 0600 "$archive"
+    compose start fusiongate
+    trap - EXIT
+    echo "$archive"
+    ;;
+  help|*)
+    cat <<'USAGE'
+Usage: fusiongatectl <command>
+
+Commands:
+  status          Show container status
+  health          Check the public HTTPS health endpoint
+  logs [lines]    Follow logs (default: last 200 lines)
+  start|stop      Start or stop services
+  restart         Restart services
+  update          Download the configured GitHub ref and rebuild
+  backup          Create a protected backup under /var/backups/fusiongate
+USAGE
+    ;;
+esac

@@ -1,0 +1,16 @@
+services:
+  fusiongate:
+    build: .
+    image: fusiongate:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FUSIONGATE_ADDR: 0.0.0.0:8787
+      FUSIONGATE_DATA_DIR: /data
+    ports:
+      # Bind to loopback by default. Use a VPN or authenticated reverse proxy for remote access.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/data
+    security_opt:
+      - no-new-privileges:true

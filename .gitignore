@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+data/
+bin/
+run/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

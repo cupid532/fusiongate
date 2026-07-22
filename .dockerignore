@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+data
+run
+bin
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

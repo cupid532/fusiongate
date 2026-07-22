@@ -1,0 +1,22 @@
+{$FUSIONGATE_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+
+    reverse_proxy fusiongate:8787 {
+        flush_interval -1
+        transport http {
+            dial_timeout 10s
+            response_header_timeout 130s
+        }
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

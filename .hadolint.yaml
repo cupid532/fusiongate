@@ -1,0 +1,4 @@
+ignored:
+  # Alpine repository snapshots are pinned by the base image tag; exact package
+  # versions make rebuilds fail as repositories receive security updates.
+  - DL3018
