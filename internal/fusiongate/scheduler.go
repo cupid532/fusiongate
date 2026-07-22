@@ -17,6 +17,7 @@ type providerRuntime struct {
 	ConsecutiveFailures int
 	CircuitOpenUntil    time.Time
 	HalfOpenProbe       bool
+	AutoDisabled        bool
 	EWMALatencyMS       float64
 }
 
@@ -252,6 +253,11 @@ func providerStatus(result attemptResult) string {
 	return "healthy"
 }
 
+// autoDisableAfterConsecutiveFailures is deliberately independent from the
+// temporary circuit-breaker threshold: a channel that repeatedly fails across
+// cooldown probes is taken out of rotation until an administrator enables it.
+const autoDisableAfterConsecutiveFailures = 5
+
 func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.Duration) {
 	a.routeMu.Lock()
 	state := a.stateForLocked(z.Provider)
@@ -259,6 +265,12 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		state.Inflight--
 	}
 	state.HalfOpenProbe = false
+	// Requests already in flight may finish after this channel has been
+	// auto-disabled. They must not reopen it or overwrite its failure history.
+	if state.AutoDisabled {
+		a.routeMu.Unlock()
+		return
+	}
 	latencyMS := float64(latency.Milliseconds())
 	if latencyMS < 1 {
 		latencyMS = 1
@@ -278,6 +290,7 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	lastSuccessAt := ""
 	lastFailureAt := ""
 	openUntil := ""
+	autoDisabled := false
 	if isProviderFailure(result) {
 		state.ConsecutiveFailures++
 		lastFailureAt = now()
@@ -291,7 +304,14 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		}
 		immediate := result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden ||
 			(result.Status == http.StatusTooManyRequests && result.RetryAfter > 0)
-		if immediate || state.ConsecutiveFailures >= threshold {
+		if state.ConsecutiveFailures >= autoDisableAfterConsecutiveFailures {
+			// Closing, rather than deleting, preserves the channel and its
+			// diagnostics while excluding it from every new route resolution.
+			state.AutoDisabled = true
+			state.CircuitOpenUntil = time.Time{}
+			autoDisabled = true
+			status = "disabled"
+		} else if immediate || state.ConsecutiveFailures >= threshold {
 			cooldown := time.Duration(z.Provider.CooldownSeconds) * time.Second
 			if cooldown <= 0 {
 				cooldown = 30 * time.Second
@@ -328,7 +348,7 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	}
 	a.routeMu.Unlock()
 
-	_, err := a.db.Exec(`UPDATE providers SET status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=? WHERE id=?`, status, failures, nullableTime(openUntil), lastError, ewma, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), z.Provider.ID)
+	_, err := a.db.Exec(`UPDATE providers SET enabled=CASE WHEN ? THEN 0 ELSE enabled END,status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=? WHERE id=?`, boolInt(autoDisabled), status, failures, nullableTime(openUntil), lastError, ewma, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), z.Provider.ID)
 	if err != nil {
 		a.log.Error("provider health update", "provider_id", z.Provider.ID, "error", err)
 	}

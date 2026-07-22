@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -317,6 +318,21 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "invalid_request", "invalid provider scheduling or forwarding configuration")
 			return
 		}
+		// Re-enabling a channel starts a fresh health window. This matters most
+		// for channels automatically closed after five consecutive failures.
+		resetOnEnable := false
+		if in.Enabled != nil && *in.Enabled {
+			var enabled int
+			if err := a.db.QueryRow(`SELECT enabled FROM providers WHERE id=?`, id).Scan(&enabled); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					fail(w, http.StatusNotFound, "not_found", "provider not found")
+					return
+				}
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			resetOnEnable = !strBool(enabled)
+		}
 		res, err := a.db.Exec(`UPDATE providers SET enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),updated_at=? WHERE id=?`, maybeBool(in.Enabled), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, now(), id)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -327,7 +343,7 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusNotFound, "not_found", "provider not found")
 			return
 		}
-		if in.ResetHealth {
+		if in.ResetHealth || resetOnEnable {
 			_, err = a.db.Exec(`UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)
 			if err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())

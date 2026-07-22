@@ -562,3 +562,91 @@ func TestDownstreamCancellationDoesNotDegradeProvider(t *testing.T) {
 		t.Fatalf("cancellation degraded provider: failures=%d open_until=%s calls=%d", failures, openUntil, upstreamCalls.Load())
 	}
 }
+
+func TestProviderAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	providerID := insertTestProvider(t, a, "auto-close", "openai_compatible", "http://provider.test", "secret", 1, 1, "normalized", "any", 0, 10, 30)
+	insertTestRoute(t, a, providerID, "model", "upstream", "chat", 1)
+	z := resolvedRoute{
+		Route:    Route{ID: 1, ProviderID: providerID, PublicName: "model", UpstreamModel: "upstream"},
+		Provider: Provider{ID: providerID, FailureThreshold: 10, CooldownSeconds: 30},
+	}
+	failure := attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_server_error"}
+	for range autoDisableAfterConsecutiveFailures {
+		a.completeRoute(z, failure, time.Millisecond)
+	}
+
+	var enabled, failures int
+	var status, lastError string
+	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 || failures != autoDisableAfterConsecutiveFailures || status != "disabled" || lastError != "upstream_server_error" {
+		t.Fatalf("auto-closed provider enabled=%d failures=%d status=%q last_error=%q", enabled, failures, status, lastError)
+	}
+	if _, err := a.resolve(context.Background(), "model", "chat"); err == nil {
+		t.Fatal("automatically closed provider remained routable")
+	}
+
+	reenable := httptest.NewRequest(http.MethodPatch, "/api/admin/providers/"+intString(providerID), strings.NewReader(`{"enabled":true}`))
+	rec := httptest.NewRecorder()
+	a.providerByID(rec, reenable, adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-enable status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 || failures != 0 || status != "unknown" || lastError != "" {
+		t.Fatalf("re-enabled provider enabled=%d failures=%d status=%q last_error=%q", enabled, failures, status, lastError)
+	}
+	if _, err := a.resolve(context.Background(), "model", "chat"); err != nil {
+		t.Fatalf("re-enabled provider did not return to routing: %v", err)
+	}
+}
+
+func TestConnectionFailureFailsOverBeforeAnyResponse(t *testing.T) {
+	primary := httptest.NewServer(http.NotFoundHandler())
+	primaryURL := primary.URL
+	primary.Close()
+
+	var backupCalls atomic.Int32
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": "backup after connect failure"}}},
+		})
+	}))
+	defer backup.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	p1 := insertTestProvider(t, a, "offline-primary", "openai_compatible", primaryURL, "one", 2, 1, "normalized", "any", 0, 3, 30)
+	p2 := insertTestProvider(t, a, "live-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, p1, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, p2, "model", "upstream", "chat", 1)
+	key := insertTestKey(t, a, false)
+
+	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"model","messages":[]}`, "test/1")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "backup after connect failure") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if backupCalls.Load() != 1 {
+		t.Fatalf("backup calls=%d, want 1", backupCalls.Load())
+	}
+	var attempts int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts=%d, want 2", attempts)
+	}
+}
