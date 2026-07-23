@@ -21,6 +21,22 @@ const (
 
 var errSelectedModelsUnavailable = errors.New("one or more selected models are no longer available")
 
+// discoveryHTTPError retains only a safe HTTP status so callers can decide
+// whether an OAuth credential refresh is warranted without exposing upstream
+// response bodies or credentials.
+type discoveryHTTPError struct {
+	Status int
+}
+
+func (e *discoveryHTTPError) Error() string {
+	return fmt.Sprintf("upstream model endpoint returned HTTP %d", e.Status)
+}
+
+func isDiscoveryAuthenticationError(err error) bool {
+	var httpErr *discoveryHTTPError
+	return errors.As(err, &httpErr) && (httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden)
+}
+
 type discoveredModel struct {
 	ID                      string   `json:"id"`
 	UpstreamID              string   `json:"-"`
@@ -86,13 +102,11 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 	}
 	p.Credential = token
 	if authKind == "oauth" {
+		// Discovery first uses the stored access token. Some OAuth providers
+		// issue tokens that remain accepted after locally recorded expiry
+		// metadata, while their refresh endpoint may no longer be available.
+		// We only refresh after the model endpoint explicitly rejects it.
 		p.AuthCredential = &authCredential
-		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type}, Credential: token, AuthCredential: &authCredential}
-		if err := a.ensureFreshProviderCredential(ctx, &z); err != nil {
-			return p, err
-		}
-		p.Credential = z.Credential
-		p.AuthCredential = z.AuthCredential
 	}
 	return p, nil
 }
@@ -298,7 +312,7 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 			return nil, errors.New("upstream model list is too large")
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = fmt.Errorf("upstream model endpoint returned HTTP %d", resp.StatusCode)
+			lastErr = &discoveryHTTPError{Status: resp.StatusCode}
 			if resp.StatusCode == http.StatusNotFound && i+1 < len(urls) {
 				continue
 			}
@@ -335,6 +349,17 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	allModels, err := a.fetchDiscoveredModels(ctx, p)
+	if err != nil && p.AuthCredential != nil && isDiscoveryAuthenticationError(err) {
+		// A 401/403 is the only discovery failure that can justify refreshing.
+		// Force a single refresh because the provider may reject a token even
+		// when its locally recorded expiry has not yet elapsed.
+		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type}, Credential: p.Credential, AuthCredential: p.AuthCredential}
+		if refreshErr := a.refreshProviderCredential(ctx, &z, true); refreshErr != nil {
+			return modelDiscoveryResult{}, refreshErr
+		}
+		p.Credential, p.AuthCredential = z.Credential, z.AuthCredential
+		allModels, err = a.fetchDiscoveredModels(ctx, p)
+	}
 	if err != nil {
 		return modelDiscoveryResult{}, err
 	}

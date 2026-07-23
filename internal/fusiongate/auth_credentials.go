@@ -1412,12 +1412,18 @@ func decodeStoredCredential(kind string, plaintext string) (ProviderCredential, 
 }
 
 func (a *App) ensureFreshProviderCredential(ctx context.Context, z *resolvedRoute) error {
+	return a.refreshProviderCredential(ctx, z, false)
+}
+
+// refreshProviderCredential refreshes an OAuth credential when it is near expiry,
+// or unconditionally when force is true after an upstream authentication rejection.
+func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, force bool) error {
 	if z == nil || z.AuthCredential == nil {
 		return nil
 	}
 	credential := *z.AuthCredential
 	expires := parseTime(credential.ExpiresAt)
-	if expires == nil || expires.After(time.Now().Add(2*time.Minute)) {
+	if !force && (expires == nil || expires.After(time.Now().Add(2*time.Minute))) {
 		return nil
 	}
 	if credential.RefreshToken == "" {
@@ -1438,9 +1444,11 @@ func (a *App) ensureFreshProviderCredential(ctx context.Context, z *resolvedRout
 	if err != nil {
 		return err
 	}
-	if currentExpires := parseTime(current.ExpiresAt); currentExpires == nil || currentExpires.After(time.Now().Add(2*time.Minute)) {
-		z.AuthCredential, z.Credential = &current, token
-		return nil
+	if !force {
+		if currentExpires := parseTime(current.ExpiresAt); currentExpires == nil || currentExpires.After(time.Now().Add(2*time.Minute)) {
+			z.AuthCredential, z.Credential = &current, token
+			return nil
+		}
 	}
 	refreshed, err := a.refreshOAuthCredential(ctx, current)
 	if err != nil {

@@ -417,3 +417,128 @@ func TestDiscoverAndImportAllOAuthModelsUsesSingleRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthDiscoveryUsesStoredAccessTokenBeforeExpiredMetadataRefresh(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	var modelCalls atomic.Int32
+	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://models.example.test/v1/models":
+			modelCalls.Add(1)
+			if got := r.Header.Get("Authorization"); got != "Bearer still-accepted-access" {
+				t.Fatalf("authorization=%q", got)
+			}
+			return authJSONResponse(http.StatusOK, `{"data":[{"id":"GROK-4"}]}`), nil
+		case codexOAuthTokenURL:
+			t.Fatal("discovery must not refresh before the model endpoint rejects the stored token")
+			return nil, nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}
+
+	credential := ProviderCredential{
+		Version:      1,
+		Kind:         "oauth",
+		Platform:     "codex",
+		Source:       "json",
+		AccessToken:  "still-accepted-access",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	}
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "expired metadata", 1, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET base_url=? WHERE id=?`, "https://models.example.test", providerID); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, imported, err := a.discoverAndImportAllModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelCalls.Load() != 1 || discovery.Discovered != 1 || imported.Added != 1 {
+		t.Fatalf("calls=%d discovery=%#v imported=%#v", modelCalls.Load(), discovery, imported)
+	}
+}
+
+func TestOAuthDiscoveryRefreshesOnceAfterAuthenticationRejection(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	var modelCalls, refreshCalls atomic.Int32
+	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://models.example.test/v1/models":
+			modelCalls.Add(1)
+			switch r.Header.Get("Authorization") {
+			case "Bearer stale-access":
+				return authJSONResponse(http.StatusUnauthorized, `{"error":"invalid token"}`), nil
+			case "Bearer fresh-access":
+				return authJSONResponse(http.StatusOK, `{"data":[{"id":"MODEL-FRESH"}]}`), nil
+			default:
+				t.Fatalf("unexpected authorization=%q", r.Header.Get("Authorization"))
+				return nil, nil
+			}
+		case codexOAuthTokenURL:
+			refreshCalls.Add(1)
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.Form.Get("refresh_token"); got != "refresh-token" {
+				t.Fatalf("refresh token form=%q", got)
+			}
+			return authJSONResponse(http.StatusOK, `{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":3600}`), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}
+
+	credential := ProviderCredential{
+		Version:      1,
+		Kind:         "oauth",
+		Platform:     "codex",
+		Source:       "json",
+		AccessToken:  "stale-access",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "refresh after 401", 1, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET base_url=? WHERE id=?`, "https://models.example.test", providerID); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, imported, err := a.discoverAndImportAllModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelCalls.Load() != 2 || refreshCalls.Load() != 1 || discovery.Discovered != 1 || imported.Added != 1 {
+		t.Fatalf("models=%d refresh=%d discovery=%#v imported=%#v", modelCalls.Load(), refreshCalls.Load(), discovery, imported)
+	}
+	var encrypted []byte
+	if err := a.db.QueryRow(`SELECT credential FROM providers WHERE id=?`, providerID).Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := a.decrypt(encrypted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, token, err := decodeStoredCredential("oauth", plaintext)
+	if err != nil || token != "fresh-access" || updated.RefreshToken != "fresh-refresh" {
+		t.Fatalf("updated credential token=%q refresh=%q err=%v", token, updated.RefreshToken, err)
+	}
+}
