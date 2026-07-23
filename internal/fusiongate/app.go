@@ -29,16 +29,18 @@ type Config struct {
 }
 
 type App struct {
-	db               *sql.DB
-	cfg              Config
-	aead             cipher.AEAD
-	client           *http.Client
-	log              *slog.Logger
-	mu               sync.Mutex
-	rate             map[string]*rateWindow
-	routeMu          sync.Mutex
-	providerStates   map[int64]*providerRuntime
-	roundRobinCursor map[string]int
+	db                *sql.DB
+	cfg               Config
+	aead              cipher.AEAD
+	client            *http.Client
+	log               *slog.Logger
+	mu                sync.Mutex
+	rate              map[string]*rateWindow
+	routeMu           sync.Mutex
+	providerStates    map[int64]*providerRuntime
+	roundRobinCursor  map[string]int
+	ledgerCleanupMu   sync.Mutex
+	lastLedgerCleanup time.Time
 }
 type rateWindow struct {
 	At    time.Time
@@ -113,6 +115,7 @@ type Usage struct {
 	Input, Output, Cached, Reasoning int64
 	CostMicros                       int64
 	CostType                         string
+	Reported                         bool
 }
 
 func New(cfg Config) (*App, error) {
@@ -150,6 +153,10 @@ func New(cfg Config) (*App, error) {
 	db.SetMaxOpenConns(1)
 	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}}
 	if err := a.migrate(context.Background()); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := a.pruneRequestLedger(context.Background(), true); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -195,7 +202,8 @@ func (a *App) migrate(ctx context.Context) error {
     output_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     cost_micros INTEGER NOT NULL DEFAULT 0, cost_type TEXT NOT NULL DEFAULT 'unknown',
     gateway_request_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 1, retry_reason TEXT NOT NULL DEFAULT '',
-    first_byte_ms INTEGER);
+    first_byte_ms INTEGER, usage_reported INTEGER NOT NULL DEFAULT 0,
+    api_key_name TEXT NOT NULL DEFAULT '', api_key_prefix TEXT NOT NULL DEFAULT '', provider_name TEXT NOT NULL DEFAULT '');
   CREATE INDEX IF NOT EXISTS idx_ledger_created ON request_ledger(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
   `)
@@ -226,6 +234,10 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "first_byte_ms", "INTEGER"},
+		{"request_ledger", "usage_reported", "INTEGER NOT NULL DEFAULT 0"},
+		{"request_ledger", "api_key_name", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "api_key_prefix", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "provider_name", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "encrypted_key", "BLOB"},
 		{"model_routes", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 	} {
@@ -240,7 +252,12 @@ func (a *App) migrate(ctx context.Context) error {
 	}
 	_, err = a.db.ExecContext(ctx, `
 CREATE INDEX IF NOT EXISTS idx_ledger_gateway_request ON request_ledger(gateway_request_id, attempt);
-CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_order, id);`)
+CREATE INDEX IF NOT EXISTS idx_ledger_usage_dimensions ON request_ledger(created_at,api_key_id,provider_id,public_model);
+CREATE INDEX IF NOT EXISTS idx_ledger_key_created ON request_ledger(api_key_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_provider_created ON request_ledger(provider_id,created_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_model_created ON request_ledger(public_model,created_at);
+CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_order, id);
+UPDATE request_ledger SET usage_reported=1 WHERE usage_reported=0 AND (input_tokens>0 OR output_tokens>0 OR cached_tokens>0 OR reasoning_tokens>0);`)
 	return err
 }
 
@@ -389,6 +406,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/dashboard", a.admin(a.dashboard))
 	mux.HandleFunc("/api/admin/routing", a.admin(a.routing))
 	mux.HandleFunc("/api/admin/requests", a.admin(a.requests))
+	mux.HandleFunc("/api/admin/token-usage", a.admin(a.tokenUsage))
 	mux.HandleFunc("/v1/models", a.api(a.models))
 	mux.HandleFunc("/v1/chat/completions", a.api(a.chat))
 	mux.HandleFunc("/v1/responses", a.api(a.responses))

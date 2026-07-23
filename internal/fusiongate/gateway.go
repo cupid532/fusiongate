@@ -17,6 +17,8 @@ import (
 
 type authKey struct {
 	ID          int64
+	Name        string
+	Prefix      string
 	Hash        string
 	AllowAll    bool
 	AllowModels string
@@ -68,7 +70,7 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	var x authKey
 	var allowAll, allowImages, revoked int
 	var expiresAt, createdAt string
-	err := a.db.QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, new(string), new(string), &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt)
+	err := a.db.QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt)
 	if err != nil {
 		return authKey{}, false
 	}
@@ -208,8 +210,11 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 func requestID() string { return "req_" + hex.EncodeToString(randomBytes(12)) }
 
 func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, gatewayID string, attempt int, retryReason string) (int64, string) {
+	if err := a.pruneRequestLedger(context.Background(), false); err != nil {
+		a.log.Error("request ledger retention cleanup", "error", err)
+	}
 	attemptID := gatewayID + "_a" + strconv.Itoa(attempt)
-	res, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream))
+	res, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,api_key_name,api_key_prefix,provider_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), k.Name, k.Prefix, z.Provider.Name)
 	if err != nil {
 		a.log.Error("ledger insert", "error", err)
 		return 0, attemptID
@@ -235,7 +240,7 @@ func (a *App) endLedger(id int64, success bool, status int, errorType string, st
 	if id == 0 {
 		return
 	}
-	_, err := a.db.Exec(`UPDATE request_ledger SET completed_at=?,success=?,status_code=?,error_type=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_tokens=?,reasoning_tokens=?,cost_micros=?,cost_type=? WHERE id=?`, now(), boolInt(success), status, errorType, time.Since(start).Milliseconds(), usage.Input, usage.Output, usage.Cached, usage.Reasoning, usage.CostMicros, usage.CostType, id)
+	_, err := a.db.Exec(`UPDATE request_ledger SET completed_at=?,success=?,status_code=?,error_type=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_tokens=?,reasoning_tokens=?,cost_micros=?,cost_type=?,usage_reported=? WHERE id=?`, now(), boolInt(success), status, errorType, time.Since(start).Milliseconds(), usage.Input, usage.Output, usage.Cached, usage.Reasoning, usage.CostMicros, usage.CostType, boolInt(usage.Reported), id)
 	if err != nil {
 		a.log.Error("ledger update", "error", err)
 	}
@@ -268,22 +273,102 @@ func getBody(r *http.Request) (map[string]any, []byte, error) {
 
 func parseOpenAIUsage(payload map[string]any) Usage {
 	usage := Usage{CostType: "unknown"}
-	m, _ := payload["usage"].(map[string]any)
+	m, ok := payload["usage"].(map[string]any)
+	if !ok {
+		if response, nested := payload["response"].(map[string]any); nested {
+			m, ok = response["usage"].(map[string]any)
+		}
+	}
+	if !ok {
+		return usage
+	}
+	usage.Reported = true
 	usage.Input = num(m["prompt_tokens"])
-	if usage.Input == 0 {
+	if _, exists := m["prompt_tokens"]; !exists {
 		usage.Input = num(m["input_tokens"])
 	}
 	usage.Output = num(m["completion_tokens"])
-	if usage.Output == 0 {
+	if _, exists := m["completion_tokens"]; !exists {
 		usage.Output = num(m["output_tokens"])
 	}
 	if details, ok := m["prompt_tokens_details"].(map[string]any); ok {
 		usage.Cached = num(details["cached_tokens"])
 	}
+	if details, ok := m["input_tokens_details"].(map[string]any); ok {
+		usage.Cached = num(details["cached_tokens"])
+	}
 	if details, ok := m["completion_tokens_details"].(map[string]any); ok {
 		usage.Reasoning = num(details["reasoning_tokens"])
 	}
+	if details, ok := m["output_tokens_details"].(map[string]any); ok {
+		usage.Reasoning = num(details["reasoning_tokens"])
+	}
 	return usage
+}
+
+func parseAnthropicUsage(payload map[string]any) Usage {
+	usage := Usage{CostType: "unknown"}
+	m, ok := payload["usage"].(map[string]any)
+	if !ok {
+		if message, nested := payload["message"].(map[string]any); nested {
+			m, ok = message["usage"].(map[string]any)
+		}
+	}
+	if !ok {
+		return usage
+	}
+	usage.Reported = true
+	cacheCreation := num(m["cache_creation_input_tokens"])
+	cacheRead := num(m["cache_read_input_tokens"])
+	usage.Input = num(m["input_tokens"]) + cacheCreation + cacheRead
+	usage.Output = num(m["output_tokens"])
+	usage.Cached = cacheRead
+	if details, ok := m["output_tokens_details"].(map[string]any); ok {
+		usage.Reasoning = num(details["thinking_tokens"])
+	}
+	return usage
+}
+
+func parseGeminiUsage(payload map[string]any) Usage {
+	usage := Usage{CostType: "unknown"}
+	metadata, ok := payload["usageMetadata"].(map[string]any)
+	if !ok {
+		return usage
+	}
+	usage.Reported = true
+	usage.Input = num(metadata["promptTokenCount"])
+	usage.Reasoning = num(metadata["thoughtsTokenCount"])
+	usage.Output = num(metadata["candidatesTokenCount"]) + usage.Reasoning
+	if total := num(metadata["totalTokenCount"]); total >= usage.Input {
+		usage.Output = total - usage.Input
+	}
+	usage.Cached = num(metadata["cachedContentTokenCount"])
+	return usage
+}
+
+func mergeUsage(dst *Usage, next Usage) {
+	if !next.Reported {
+		return
+	}
+	dst.Reported = true
+	if next.Input > dst.Input {
+		dst.Input = next.Input
+	}
+	if next.Output > dst.Output {
+		dst.Output = next.Output
+	}
+	if next.Cached > dst.Cached {
+		dst.Cached = next.Cached
+	}
+	if next.Reasoning > dst.Reasoning {
+		dst.Reasoning = next.Reasoning
+	}
+	if next.CostMicros > dst.CostMicros {
+		dst.CostMicros = next.CostMicros
+	}
+	if next.CostType != "" && next.CostType != "unknown" {
+		dst.CostType = next.CostType
+	}
 }
 
 func num(value any) int64 {
@@ -398,7 +483,7 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 			return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 		}
 	}
-	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, ParseOpenAIUse: true, GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte})
+	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte})
 }
 
 func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
@@ -520,12 +605,7 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 			}
 		}
 	}
-	usage := Usage{}
-	if sourceUsage, ok := source["usage"].(map[string]any); ok {
-		usage.Input = num(sourceUsage["input_tokens"])
-		usage.Output = num(sourceUsage["output_tokens"])
-		usage.Cached = num(sourceUsage["cache_read_input_tokens"])
-	}
+	usage := parseAnthropicUsage(source)
 	cost(z, &usage)
 	writeJSON(w, http.StatusOK, map[string]any{"id": "chatcmpl-" + rid, "object": "chat.completion", "created": time.Now().Unix(), "model": z.Route.PublicName, "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": source["stop_reason"]}}, "usage": map[string]any{"prompt_tokens": usage.Input, "completion_tokens": usage.Output, "total_tokens": usage.Input + usage.Output}})
 	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
@@ -588,12 +668,7 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 			content += textContent(part)
 		}
 	}
-	usage := Usage{}
-	if metadata, ok := source["usageMetadata"].(map[string]any); ok {
-		usage.Input = num(metadata["promptTokenCount"])
-		usage.Output = num(metadata["candidatesTokenCount"])
-		usage.Cached = num(metadata["cachedContentTokenCount"])
-	}
+	usage := parseGeminiUsage(source)
 	cost(z, &usage)
 	writeJSON(w, http.StatusOK, map[string]any{"id": "chatcmpl-" + rid, "object": "chat.completion", "created": time.Now().Unix(), "model": z.Route.PublicName, "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": usage.Input, "completion_tokens": usage.Output, "total_tokens": usage.Input + usage.Output}})
 	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
@@ -688,7 +763,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 			}
 		}
-		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte})
+		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, UsageFormat: "anthropic", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte})
 	})
 }
 

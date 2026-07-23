@@ -127,7 +127,7 @@ func TestSSEUsageObserverReadsUsageWithoutChangingStream(t *testing.T) {
 		}
 	}
 	usage := observer.finish()
-	if usage.Input != 12 || usage.Output != 5 || usage.Cached != 3 || usage.Reasoning != 2 {
+	if !usage.Reported || usage.Input != 12 || usage.Output != 5 || usage.Cached != 3 || usage.Reasoning != 2 {
 		t.Fatalf("stream usage=%+v", usage)
 	}
 }

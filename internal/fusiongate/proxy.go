@@ -21,7 +21,7 @@ type proxyOptions struct {
 	RawBody            []byte
 	Stream             bool
 	Transparent        bool
-	ParseOpenAIUse     bool
+	UsageFormat        string
 	GatewayID          string
 	SafeTransportRetry bool
 	OnFirstByte        func()
@@ -51,8 +51,9 @@ func observeFirstByte(body io.ReadCloser, onFirstByte func()) io.ReadCloser {
 // sseUsageObserver passively reads OpenAI-style SSE events for their final usage
 // payload. It never changes the response bytes sent to the downstream client.
 type sseUsageObserver struct {
-	pending []byte
-	usage   Usage
+	pending     []byte
+	usage       Usage
+	usageFormat string
 }
 
 const maxUsageSSEEvent = 1 << 20
@@ -101,9 +102,15 @@ func (o *sseUsageObserver) observeEvent(event []byte) {
 	if json.Unmarshal([]byte(payload), &decoded) != nil {
 		return
 	}
-	usage := parseOpenAIUsage(decoded)
-	if usage.Input != 0 || usage.Output != 0 || usage.Cached != 0 || usage.Reasoning != 0 {
-		o.usage = usage
+	var usage Usage
+	switch o.usageFormat {
+	case "anthropic":
+		usage = parseAnthropicUsage(decoded)
+	default:
+		usage = parseOpenAIUsage(decoded)
+	}
+	if usage.Reported {
+		mergeUsage(&o.usage, usage)
 	}
 }
 
@@ -300,8 +307,8 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		w.WriteHeader(resp.StatusCode)
 		var usageObserver *sseUsageObserver
 		out := io.Writer(w)
-		if options.ParseOpenAIUse && !options.Transparent {
-			usageObserver = &sseUsageObserver{usage: Usage{CostType: "unknown"}}
+		if options.UsageFormat != "" && !options.Transparent {
+			usageObserver = &sseUsageObserver{usage: Usage{CostType: "unknown"}, usageFormat: options.UsageFormat}
 			out = io.MultiWriter(w, usageObserver)
 		}
 		if n > 0 {
@@ -347,10 +354,15 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: "large_response_streamed", Err: writeErr, Usage: Usage{CostType: "unknown"}}
 	}
 	usage := Usage{CostType: "unknown"}
-	if options.ParseOpenAIUse && !options.Transparent {
+	if options.UsageFormat != "" && !options.Transparent {
 		var payload map[string]any
 		if json.Unmarshal(body, &payload) == nil {
-			usage = parseOpenAIUsage(payload)
+			switch options.UsageFormat {
+			case "anthropic":
+				usage = parseAnthropicUsage(payload)
+			default:
+				usage = parseOpenAIUsage(payload)
+			}
 			cost(z, &usage)
 		}
 	}
