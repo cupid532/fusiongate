@@ -242,6 +242,124 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 }
 
+const providerBatchMaxItems = 200
+
+func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodPost {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var in struct {
+		ProviderIDs []int64 `json:"provider_ids"`
+		Action      string  `json:"action"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	in.Action = strings.ToLower(strings.TrimSpace(in.Action))
+	if in.Action != "enable" && in.Action != "disable" && in.Action != "delete" {
+		fail(w, http.StatusBadRequest, "invalid_request", "action must be enable, disable, or delete")
+		return
+	}
+	if len(in.ProviderIDs) == 0 || len(in.ProviderIDs) > providerBatchMaxItems {
+		fail(w, http.StatusBadRequest, "invalid_request", "select between 1 and 200 providers")
+		return
+	}
+	ids := make([]int64, 0, len(in.ProviderIDs))
+	seen := make(map[int64]struct{}, len(in.ProviderIDs))
+	for _, id := range in.ProviderIDs {
+		if id < 1 {
+			fail(w, http.StatusBadRequest, "invalid_request", "provider_ids must contain positive integers")
+			return
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	defer tx.Rollback()
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := tx.Query(`SELECT id,auth_kind FROM providers WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	found := make(map[int64]string, len(ids))
+	for rows.Next() {
+		var id int64
+		var authKind string
+		if err := rows.Scan(&id, &authKind); err != nil {
+			rows.Close()
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		found[id] = authKind
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	if err := rows.Close(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	if len(found) != len(ids) {
+		fail(w, http.StatusBadRequest, "invalid_provider_selection", "one or more authentication files no longer exist")
+		return
+	}
+	for _, id := range ids {
+		if found[id] != "oauth" {
+			fail(w, http.StatusBadRequest, "invalid_provider_selection", "batch actions only support OAuth authentication files")
+			return
+		}
+	}
+
+	var res sql.Result
+	switch in.Action {
+	case "enable":
+		updateArgs := append([]any{now()}, args...)
+		res, err = tx.Exec(`UPDATE providers SET enabled=1,status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id IN (`+placeholders+`)`, updateArgs...)
+	case "disable":
+		updateArgs := append([]any{now()}, args...)
+		res, err = tx.Exec(`UPDATE providers SET enabled=0,updated_at=? WHERE id IN (`+placeholders+`)`, updateArgs...)
+	case "delete":
+		res, err = tx.Exec(`DELETE FROM providers WHERE id IN (`+placeholders+`)`, args...)
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	affected, err := res.RowsAffected()
+	if err != nil || affected != int64(len(ids)) {
+		if err == nil {
+			err = fmt.Errorf("expected to update %d providers, updated %d", len(ids), affected)
+		}
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	for _, id := range ids {
+		a.resetProviderRuntime(id)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"action": in.Action, "affected": affected})
+}
+
 func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	suffix := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/providers/"), "/")
 	parts := strings.Split(suffix, "/")

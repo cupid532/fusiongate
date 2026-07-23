@@ -423,6 +423,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/logout", a.logout)
 	mux.HandleFunc("/api/admin/session", a.admin(a.session))
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
+	mux.HandleFunc("/api/admin/providers/batch", a.admin(a.providerBatch))
 	mux.HandleFunc("/api/admin/providers/", a.admin(a.providerByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))

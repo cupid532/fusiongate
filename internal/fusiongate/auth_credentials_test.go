@@ -804,3 +804,145 @@ func TestGrokOAuthProxyUsesBearerAndSingleV1Prefix(t *testing.T) {
 		t.Fatalf("Authorization=%q", got)
 	}
 }
+
+func TestOAuthProviderBatchEnableDisable(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	first, _, err := a.saveOAuthProvider(context.Background(), "batch first", 3, ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "json", AccessToken: "first-access", AccountID: "first-account"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := a.saveOAuthProvider(context.Background(), "batch second", 2, ProviderCredential{Version: 1, Kind: "oauth", Platform: "claude", Source: "json", AccessToken: "second-access", AccountID: "second-account"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET status='degraded',consecutive_failures=4,circuit_open_until=?,last_error='temporary',last_failure_at=? WHERE id IN (?,?)`, time.Now().UTC().Add(time.Minute).Format(time.RFC3339), now(), first, second); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{first, second, first}, "action": "disable"})
+	rec := httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"affected":2`) {
+		t.Fatalf("disable status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var disabled int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id IN (?,?) AND enabled=0`, first, second).Scan(&disabled); err != nil {
+		t.Fatal(err)
+	}
+	if disabled != 2 {
+		t.Fatalf("disabled providers=%d", disabled)
+	}
+
+	body, _ = json.Marshal(map[string]any{"provider_ids": []int64{first, second}, "action": "enable"})
+	rec = httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("enable status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rows, err := a.db.Query(`SELECT enabled,status,consecutive_failures,COALESCE(circuit_open_until,''),last_error,COALESCE(last_failure_at,'') FROM providers WHERE id IN (?,?) ORDER BY id`, first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var enabled, failures int
+		var status, circuit, lastError, lastFailure string
+		if err := rows.Scan(&enabled, &status, &failures, &circuit, &lastError, &lastFailure); err != nil {
+			t.Fatal(err)
+		}
+		if enabled != 1 || status != "unknown" || failures != 0 || circuit != "" || lastError != "" || lastFailure != "" {
+			t.Fatalf("unexpected reset enabled=%d status=%q failures=%d circuit=%q error=%q failure_at=%q", enabled, status, failures, circuit, lastError, lastFailure)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("enabled rows=%d", count)
+	}
+}
+
+func TestOAuthProviderBatchDeleteCascadesRoutes(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	first, _, err := a.saveOAuthProvider(context.Background(), "delete first", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "json", AccessToken: "first-delete", AccountID: "delete-first"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := a.saveOAuthProvider(context.Background(), "delete second", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "json", AccessToken: "second-delete", AccountID: "delete-second"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertTestRoute(t, a, first, "batch-model", "batch-model", "chat,stream", 1)
+	insertTestRoute(t, a, second, "batch-model", "batch-model", "chat,stream", 1)
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{first, second}, "action": "delete"})
+	rec := httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var providers, routes int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id IN (?,?)`, first, second).Scan(&providers); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_routes WHERE provider_id IN (?,?)`, first, second).Scan(&routes); err != nil {
+		t.Fatal(err)
+	}
+	if providers != 0 || routes != 0 {
+		t.Fatalf("remaining providers=%d routes=%d", providers, routes)
+	}
+}
+
+func TestOAuthProviderBatchRejectsNonOAuthAtomically(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	oauthID, _, err := a.saveOAuthProvider(context.Background(), "batch oauth", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "json", AccessToken: "oauth-access", AccountID: "oauth-account"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regularID := insertTestProvider(t, a, "batch ordinary", "openai", "https://example.com", "ordinary-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{oauthID, regularID}, "action": "disable"})
+	rec := httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "only support OAuth") {
+		t.Fatalf("mixed status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var enabled int
+	if err := a.db.QueryRow(`SELECT enabled FROM providers WHERE id=?`, oauthID).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 {
+		t.Fatal("OAuth provider was modified despite rejected mixed batch")
+	}
+}
+
+func TestOAuthProviderBatchSelectionLimit(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ids := make([]int64, providerBatchMaxItems+1)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	body, _ := json.Marshal(map[string]any{"provider_ids": ids, "action": "enable"})
+	rec := httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "between 1 and 200") {
+		t.Fatalf("limit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
