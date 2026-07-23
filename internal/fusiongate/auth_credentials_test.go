@@ -159,6 +159,140 @@ func TestDuplicateCredentialCanBeSkippedOrUpdated(t *testing.T) {
 	}
 }
 
+func TestCredentialExportRequiresAcknowledgementAndRoundTripsEncryptedOAuth(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "cliproxy", AccessToken: "export-access-secret", RefreshToken: "export-refresh-secret", IDToken: "export-id-secret", AccountID: "export-account", Email: "export@example.com", ExpiresAt: "2026-07-24T00:00:00Z"}
+	id, _, err := a.saveOAuthProvider(context.Background(), "export account", 7, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withoutAck, _ := json.Marshal(map[string]any{"provider_ids": []int64{id}})
+	rec := httptest.NewRecorder()
+	a.authExport(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/export", strings.NewReader(string(withoutAck))), adminCtx{})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "export_confirmation_required") {
+		t.Fatalf("without acknowledgement status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{id}, "acknowledge_sensitive_export": true})
+	rec = httptest.NewRecorder()
+	a.authExport(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/export", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for key, want := range map[string]string{"Cache-Control": "no-store", "Pragma": "no-cache", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"} {
+		if got := rec.Header().Get(key); got != want {
+			t.Fatalf("header %s=%q, want %q", key, got, want)
+		}
+	}
+	if rec.Header().Get("Content-Disposition") == "" {
+		t.Fatal("missing download filename")
+	}
+	var bundle credentialExportBundle
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if bundle.Format != "fusiongate_auth_export" || len(bundle.Credentials) != 1 {
+		t.Fatalf("unexpected bundle: %#v", bundle)
+	}
+	entry := bundle.Credentials[0]
+	if entry.Type != "codex" || entry.Platform != "codex" || entry.Priority != 7 || !entry.Enabled || entry.AccessToken != "export-access-secret" || entry.RefreshToken != "export-refresh-secret" || entry.ChatGPTAccountID != "export-account" {
+		t.Fatalf("unexpected export entry: %#v", entry)
+	}
+	var encrypted []byte
+	if err := a.db.QueryRow(`SELECT credential FROM providers WHERE id=?`, id).Scan(&encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encrypted), "export-access-secret") || strings.Contains(string(encrypted), "export-refresh-secret") {
+		t.Fatal("database credential contains plaintext export token")
+	}
+}
+
+func TestCredentialExportGrokShapeAndRejectsNonOAuth(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "cliproxy", AccessToken: "grok-export-access", RefreshToken: "grok-export-refresh", AccountID: "grok-subject", Extra: map[string]any{"token_endpoint": "https://evil.example/token"}}
+	id, _, err := a.saveOAuthProvider(context.Background(), "grok export", 1, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regularCredential, err := a.encrypt("ordinary-api-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,weight,status,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "ordinary", "openai", "https://api.example", regularCredential, 1, 1, 100, "unknown", "", now(), now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	regularID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{id, regularID}, "acknowledge_sensitive_export": true})
+	rec := httptest.NewRecorder()
+	a.authExport(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/export", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "only existing OAuth") {
+		t.Fatalf("mixed selection status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body, _ = json.Marshal(map[string]any{"provider_ids": []int64{id}, "acknowledge_sensitive_export": true})
+	rec = httptest.NewRecorder()
+	a.authExport(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/export", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grok export status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var bundle credentialExportBundle
+	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle.Credentials) != 1 || bundle.Credentials[0].Type != "xai" || bundle.Credentials[0].BaseURL != "https://cli-chat-proxy.grok.com/v1" || bundle.Credentials[0].TokenEndpoint != "" {
+		t.Fatalf("unexpected Grok export: %#v", bundle.Credentials)
+	}
+}
+
+func TestCredentialExportSelectionLimit(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	ids := make([]int64, authExportMaxItems+1)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	body, _ := json.Marshal(map[string]any{"provider_ids": ids, "acknowledge_sensitive_export": true})
+	rec := httptest.NewRecorder()
+	a.authExport(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/export", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "between 1 and 200") {
+		t.Fatalf("limit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCredentialImportRejectsContentOverBatchLimit(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	body, err := json.Marshal(map[string]any{"content": strings.Repeat("x", authImportMaxBytes+1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	a.authImportPreview(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/import/preview", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rec.Body.String(), "credential_file_too_large") {
+		t.Fatalf("oversized import status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestOAuthStartCompletePKCEStateAndReplay(t *testing.T) {
 	oldTokenURL := codexOAuthTokenURL
 	defer func() { codexOAuthTokenURL = oldTokenURL }()

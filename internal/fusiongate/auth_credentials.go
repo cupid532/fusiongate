@@ -26,7 +26,8 @@ const (
 	xaiOAuthClientID       = "b1a00492-073a-47ea-816f-4c329264a828"
 	xaiOAuthScope          = "openid profile email offline_access grok-cli:access api:access"
 	authSessionTTL         = 15 * time.Minute
-	authImportMaxBytes     = 2 << 20
+	authImportMaxBytes     = 8 << 20
+	authExportMaxItems     = 200
 )
 
 var (
@@ -91,6 +92,35 @@ type credentialImportPreview struct {
 	Status          string `json:"status"`
 	Duplicate       bool   `json:"duplicate"`
 	DuplicateID     int64  `json:"duplicate_provider_id,omitempty"`
+}
+
+type credentialExportBundle struct {
+	Version     int                     `json:"version"`
+	Format      string                  `json:"format"`
+	ExportedAt  string                  `json:"exported_at"`
+	Credentials []credentialExportEntry `json:"credentials"`
+}
+
+type credentialExportEntry struct {
+	Name             string `json:"name"`
+	Type             string `json:"type"`
+	Platform         string `json:"platform"`
+	AuthKind         string `json:"auth_kind"`
+	AccessToken      string `json:"access_token"`
+	RefreshToken     string `json:"refresh_token,omitempty"`
+	IDToken          string `json:"id_token,omitempty"`
+	AccountID        string `json:"account_id,omitempty"`
+	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
+	Subject          string `json:"sub,omitempty"`
+	Email            string `json:"email,omitempty"`
+	Expired          string `json:"expired,omitempty"`
+	LastRefresh      string `json:"last_refresh,omitempty"`
+	Scope            string `json:"scope,omitempty"`
+	TokenEndpoint    string `json:"token_endpoint,omitempty"`
+	BaseURL          string `json:"base_url,omitempty"`
+	Priority         int    `json:"priority"`
+	Enabled          bool   `json:"enabled"`
+	Source           string `json:"source"`
 }
 
 func normalizeOAuthPlatform(value string) string {
@@ -551,13 +581,16 @@ func (a *App) authImportPreview(w http.ResponseWriter, r *http.Request, _ adminC
 	var in struct {
 		Content string `json:"content"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, authImportMaxBytes+64<<10)
+	// The credential JSON is itself wrapped in a JSON request string, so quotes
+	// and control characters may be escaped on the wire. Enforce the real limit
+	// again after decoding while allowing bounded encoding overhead here.
+	r.Body = http.MaxBytesReader(w, r.Body, authImportMaxBytes*3+64<<10)
 	if err := readJSON(r, &in); err != nil {
 		fail(w, http.StatusBadRequest, "invalid_request", "invalid or oversized credential import request")
 		return
 	}
 	if len(in.Content) > authImportMaxBytes {
-		fail(w, http.StatusRequestEntityTooLarge, "credential_file_too_large", "credential JSON must not exceed 2 MiB")
+		fail(w, http.StatusRequestEntityTooLarge, "credential_file_too_large", "credential JSON must not exceed 8 MiB")
 		return
 	}
 	items, err := a.parseCredentialImports(in.Content)
@@ -576,6 +609,134 @@ func (a *App) authImportPreview(w http.ResponseWriter, r *http.Request, _ adminC
 		preview = append(preview, credentialImportPreview{ID: item.ID, Name: maskCredentialPreviewName(item.Name, c), Platform: c.Platform, Source: c.Source, Email: maskEmail(c.Email), AccountID: maskIdentity(c.AccountID), ExpiresAt: c.ExpiresAt, HasRefreshToken: c.RefreshToken != "", Status: item.Status, Duplicate: item.DuplicateID > 0, DuplicateID: item.DuplicateID})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "expires_in": int(authSessionTTL.Seconds()), "items": preview})
+}
+
+func oauthExportType(platform string) string {
+	if platform == "grok" {
+		return "xai"
+	}
+	return platform
+}
+
+func oauthExportBaseURL(platform string) string {
+	base := oauthProviderBaseURL(platform)
+	if platform == "grok" {
+		return strings.TrimRight(base, "/") + "/v1"
+	}
+	return base
+}
+
+func exportedCredentialEntry(name string, priority int, enabled bool, source string, c ProviderCredential) credentialExportEntry {
+	platform := normalizeOAuthPlatform(c.Platform)
+	entry := credentialExportEntry{
+		Name: name, Type: oauthExportType(platform), Platform: platform, AuthKind: "oauth",
+		AccessToken: c.AccessToken, RefreshToken: c.RefreshToken, IDToken: c.IDToken, AccountID: c.AccountID,
+		Email: c.Email, Expired: c.ExpiresAt, LastRefresh: c.LastRefresh, Scope: c.Scope,
+		BaseURL: oauthExportBaseURL(platform), Priority: priority, Enabled: enabled, Source: firstNonEmpty(c.Source, source, "fusiongate"),
+	}
+	if platform == "codex" {
+		entry.ChatGPTAccountID = c.AccountID
+	} else {
+		entry.Subject = c.AccountID
+	}
+	if platform == "grok" && c.Extra != nil {
+		if endpoint, ok := c.Extra["token_endpoint"].(string); ok && isTrustedXAIEndpoint(endpoint) {
+			entry.TokenEndpoint = endpoint
+		}
+	}
+	return entry
+}
+
+func (a *App) authExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodPost {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var in struct {
+		ProviderIDs []int64 `json:"provider_ids"`
+		Acknowledge bool    `json:"acknowledge_sensitive_export"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if !in.Acknowledge {
+		fail(w, http.StatusBadRequest, "export_confirmation_required", "sensitive credential export must be explicitly confirmed")
+		return
+	}
+	ids := make([]int64, 0, len(in.ProviderIDs))
+	seen := make(map[int64]bool, len(in.ProviderIDs))
+	for _, id := range in.ProviderIDs {
+		if id <= 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 || len(ids) > authExportMaxItems {
+		fail(w, http.StatusBadRequest, "invalid_export_selection", "select between 1 and 200 authentication files")
+		return
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := a.db.QueryContext(r.Context(), `SELECT id,name,credential,enabled,priority,auth_source FROM providers WHERE auth_kind='oauth' AND id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be loaded")
+		return
+	}
+	defer rows.Close()
+	type storedCredential struct {
+		Name       string
+		Credential []byte
+		Enabled    int
+		Priority   int
+		Source     string
+	}
+	stored := make(map[int64]storedCredential, len(ids))
+	for rows.Next() {
+		var id int64
+		var item storedCredential
+		if err := rows.Scan(&id, &item.Name, &item.Credential, &item.Enabled, &item.Priority, &item.Source); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be read")
+			return
+		}
+		stored[id] = item
+	}
+	if err := rows.Err(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be read")
+		return
+	}
+	if len(stored) != len(ids) {
+		fail(w, http.StatusBadRequest, "invalid_export_selection", "only existing OAuth authentication files can be exported")
+		return
+	}
+	bundle := credentialExportBundle{Version: 1, Format: "fusiongate_auth_export", ExportedAt: now(), Credentials: make([]credentialExportEntry, 0, len(ids))}
+	for _, id := range ids {
+		item := stored[id]
+		plain, err := a.decrypt(item.Credential)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "credential_decrypt_failed", "authentication file could not be decrypted")
+			return
+		}
+		var credential ProviderCredential
+		if err := json.Unmarshal([]byte(plain), &credential); err != nil || normalizeOAuthPlatform(credential.Platform) == "" || credential.AccessToken == "" {
+			fail(w, http.StatusInternalServerError, "credential_invalid", "stored authentication file is invalid")
+			return
+		}
+		bundle.Credentials = append(bundle.Credentials, exportedCredentialEntry(item.Name, item.Priority, item.Enabled != 0, item.Source, credential))
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="fusiongate-auth-export-`+time.Now().UTC().Format("20060102-150405")+`.json"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	if err := json.NewEncoder(w).Encode(bundle); err != nil {
+		a.log.Error("credential export response failed", "error", err)
+	}
 }
 
 func (a *App) authImportCommit(w http.ResponseWriter, r *http.Request, _ adminCtx) {

@@ -434,6 +434,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/token-usage", a.admin(a.tokenUsage))
 	mux.HandleFunc("/api/admin/auth/import/preview", a.admin(a.authImportPreview))
 	mux.HandleFunc("/api/admin/auth/import/commit", a.admin(a.authImportCommit))
+	mux.HandleFunc("/api/admin/auth/export", a.admin(a.authExport))
 	mux.HandleFunc("/api/admin/auth/oauth/start", a.admin(a.oauthStart))
 	mux.HandleFunc("/api/admin/auth/oauth/complete", a.admin(a.oauthComplete))
 	mux.HandleFunc("/v1/models", a.api(a.models))

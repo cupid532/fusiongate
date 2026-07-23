@@ -61,7 +61,7 @@ Backups briefly stop the FusionGate application container to produce a consisten
 
 ## OAuth production notes
 
-Codex and Claude browser authorization use the official CLI-compatible `localhost` redirect URIs. The production server does **not** need to expose ports 1455 or 54545: after authorization, copy the full localhost callback URL from the browser address bar and paste it into the FusionGate management console. The pending authorization session is held in memory for 15 minutes and can be consumed only once.
+Codex and Claude browser authorization use the official CLI-compatible `localhost` redirect URIs. The production server does **not** need to expose ports 1455 or 54545: after authorization, copy the full localhost callback URL from the browser address bar and paste it into the FusionGate management console. Grok uses device authorization and does not require a callback port. Pending authorization sessions are held in memory for 15 minutes and can be consumed only once.
 
 OAuth credentials imported from CLIProxyAPI or sub2api are encrypted with `FUSIONGATE_MASTER_KEY`. Before every update or migration, back up the following together:
 
@@ -69,7 +69,7 @@ OAuth credentials imported from CLIProxyAPI or sub2api are encrypted with `FUSIO
 - `/opt/fusiongate/config` or the secret source containing `FUSIONGATE_MASTER_KEY`;
 - `/opt/fusiongate/app` and the active Compose definition.
 
-Never paste OAuth JSON into shell history, deployment logs, issue trackers, or chat. Use the authenticated management page over HTTPS. Only import accounts you own or are authorized to administer.
+Never paste OAuth JSON into shell history, deployment logs, issue trackers, or chat. Use the authenticated management page over HTTPS. Batch export files contain complete Access / Refresh / ID Tokens; keep them out of source control and delete or encrypt them after migration. Only import or export accounts you own or are authorized to administer.
 
 ## Firewall
 

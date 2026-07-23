@@ -2,15 +2,15 @@
 
 面向个人和小型可信团队的**自托管 AI 账号与 API 聚合网关**。它将多个上游渠道映射成统一模型名，并通过一把下游 API Key 提供 OpenAI 兼容访问和完整请求账本。
 
-已实现 API Key 渠道与基础协议适配，并支持 Codex 与 Claude 的浏览器 OAuth 授权及 CLIProxyAPI / sub2api OAuth JSON 迁移。FusionGate 只接收用户主动完成的官方授权或用户主动导出的凭据文件，不保存账号密码、不抓取 Cookie，也不绕过服务商访问控制。
+已实现 API Key 渠道与基础协议适配，并支持 Codex、Claude 与 Grok 的官方 OAuth 授权及 CLIProxyAPI / sub2api OAuth JSON 迁移。FusionGate 只接收用户主动完成的官方授权或用户主动导出的凭据文件，不保存账号密码、不抓取 Cookie，也不绕过服务商访问控制。
 
 ## 已实现
 
 - Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
 - 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
-- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude OAuth；普通 API 渠道保存后自动读取上游模型候选，OAuth 渠道可在授权或导入后手动识别，均由管理员勾选后批量创建路由；公开模型名与保存的上游模型 ID 统一规范为小写。
-- 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE），以及 CLIProxyAPI、sub2api 导出的 Codex / Claude OAuth JSON。JSON 导入必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。
+- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude / Grok OAuth；普通 API 渠道保存后自动读取上游模型候选，OAuth 渠道可在授权或导入后手动识别，均由管理员勾选后批量创建路由；公开模型名与保存的上游模型 ID 统一规范为小写。
+- 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE）、Grok 设备授权，以及 CLIProxyAPI、sub2api 导出的 Codex / Claude / Grok OAuth JSON。JSON 可一次选择多个文件，必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。认证文件支持按厂商筛选、批量选择和敏感凭据 JSON 导出。
 - 公共模型 / 别名与多条候选路由；渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级。数字越大越优先，同级按渠道添加顺序自动故障转移；可在渠道页全局选择优先级故障转移、顺序轮询或智能选择。
 - 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、单探针半开恢复、指数冷却、`Retry-After`。
 - 安全故障转移：连接/超时、429、部分路由错误与 5xx 可切换备用；空流或首字节前断流可切换，首字节发出后绝不拼接第二家响应；图片传输结果不确定时不自动重放。
@@ -28,10 +28,11 @@
 - 默认白色管理主题，并支持一键切换深色主题；主题偏好保存在浏览器本地。
 - Docker Compose 与非 root 容器配置。
 
-## Codex / Claude 授权与迁移
+## Codex / Claude / Grok 授权与迁移
 
 - **浏览器授权**：管理台生成带 PKCE 的官方授权链接。授权结束后，将浏览器地址栏中的完整 `localhost` 回调地址粘贴回 FusionGate；回调只用于提取一次性授权码和校验 state，FusionGate 不要求服务器监听本机回调端口。
-- **JSON 迁移**：可粘贴或上传 CLIProxyAPI / sub2api 导出的 Codex、Claude OAuth JSON。支持单对象、数组、连续 JSON，以及常见的 `accounts` / `data.accounts` / `credentials` / `token_data` 包装。非 OAuth 账号和不支持的平台会被忽略。
+- **JSON 迁移**：可粘贴或批量上传 CLIProxyAPI / sub2api 导出的 Codex、Claude、Grok OAuth JSON。支持单对象、数组、连续 JSON，以及常见的 `accounts` / `data.accounts` / `credentials` / `token_data` 包装。单文件最大 2 MiB、单次总量最大 8 MiB；非 OAuth 账号和不支持的平台会被忽略。
+- **批量导出**：可按厂商筛选并勾选最多 200 份认证文件，二次确认后下载 CLIProxyAPI 风格兼容 JSON。导出文件包含完整 Token，仅用于管理员主动迁移，不会写入页面、浏览器存储或应用日志。
 - **安全保存**：Access Token、Refresh Token 与 ID Token 作为一个凭据对象使用 AES-256-GCM 加密后写入 SQLite；预览、管理 API、页面和错误信息均不回显 Token。
 - **自动续期**：有 Refresh Token 时会在到期前自动刷新并保存轮换后的 Refresh Token；同一实例内的并发刷新会合并。刷新失败只标记授权状态并允许故障转移，不删除渠道。
 - **路由**：Codex OAuth 支持 OpenAI Responses 路径适配；Claude OAuth 支持 Anthropic Messages 所需授权头。模型识别仍需管理员确认，系统不会在导入账号后自动创建模型路由。
