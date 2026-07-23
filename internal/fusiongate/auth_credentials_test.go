@@ -22,13 +22,30 @@ func unsignedJWT(claims map[string]any) string {
 	return base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload) + ".x"
 }
 
+func stubOAuthModelDiscovery(a *App, models ...string) {
+	base := a.client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	a.client.Transport = authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			entries := make([]map[string]string, 0, len(models))
+			for _, model := range models {
+				entries = append(entries, map[string]string{"id": model})
+			}
+			body, _ := json.Marshal(map[string]any{"data": entries})
+			return authJSONResponse(http.StatusOK, string(body)), nil
+		}
+		return base.RoundTrip(r)
+	})
+}
+
 func TestParseCredentialImportsCompatibility(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-
 	expires := time.Now().UTC().Add(time.Hour).Unix()
 	codexJWT := unsignedJWT(map[string]any{
 		"email":                       "USER@EXAMPLE.COM",
@@ -70,6 +87,7 @@ func TestCredentialImportPreviewIsMaskedAndCommitIsEncrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
+	stubOAuthModelDiscovery(a, "GPT-5-CODEX", "GPT-5-MINI")
 
 	content := `{"type":"codex","access_token":"access-super-secret","refresh_token":"refresh-super-secret","account_id":"account-123456789","email":"person@example.com"}`
 	payload, _ := json.Marshal(map[string]any{"content": content})
@@ -115,6 +133,13 @@ func TestCredentialImportPreviewIsMaskedAndCommitIsEncrypted(t *testing.T) {
 	}
 	if authKind != "oauth" || source != "cliproxy" {
 		t.Fatalf("auth metadata kind=%q source=%q", authKind, source)
+	}
+	var modelCount int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_routes`).Scan(&modelCount); err != nil {
+		t.Fatal(err)
+	}
+	if modelCount != 2 || !strings.Contains(commitRec.Body.String(), `"added":2`) {
+		t.Fatalf("automatic model import count=%d response=%s", modelCount, commitRec.Body.String())
 	}
 	if strings.Contains(string(encrypted), "super-secret") {
 		t.Fatal("database credential contains plaintext token")
@@ -317,6 +342,7 @@ func TestOAuthStartCompletePKCEStateAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
+	stubOAuthModelDiscovery(a, "GPT-5-CODEX")
 	startRec := httptest.NewRecorder()
 	a.oauthStart(startRec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/oauth/start", strings.NewReader(`{"platform":"codex"}`)), adminCtx{})
 	if startRec.Code != http.StatusOK {
@@ -579,6 +605,7 @@ func TestInvalidImportSelectionDoesNotConsumePreview(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
+	stubOAuthModelDiscovery(a, "CLAUDE-SONNET-4")
 
 	payload, _ := json.Marshal(map[string]any{"content": `{"type":"claude","access_token":"access","refresh_token":"refresh","email":"owner@example.com"}`})
 	previewRec := httptest.NewRecorder()
@@ -684,6 +711,8 @@ func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
 			}
 			jwt := unsignedJWT(map[string]any{"sub": "grok-user-1", "email": "grok@example.com", "exp": time.Now().Add(time.Hour).Unix()})
 			return authJSONResponse(http.StatusOK, fmt.Sprintf(`{"access_token":"access-super-secret","refresh_token":"refresh-super-secret","id_token":%q,"expires_in":3600}`, jwt)), nil
+		case "https://cli-chat-proxy.grok.com/v1/models":
+			return authJSONResponse(http.StatusOK, `{"data":[{"id":"grok-3"}]}`), nil
 		default:
 			t.Fatalf("unexpected request %s", r.URL)
 			return nil, nil
@@ -944,5 +973,55 @@ func TestOAuthProviderBatchSelectionLimit(t *testing.T) {
 	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "between 1 and 200") {
 		t.Fatalf("limit status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuthModelSyncKeepsCredentialWhenDiscoveryFails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"upstream-secret-token"}`, http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "sync failure", 1, ProviderCredential{
+		Version: 1, Kind: "oauth", Platform: "codex", Source: "json", AccessToken: "stored-access-secret", AccountID: "sync-failure-account",
+	}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET base_url=? WHERE id=?`, upstream.URL, providerID); err != nil {
+		t.Fatal(err)
+	}
+	ordinaryID := insertTestProvider(t, a, "sync ordinary", "openai", upstream.URL, "ordinary-secret", 1, 100, "normalized", "any", 0, 3, 30)
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{providerID, ordinaryID}})
+	rec := httptest.NewRecorder()
+	a.authModelSync(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/models/sync", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "upstream-secret-token") || strings.Contains(rec.Body.String(), "stored-access-secret") {
+		t.Fatalf("model sync leaked a credential or upstream response: %s", rec.Body.String())
+	}
+	var summary authModelSyncSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Providers != 1 || summary.Succeeded != 0 || summary.Failed != 1 || len(summary.Items) != 1 || summary.Items[0].Status != "error" {
+		t.Fatalf("unexpected sync summary=%#v", summary)
+	}
+	var providers, routes int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id=?`, providerID).Scan(&providers); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_routes WHERE provider_id=?`, providerID).Scan(&routes); err != nil {
+		t.Fatal(err)
+	}
+	if providers != 1 || routes != 0 {
+		t.Fatalf("failed discovery changed stored auth provider: providers=%d routes=%d", providers, routes)
 	}
 }

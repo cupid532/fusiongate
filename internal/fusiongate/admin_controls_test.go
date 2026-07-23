@@ -79,6 +79,11 @@ func TestGlobalRoutingStrategyAndTokenAccounting(t *testing.T) {
 	if set.Code != http.StatusOK || a.globalRoutingStrategy() != StrategyOrderedRoundRobin {
 		t.Fatalf("set routing=%d %s strategy=%s", set.Code, set.Body.String(), a.globalRoutingStrategy())
 	}
+	smart := httptest.NewRecorder()
+	a.routing(smart, httptest.NewRequest(http.MethodPatch, "/api/admin/routing", strings.NewReader(`{"strategy":"smart_round_robin"}`)), adminCtx{})
+	if smart.Code != http.StatusOK || a.globalRoutingStrategy() != StrategySmartRoundRobin {
+		t.Fatalf("set smart routing=%d %s strategy=%s", smart.Code, smart.Body.String(), a.globalRoutingStrategy())
+	}
 	invalid := httptest.NewRecorder()
 	a.routing(invalid, httptest.NewRequest(http.MethodPatch, "/api/admin/routing", strings.NewReader(`{"strategy":"not-a-strategy"}`)), adminCtx{})
 	if invalid.Code != http.StatusBadRequest {

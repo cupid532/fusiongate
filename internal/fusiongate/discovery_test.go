@@ -354,3 +354,66 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 		})
 	}
 }
+
+func TestDiscoverAndImportAllOAuthModelsUsesSingleRequest(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path=%q", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+			map[string]any{"id": "MODEL-Z"},
+			map[string]any{"id": "Model-A"},
+			map[string]any{"id": "text-embedding-3-small"},
+		}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "json", AccessToken: "oauth-access", AccountID: "account-auto-models"}
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "auto models", 1, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET base_url=? WHERE id=?`, upstream.URL, providerID); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, imported, err := a.discoverAndImportAllModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("model endpoint calls=%d, want 1", calls.Load())
+	}
+	if discovery.Discovered != 2 || discovery.Skipped != 1 || imported.Added != 2 || imported.Existing != 0 {
+		t.Fatalf("discovery=%#v imported=%#v", discovery, imported)
+	}
+	rows, err := a.db.Query(`SELECT public_name,upstream_model FROM model_routes WHERE provider_id=? ORDER BY public_name`, providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got [][2]string
+	for rows.Next() {
+		var publicName, upstreamModel string
+		if err := rows.Scan(&publicName, &upstreamModel); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, [2]string{publicName, upstreamModel})
+	}
+	want := [][2]string{{"model-a", "model-a"}, {"model-z", "model-z"}}
+	if len(got) != len(want) {
+		t.Fatalf("routes=%v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("routes=%v, want %v", got, want)
+		}
+	}
+}

@@ -84,12 +84,13 @@ type RoutingStrategy string
 const (
 	StrategyPriorityFailover  RoutingStrategy = "priority_failover"
 	StrategyOrderedRoundRobin RoutingStrategy = "ordered_round_robin"
+	StrategySmartRoundRobin   RoutingStrategy = "smart_round_robin"
 	StrategyAdaptive          RoutingStrategy = "adaptive"
 )
 
 func validRoutingStrategy(v string) bool {
 	switch RoutingStrategy(v) {
-	case StrategyPriorityFailover, StrategyOrderedRoundRobin, StrategyAdaptive:
+	case StrategyPriorityFailover, StrategyOrderedRoundRobin, StrategySmartRoundRobin, StrategyAdaptive:
 		return true
 	}
 	return false
@@ -103,8 +104,9 @@ func routeStrategy(routes []resolvedRoute) RoutingStrategy {
 }
 
 // prepareRoutes builds a deterministic request-local failover plan. Priority mode
-// sorts channels by provider priority from high to low. Channels at the same
-// priority keep their creation order. The remaining logic performs automatic failover.
+// sorts channels by provider priority from high to low. Ordered mode always starts
+// from the first configured channel. Smart round robin advances the starting channel
+// for every new request while retaining request-local seamless failover.
 func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []resolvedRoute {
 	planned := append([]resolvedRoute(nil), routes...)
 	sort.SliceStable(planned, func(i, j int) bool {
@@ -116,7 +118,7 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 		}
 		return planned[i].Route.ID < planned[j].Route.ID
 	})
-	if strategy != StrategyOrderedRoundRobin || len(planned) < 2 {
+	if strategy != StrategySmartRoundRobin || len(planned) < 2 {
 		return planned
 	}
 	model := planned[0].Route.PublicName

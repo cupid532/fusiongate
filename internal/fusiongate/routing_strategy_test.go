@@ -55,7 +55,7 @@ func TestPriorityFailoverUsesProviderPriorityThenCreationOrder(t *testing.T) {
 	}
 }
 
-func TestOrderedRoundRobinRotatesByRequestAndKeepsFailoverOrder(t *testing.T) {
+func TestSmartRoundRobinRotatesByRequestAndKeepsFailoverOrder(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -68,8 +68,8 @@ func TestOrderedRoundRobinRotatesByRequestAndKeepsFailoverOrder(t *testing.T) {
 	}
 	var starts []int64
 	for range 4 {
-		plan := a.prepareRoutes(routes, StrategyOrderedRoundRobin)
-		z, _, ok := a.acquireRoute(plan, map[int64]bool{}, StrategyOrderedRoundRobin)
+		plan := a.prepareRoutes(routes, StrategySmartRoundRobin)
+		z, _, ok := a.acquireRoute(plan, map[int64]bool{}, StrategySmartRoundRobin)
 		if !ok {
 			t.Fatal("expected route")
 		}
@@ -83,16 +83,42 @@ func TestOrderedRoundRobinRotatesByRequestAndKeepsFailoverOrder(t *testing.T) {
 		}
 	}
 
-	plan := a.prepareRoutes(routes, StrategyOrderedRoundRobin)
-	first, _, _ := a.acquireRoute(plan, map[int64]bool{}, StrategyOrderedRoundRobin)
+	plan := a.prepareRoutes(routes, StrategySmartRoundRobin)
+	first, _, _ := a.acquireRoute(plan, map[int64]bool{}, StrategySmartRoundRobin)
 	releaseSelectedRoute(a, first)
-	second, _, ok := a.acquireRoute(plan, map[int64]bool{first.Route.ID: true}, StrategyOrderedRoundRobin)
+	second, _, ok := a.acquireRoute(plan, map[int64]bool{first.Route.ID: true}, StrategySmartRoundRobin)
 	if !ok {
 		t.Fatal("expected failover candidate")
 	}
 	releaseSelectedRoute(a, second)
 	if first.Route.ID != 2 || second.Route.ID != 3 {
 		t.Fatalf("request-local failover = %d -> %d, want 2 -> 3", first.Route.ID, second.Route.ID)
+	}
+}
+
+func TestOrderedRoundRobinAlwaysStartsFromFirstAndFailsOverInOrder(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routes := []resolvedRoute{
+		schedulerRoute(3, 3, "model", 1, 2),
+		schedulerRoute(1, 1, "model", 1, 0),
+		schedulerRoute(2, 2, "model", 1, 1),
+	}
+	for range 3 {
+		plan := a.prepareRoutes(routes, StrategyOrderedRoundRobin)
+		first, _, ok := a.acquireRoute(plan, map[int64]bool{}, StrategyOrderedRoundRobin)
+		if !ok || first.Route.ID != 1 {
+			t.Fatalf("ordered first=%d ok=%v, want route 1", first.Route.ID, ok)
+		}
+		releaseSelectedRoute(a, first)
+		second, _, ok := a.acquireRoute(plan, map[int64]bool{first.Route.ID: true}, StrategyOrderedRoundRobin)
+		if !ok || second.Route.ID != 2 {
+			t.Fatalf("ordered second=%d ok=%v, want route 2", second.Route.ID, ok)
+		}
+		releaseSelectedRoute(a, second)
 	}
 }
 

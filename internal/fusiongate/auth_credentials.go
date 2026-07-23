@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -78,6 +79,32 @@ type credentialImport struct {
 type credentialImportSession struct {
 	Created time.Time
 	Items   []credentialImport
+}
+
+type authModelSyncTarget struct {
+	ID   int64
+	Name string
+}
+
+type authModelSyncItem struct {
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Discovered int    `json:"discovered"`
+	Added      int    `json:"added"`
+	Existing   int    `json:"existing"`
+	Skipped    int    `json:"skipped"`
+	Error      string `json:"error,omitempty"`
+}
+
+type authModelSyncSummary struct {
+	Providers int                 `json:"providers"`
+	Succeeded int                 `json:"succeeded"`
+	Failed    int                 `json:"failed"`
+	Models    int                 `json:"models"`
+	Added     int                 `json:"added"`
+	Existing  int                 `json:"existing"`
+	Items     []authModelSyncItem `json:"items"`
 }
 
 type credentialImportPreview struct {
@@ -436,7 +463,8 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		a.authMu.Lock()
 		delete(a.oauthSessions, sessionID)
 		a.authMu.Unlock()
-		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted"})
+		modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName}})
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": modelSync.Items[0]})
 		return
 	}
 	code, callbackState, err := parseOAuthCallback(in.Callback)
@@ -469,7 +497,8 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		}
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted"})
+	modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName}})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": modelSync.Items[0]})
 }
 
 func (a *App) pollXAIDeviceAuthorization(ctx context.Context, session oauthSession) (ProviderCredential, bool, int, error) {
@@ -796,6 +825,7 @@ func (a *App) authImportCommit(w http.ResponseWriter, r *http.Request, _ adminCt
 	}
 	created, updated, skipped := 0, 0, 0
 	providers := []map[string]any{}
+	syncTargets := []authModelSyncTarget{}
 	for _, item := range session.Items {
 		if !selected[item.ID] {
 			continue
@@ -816,8 +846,111 @@ func (a *App) authImportCommit(w http.ResponseWriter, r *http.Request, _ adminCt
 			created++
 		}
 		providers = append(providers, map[string]any{"id": id, "name": name, "platform": item.Credential.Platform})
+		if item.DuplicateID == 0 || a.oauthProviderNeedsModels(r.Context(), id) {
+			syncTargets = append(syncTargets, authModelSyncTarget{ID: id, Name: name})
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"created": created, "updated": updated, "skipped": skipped, "providers": providers})
+	modelSync := a.syncOAuthModelTargets(r.Context(), syncTargets)
+	writeJSON(w, http.StatusOK, map[string]any{"created": created, "updated": updated, "skipped": skipped, "providers": providers, "model_sync": modelSync})
+}
+
+func (a *App) oauthProviderNeedsModels(ctx context.Context, providerID int64) bool {
+	var count int
+	return a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_routes WHERE provider_id=?`, providerID).Scan(&count) == nil && count == 0
+}
+
+func (a *App) syncOAuthModelTargets(ctx context.Context, targets []authModelSyncTarget) authModelSyncSummary {
+	summary := authModelSyncSummary{Providers: len(targets), Items: make([]authModelSyncItem, len(targets))}
+	if len(targets) == 0 {
+		return summary
+	}
+	type job struct {
+		index  int
+		target authModelSyncTarget
+	}
+	jobs := make(chan job)
+	workers := min(4, len(targets))
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for work := range jobs {
+				discovery, imported, err := a.discoverAndImportAllModels(ctx, work.target.ID)
+				item := authModelSyncItem{ID: work.target.ID, Name: work.target.Name}
+				if err != nil {
+					item.Status = "error"
+					item.Error = "模型自动识别失败，可稍后重试"
+					a.log.Warn("OAuth model auto-discovery failed", "provider_id", work.target.ID, "error", err)
+				} else {
+					item.Status = "ok"
+					item.Discovered = discovery.Discovered
+					item.Added = imported.Added
+					item.Existing = imported.Existing
+					item.Skipped = discovery.Skipped
+				}
+				summary.Items[work.index] = item
+			}
+		}()
+	}
+	for index, target := range targets {
+		jobs <- job{index: index, target: target}
+	}
+	close(jobs)
+	wg.Wait()
+	for _, item := range summary.Items {
+		if item.Status == "ok" {
+			summary.Succeeded++
+			summary.Models += item.Discovered
+			summary.Added += item.Added
+			summary.Existing += item.Existing
+		} else {
+			summary.Failed++
+		}
+	}
+	return summary
+}
+
+func (a *App) authModelSync(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodPost {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var in struct {
+		ProviderIDs []int64 `json:"provider_ids"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	requested := make(map[int64]bool, len(in.ProviderIDs))
+	for _, id := range in.ProviderIDs {
+		if id > 0 {
+			requested[id] = true
+		}
+	}
+	rows, err := a.db.QueryContext(r.Context(), `SELECT p.id,p.name FROM providers p WHERE p.auth_kind='oauth' AND NOT EXISTS (SELECT 1 FROM model_routes r WHERE r.provider_id=p.id) ORDER BY p.id LIMIT 200`)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be loaded")
+		return
+	}
+	targets := []authModelSyncTarget{}
+	for rows.Next() {
+		var target authModelSyncTarget
+		if err := rows.Scan(&target.ID, &target.Name); err != nil {
+			_ = rows.Close()
+			fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be read")
+			return
+		}
+		if len(requested) == 0 || requested[target.ID] {
+			targets = append(targets, target)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be read")
+		return
+	}
+	writeJSON(w, http.StatusOK, a.syncOAuthModelTargets(r.Context(), targets))
 }
 
 var (

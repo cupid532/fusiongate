@@ -765,7 +765,7 @@ func (a *App) routePolicies(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	}
 	in.PublicName = strings.ToLower(strings.TrimSpace(in.PublicName))
 	if in.PublicName == "" || !validRoutingStrategy(in.Strategy) {
-		fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, or adaptive")
+		fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, smart_round_robin, or adaptive")
 		return
 	}
 	var exists int
@@ -781,7 +781,7 @@ func (a *App) routePolicies(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	if in.Strategy == string(StrategyOrderedRoundRobin) {
+	if in.Strategy == string(StrategySmartRoundRobin) {
 		a.routeMu.Lock()
 		delete(a.roundRobinCursor, in.PublicName)
 		a.routeMu.Unlock()
@@ -989,14 +989,14 @@ func (a *App) routing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		if !validRoutingStrategy(in.Strategy) {
-			fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, or adaptive")
+			fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, smart_round_robin, or adaptive")
 			return
 		}
 		if _, err := a.db.Exec(`INSERT INTO settings(key,value) VALUES('routing_strategy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, in.Strategy); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		if in.Strategy == string(StrategyOrderedRoundRobin) {
+		if in.Strategy == string(StrategySmartRoundRobin) {
 			a.routeMu.Lock()
 			a.roundRobinCursor = map[string]int{}
 			a.routeMu.Unlock()

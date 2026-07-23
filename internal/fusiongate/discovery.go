@@ -416,15 +416,45 @@ func (a *App) importSelectedModels(parent context.Context, providerID int64, sel
 		return modelImportResult{Selected: len(normalized), Missing: len(missing)}, fmt.Errorf("%w: %s", errSelectedModelsUnavailable, strings.Join(missing, ", "))
 	}
 
-	result := modelImportResult{Selected: len(normalized)}
+	models := make([]discoveredModel, 0, len(normalized))
+	for _, id := range normalized {
+		models = append(models, available[id])
+	}
+	return a.importDiscoveredModels(parent, providerID, models)
+}
+
+// discoverAndImportAllModels performs one upstream discovery request and imports
+// every supported model returned by it. Keeping discovery and insertion separate
+// avoids querying OAuth providers twice during automatic initialization.
+func (a *App) discoverAndImportAllModels(parent context.Context, providerID int64) (modelDiscoveryResult, modelImportResult, error) {
+	discovery, err := a.discoverProviderModels(parent, providerID)
+	if err != nil {
+		return modelDiscoveryResult{}, modelImportResult{}, err
+	}
+	result, err := a.importDiscoveredModels(parent, providerID, discovery.Models)
+	return discovery, result, err
+}
+
+func (a *App) importDiscoveredModels(parent context.Context, providerID int64, models []discoveredModel) (modelImportResult, error) {
+	if len(models) == 0 {
+		return modelImportResult{}, errors.New("upstream returned no supported models")
+	}
+	if len(models) > maxModelImportSelection {
+		return modelImportResult{}, fmt.Errorf("too many discovered models; maximum is %d", maxModelImportSelection)
+	}
+	result := modelImportResult{Selected: len(models)}
 	tx, err := a.db.BeginTx(parent, nil)
 	if err != nil {
 		return modelImportResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	stamp := now()
-	for _, id := range normalized {
-		model := available[id]
+	for _, model := range models {
+		model.ID = strings.ToLower(strings.TrimSpace(model.ID))
+		model.UpstreamID = strings.ToLower(strings.TrimSpace(model.UpstreamID))
+		if model.ID == "" || model.UpstreamID == "" {
+			continue
+		}
 		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
 SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?
 WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(public_name)=?)`, model.ID, providerID, strings.ToLower(model.UpstreamID), model.Capabilities, 1, 0, model.ID, 0, 0, stamp, stamp, providerID, model.ID)
