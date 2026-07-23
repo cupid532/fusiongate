@@ -39,6 +39,10 @@ type App struct {
 	routeMu           sync.Mutex
 	providerStates    map[int64]*providerRuntime
 	roundRobinCursor  map[string]int
+	authMu            sync.Mutex
+	refreshMu         sync.Mutex
+	oauthSessions     map[string]oauthSession
+	authImports       map[string]credentialImportSession
 	ledgerCleanupMu   sync.Mutex
 	lastLedgerCleanup time.Time
 }
@@ -52,6 +56,13 @@ type Provider struct {
 	Type                string `json:"type"`
 	BaseURL             string `json:"base_url"`
 	CredentialHint      string `json:"credential_hint"`
+	AuthKind            string `json:"auth_kind"`
+	AuthSource          string `json:"auth_source"`
+	AuthEmail           string `json:"auth_email,omitempty"`
+	AuthAccountID       string `json:"auth_account_id,omitempty"`
+	AuthExpiresAt       string `json:"auth_expires_at,omitempty"`
+	AuthStatus          string `json:"auth_status"`
+	HasRefreshToken     bool   `json:"has_refresh_token"`
 	Status              string `json:"status"`
 	Notes               string `json:"notes"`
 	Enabled             bool   `json:"enabled"`
@@ -151,7 +162,7 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}}
+	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -180,6 +191,10 @@ func (a *App) migrate(ctx context.Context) error {
     failure_threshold INTEGER NOT NULL DEFAULT 3, cooldown_seconds INTEGER NOT NULL DEFAULT 30,
     consecutive_failures INTEGER NOT NULL DEFAULT 0, circuit_open_until TEXT, last_error TEXT NOT NULL DEFAULT '',
     last_latency_ms INTEGER NOT NULL DEFAULT 0, last_success_at TEXT, last_failure_at TEXT,
+    auth_kind TEXT NOT NULL DEFAULT 'api_key', auth_source TEXT NOT NULL DEFAULT 'manual',
+    auth_account_id TEXT NOT NULL DEFAULT '', auth_email TEXT NOT NULL DEFAULT '', auth_expires_at TEXT,
+    auth_last_refresh_at TEXT, auth_status TEXT NOT NULL DEFAULT 'ready', auth_fingerprint TEXT NOT NULL DEFAULT '',
+    auth_has_refresh INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS model_routes (
     id INTEGER PRIMARY KEY, public_name TEXT NOT NULL, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
@@ -230,6 +245,15 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "last_latency_ms", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "last_success_at", "TEXT"},
 		{"providers", "last_failure_at", "TEXT"},
+		{"providers", "auth_kind", "TEXT NOT NULL DEFAULT 'api_key'"},
+		{"providers", "auth_source", "TEXT NOT NULL DEFAULT 'manual'"},
+		{"providers", "auth_account_id", "TEXT NOT NULL DEFAULT ''"},
+		{"providers", "auth_email", "TEXT NOT NULL DEFAULT ''"},
+		{"providers", "auth_expires_at", "TEXT"},
+		{"providers", "auth_last_refresh_at", "TEXT"},
+		{"providers", "auth_status", "TEXT NOT NULL DEFAULT 'ready'"},
+		{"providers", "auth_fingerprint", "TEXT NOT NULL DEFAULT ''"},
+		{"providers", "auth_has_refresh", "INTEGER NOT NULL DEFAULT 0"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -257,6 +281,7 @@ CREATE INDEX IF NOT EXISTS idx_ledger_key_created ON request_ledger(api_key_id,c
 CREATE INDEX IF NOT EXISTS idx_ledger_provider_created ON request_ledger(provider_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_ledger_model_created ON request_ledger(public_model,created_at);
 CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_order, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_auth_fingerprint ON providers(auth_fingerprint) WHERE auth_fingerprint <> '';
 UPDATE request_ledger SET usage_reported=1 WHERE usage_reported=0 AND (input_tokens>0 OR output_tokens>0 OR cached_tokens>0 OR reasoning_tokens>0);`)
 	return err
 }
@@ -407,6 +432,10 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/routing", a.admin(a.routing))
 	mux.HandleFunc("/api/admin/requests", a.admin(a.requests))
 	mux.HandleFunc("/api/admin/token-usage", a.admin(a.tokenUsage))
+	mux.HandleFunc("/api/admin/auth/import/preview", a.admin(a.authImportPreview))
+	mux.HandleFunc("/api/admin/auth/import/commit", a.admin(a.authImportCommit))
+	mux.HandleFunc("/api/admin/auth/oauth/start", a.admin(a.oauthStart))
+	mux.HandleFunc("/api/admin/auth/oauth/complete", a.admin(a.oauthComplete))
 	mux.HandleFunc("/v1/models", a.api(a.models))
 	mux.HandleFunc("/v1/chat/completions", a.api(a.chat))
 	mux.HandleFunc("/v1/responses", a.api(a.responses))

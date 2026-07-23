@@ -55,7 +55,7 @@ CREATE TABLE request_ledger (
 	}
 	defer a.Close()
 	for table, columns := range map[string][]string{
-		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms"},
+		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh"},
 		"model_routes":   {"sort_order"},
 		"api_keys":       {"encrypted_key"},
 		"request_ledger": {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms", "usage_reported", "api_key_name", "api_key_prefix", "provider_name"},
@@ -87,6 +87,13 @@ CREATE TABLE request_ledger (
 	}
 	if policyTable != "route_policies" {
 		t.Fatalf("route_policies table = %q", policyTable)
+	}
+	var authIndex string
+	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_provider_auth_fingerprint'`).Scan(&authIndex); err != nil {
+		t.Fatalf("OAuth credential fingerprint index was not migrated: %v", err)
+	}
+	if authIndex != "idx_provider_auth_fingerprint" {
+		t.Fatalf("OAuth credential fingerprint index = %q", authIndex)
 	}
 	rows, err := a.db.Query(`SELECT id,sort_order FROM model_routes ORDER BY id`)
 	if err != nil {

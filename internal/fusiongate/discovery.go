@@ -49,6 +49,7 @@ type discoveryProvider struct {
 	Type             string
 	BaseURL          string
 	Credential       string
+	AuthCredential   *ProviderCredential
 	RequestTimeoutMS int
 }
 
@@ -70,12 +71,30 @@ type discoveryModelEntry struct {
 func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryProvider, error) {
 	var p discoveryProvider
 	var encrypted []byte
-	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,request_timeout_ms FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &p.RequestTimeoutMS)
+	var authKind string
+	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS)
 	if err != nil {
 		return p, err
 	}
-	p.Credential, err = a.decrypt(encrypted)
-	return p, err
+	plaintext, err := a.decrypt(encrypted)
+	if err != nil {
+		return p, err
+	}
+	authCredential, token, err := decodeStoredCredential(authKind, plaintext)
+	if err != nil {
+		return p, err
+	}
+	p.Credential = token
+	if authKind == "oauth" {
+		p.AuthCredential = &authCredential
+		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type}, Credential: token, AuthCredential: &authCredential}
+		if err := a.ensureFreshProviderCredential(ctx, &z); err != nil {
+			return p, err
+		}
+		p.Credential = z.Credential
+		p.AuthCredential = z.AuthCredential
+	}
+	return p, nil
 }
 
 func discoveryURLs(p discoveryProvider) ([]string, error) {
@@ -86,7 +105,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 	basePath := strings.TrimRight(u.Path, "/")
 	var paths []string
 	switch p.Type {
-	case "openai", "openrouter", "openai_compatible", "anthropic":
+	case "openai", "openrouter", "openai_compatible", "anthropic", "codex_oauth", "claude_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
 			paths = []string{basePath + "/models"}
 		} else {
@@ -110,7 +129,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		if p.Type == "gemini" {
 			q.Set("key", p.Credential)
 			q.Set("pageSize", "1000")
-		} else if p.Type == "anthropic" {
+		} else if p.Type == "anthropic" || p.Type == "claude_oauth" {
 			q.Set("limit", "1000")
 		}
 		copyURL.RawQuery = q.Encode()
@@ -128,9 +147,19 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 	switch p.Type {
 	case "openai", "openrouter", "openai_compatible":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
+	case "codex_oauth":
+		req.Header.Set("Authorization", "Bearer "+p.Credential)
+		if p.AuthCredential != nil && p.AuthCredential.AccountID != "" {
+			req.Header.Set("ChatGPT-Account-ID", p.AuthCredential.AccountID)
+		}
 	case "anthropic":
 		req.Header.Set("x-api-key", p.Credential)
 		req.Header.Set("anthropic-version", "2023-06-01")
+	case "claude_oauth":
+		req.Header.Set("Authorization", "Bearer "+p.Credential)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14")
+		req.Header.Set("x-app", "cli")
 	case "gemini":
 		// Gemini accepts the key in the query string.
 	}

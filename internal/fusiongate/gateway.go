@@ -30,9 +30,10 @@ type authKey struct {
 }
 
 type resolvedRoute struct {
-	Route      Route
-	Provider   Provider
-	Credential string
+	Route          Route
+	Provider       Provider
+	Credential     string
+	AuthCredential *ProviderCredential
 }
 
 func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.HandlerFunc {
@@ -159,7 +160,7 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]resolvedRoute, error) {
 	rows, err := a.db.QueryContext(ctx, `
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,r.input_price_micros,r.output_price_micros,
-       p.id,p.name,p.type,p.base_url,p.credential,p.enabled,p.priority,p.weight,p.status,p.notes,
+	       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
        p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,'')
@@ -175,10 +176,11 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 		var z resolvedRoute
 		var routeEnabled, providerEnabled int
 		var credential []byte
+		var authKind string
 		if err := rows.Scan(
 			&z.Route.ID, &z.Route.ProviderID, &z.Route.PublicName, &z.Route.UpstreamModel, &z.Route.Capabilities, &routeEnabled,
 			&z.Route.Priority, &z.Route.SortOrder, &z.Route.InputPriceMicros, &z.Route.OutputPriceMicros,
-			&z.Provider.ID, &z.Provider.Name, &z.Provider.Type, &z.Provider.BaseURL, &credential, &providerEnabled,
+			&z.Provider.ID, &z.Provider.Name, &z.Provider.Type, &z.Provider.BaseURL, &credential, &authKind, &providerEnabled,
 			&z.Provider.Priority, &z.Provider.Weight, &z.Provider.Status, &z.Provider.Notes,
 			&z.Provider.PassthroughMode, &z.Provider.ClientPolicy, &z.Provider.MaxConcurrency, &z.Provider.RequestTimeoutMS,
 			&z.Provider.FailureThreshold, &z.Provider.CooldownSeconds, &z.Provider.ConsecutiveFailures,
@@ -192,9 +194,17 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 		if !matchesCapability(z.Route.Capabilities, requiredCapability) {
 			continue
 		}
-		z.Credential, err = a.decrypt(credential)
-		if err != nil {
-			return nil, fmt.Errorf("cannot decrypt provider %s credential: %w", z.Provider.Name, err)
+		plaintext, decryptErr := a.decrypt(credential)
+		if decryptErr != nil {
+			return nil, fmt.Errorf("cannot decrypt provider %s credential: %w", z.Provider.Name, decryptErr)
+		}
+		authCredential, accessToken, decodeErr := decodeStoredCredential(authKind, plaintext)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("cannot load provider %s credential: %w", z.Provider.Name, decodeErr)
+		}
+		z.Credential = accessToken
+		if authKind == "oauth" {
+			z.AuthCredential = &authCredential
 		}
 		out = append(out, z)
 	}
@@ -515,7 +525,7 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		switch z.Provider.Type {
 		case "openai", "openrouter", "openai_compatible":
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
-		case "anthropic":
+		case "anthropic", "claude_oauth":
 			if stream || z.Provider.PassthroughMode == "transparent" {
 				return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
 			}
@@ -563,11 +573,16 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 	upstreamURL, _ := joinURLQuery(z.Provider.BaseURL, "/v1/messages", "")
 	ctx, cancel := providerContext(r.Context(), z.Provider)
 	defer cancel()
+	if err := a.ensureFreshProviderCredential(ctx, &z); err != nil {
+		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "auth_expired", Err: err}
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	copyUpstreamRequestHeaders(req.Header, r.Header)
-	req.Header.Set("x-api-key", z.Credential)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("content-type", "application/json")
+	if err := setProviderAuth(req, z); err != nil {
+		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "route_configuration_error", Err: err}
+	}
 	resp, err := a.client.Do(req)
 	if err != nil {
 		if downstreamCanceled(r) {
@@ -704,7 +719,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
-		if z.Provider.Type == "openai" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" {
+		if z.Provider.Type == "openai" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" {
 			compatible = append(compatible, z)
 		}
 	}
@@ -740,7 +755,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
-		if z.Provider.Type == "anthropic" {
+		if z.Provider.Type == "anthropic" || z.Provider.Type == "claude_oauth" {
 			compatible = append(compatible, z)
 		}
 	}

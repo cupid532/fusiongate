@@ -2,14 +2,15 @@
 
 面向个人和小型可信团队的**自托管 AI 账号与 API 聚合网关**。它将多个上游渠道映射成统一模型名，并通过一把下游 API Key 提供 OpenAI 兼容访问和完整请求账本。
 
-已实现 API Key 渠道与基础协议适配；Codex / Claude Code / Gemini CLI 官方 OAuth 目前仅保留 Provider 类型和扩展边界，尚未实现 OAuth 授权或网页自动化逻辑。项目不会保存账号密码、抓取 Cookie 或绕过服务商限制。
+已实现 API Key 渠道与基础协议适配，并支持 Codex 与 Claude 的浏览器 OAuth 授权及 CLIProxyAPI / sub2api OAuth JSON 迁移。FusionGate 只接收用户主动完成的官方授权或用户主动导出的凭据文件，不保存账号密码、不抓取 Cookie，也不绕过服务商访问控制。
 
 ## 已实现
 
 - Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
 - 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
-- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini；保存渠道时自动读取上游模型候选列表，由管理员勾选后批量创建路由，也可随时手动重新识别；公开模型名与保存的上游模型 ID 统一规范为小写；OAuth 类型明确标为未接入适配器。
+- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude OAuth；普通 API 渠道保存后自动读取上游模型候选，OAuth 渠道可在授权或导入后手动识别，均由管理员勾选后批量创建路由；公开模型名与保存的上游模型 ID 统一规范为小写。
+- 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE），以及 CLIProxyAPI、sub2api 导出的 Codex / Claude OAuth JSON。JSON 导入必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。
 - 公共模型 / 别名与多条候选路由；渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级。数字越大越优先，同级按渠道添加顺序自动故障转移；可在渠道页全局选择优先级故障转移、顺序轮询或智能选择。
 - 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、单探针半开恢复、指数冷却、`Retry-After`。
 - 安全故障转移：连接/超时、429、部分路由错误与 5xx 可切换备用；空流或首字节前断流可切换，首字节发出后绝不拼接第二家响应；图片传输结果不确定时不自动重放。
@@ -27,6 +28,16 @@
 - 默认白色管理主题，并支持一键切换深色主题；主题偏好保存在浏览器本地。
 - Docker Compose 与非 root 容器配置。
 
+## Codex / Claude 授权与迁移
+
+- **浏览器授权**：管理台生成带 PKCE 的官方授权链接。授权结束后，将浏览器地址栏中的完整 `localhost` 回调地址粘贴回 FusionGate；回调只用于提取一次性授权码和校验 state，FusionGate 不要求服务器监听本机回调端口。
+- **JSON 迁移**：可粘贴或上传 CLIProxyAPI / sub2api 导出的 Codex、Claude OAuth JSON。支持单对象、数组、连续 JSON，以及常见的 `accounts` / `data.accounts` / `credentials` / `token_data` 包装。非 OAuth 账号和不支持的平台会被忽略。
+- **安全保存**：Access Token、Refresh Token 与 ID Token 作为一个凭据对象使用 AES-256-GCM 加密后写入 SQLite；预览、管理 API、页面和错误信息均不回显 Token。
+- **自动续期**：有 Refresh Token 时会在到期前自动刷新并保存轮换后的 Refresh Token；同一实例内的并发刷新会合并。刷新失败只标记授权状态并允许故障转移，不删除渠道。
+- **路由**：Codex OAuth 支持 OpenAI Responses 路径适配；Claude OAuth 支持 Anthropic Messages 所需授权头。模型识别仍需管理员确认，系统不会在导入账号后自动创建模型路由。
+
+请只导入你本人或你有权管理的账号凭据，并遵守对应服务商条款。FusionGate 不提供 Cookie 抓取、会话劫持或访问控制规避功能。
+
 ## 本机启动
 
 ```bash
@@ -38,7 +49,7 @@ go run ./cmd/fusiongate
 
 打开 `http://127.0.0.1:8787`，登录后依次：
 
-1. 添加 Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），系统会自动识别可用模型但不会直接添加；在候选弹窗中勾选需要的模型并确认导入。公开模型名与保存的上游模型 ID 会统一转为小写。
+1. 添加普通 API Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），或在“授权接入”中完成 Codex / Claude 浏览器授权、导入 CLIProxyAPI / sub2api OAuth JSON。系统只识别候选模型，不会直接添加；在候选弹窗中勾选需要的模型并确认导入。公开模型名与保存的上游模型 ID 会统一转为小写。
 2. 按需创建额外别名，例如公开名 `smart` → 上游模型 `gpt-4.1`。
 3. 创建下游 API Key，从实时模型列表勾选允许/拒绝权限；完整 Key 可在管理员控制台再次复制。
 4. 在任意 OpenAI SDK / 客户端中使用：
@@ -129,4 +140,4 @@ sudo bash install.sh
 
 ## 已知范围和后续工作
 
-本 MVP 故意不包含支付、充值、用户注册、兑换码或商业计费模块。完整官方 OAuth / CLI 流程、图像编辑、复杂工具调用/结构化输出、原生协议的完整流式转换、PostgreSQL、定时模型同步和备份 UI 仍需后续阶段实现。不要将订阅账号的等价 API 价值误称为实际上游扣费。
+本 MVP 故意不包含支付、充值、用户注册、兑换码或商业计费模块。Gemini CLI OAuth、图像编辑、复杂工具调用/结构化输出、原生协议的完整流式转换、PostgreSQL、定时模型同步和备份 UI 仍需后续阶段实现。不要将订阅账号的等价 API 价值误称为实际上游扣费。

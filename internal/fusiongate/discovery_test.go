@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestProviderCreationDiscoversCandidatesWithoutCreatingRoutes(t *testing.T) {
@@ -270,5 +271,86 @@ func TestModelDiscoveryErrorsRedactGeminiCredential(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "secret-with%2Fspecial") {
 		t.Fatalf("credential leaked in error: %s", err)
+	}
+}
+
+func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
+	tests := []struct {
+		name       string
+		platform   string
+		wantHeader string
+		wantValue  string
+		check      func(*testing.T, *http.Request)
+	}{
+		{
+			name:       "codex",
+			platform:   "codex",
+			wantHeader: "Authorization",
+			wantValue:  "Bearer codex-oauth-access",
+			check: func(t *testing.T, r *http.Request) {
+				if got := r.Header.Get("ChatGPT-Account-ID"); got != "acct-discovery" {
+					t.Fatalf("ChatGPT-Account-ID=%q", got)
+				}
+			},
+		},
+		{
+			name:       "claude",
+			platform:   "claude",
+			wantHeader: "Authorization",
+			wantValue:  "Bearer claude-oauth-access",
+			check: func(t *testing.T, r *http.Request) {
+				if r.Header.Get("Anthropic-Version") != "2023-06-01" || !strings.Contains(r.Header.Get("Anthropic-Beta"), "oauth-2025-04-20") || r.Header.Get("X-App") != "cli" {
+					t.Fatalf("Claude OAuth headers=%v", r.Header)
+				}
+				if got := r.URL.Query().Get("limit"); got != "1000" {
+					t.Fatalf("limit=%q", got)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			accessToken := tc.platform + "-oauth-access"
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/models" {
+					t.Fatalf("path=%q", r.URL.Path)
+				}
+				if got := r.Header.Get(tc.wantHeader); got != tc.wantValue {
+					t.Fatalf("%s=%q", tc.wantHeader, got)
+				}
+				if strings.Contains(r.URL.RawQuery, accessToken) {
+					t.Fatal("OAuth token leaked into discovery URL")
+				}
+				tc.check(t, r)
+				writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "MODEL-One"}}})
+			}))
+			defer upstream.Close()
+
+			a, err := New(testConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			credential := ProviderCredential{Version: 1, Kind: "oauth", Platform: tc.platform, Source: "sub2api", AccessToken: accessToken, RefreshToken: "refresh", ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}
+			if tc.platform == "codex" {
+				credential.AccountID = "acct-discovery"
+			}
+			providerID, _, err := a.saveOAuthProvider(context.Background(), tc.name+" discovery", 1, credential, 0, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.db.Exec(`UPDATE providers SET base_url=? WHERE id=?`, upstream.URL, providerID); err != nil {
+				t.Fatal(err)
+			}
+
+			result, err := a.discoverProviderModels(context.Background(), providerID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Discovered != 1 || len(result.Models) != 1 || result.Models[0].ID != "model-one" {
+				t.Fatalf("discovery=%#v", result)
+			}
+		})
 	}
 }

@@ -8,7 +8,7 @@ The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and pr
 - A server with at least 1 vCPU, 1 GB RAM, and 10 GB free disk
 - A DNS A record, and optionally an AAAA record, pointing to the server
 - Inbound TCP 80 and TCP/UDP 443
-- Outbound HTTPS access to GitHub, Docker Hub, Docker's apt repository, certificate authorities, and configured upstream providers
+- Outbound HTTPS access to GitHub, Docker Hub, Docker's apt repository, certificate authorities, configured upstream providers, and the Codex / Claude OAuth authorization and token endpoints when those integrations are enabled
 
 Do not place Cloudflare or another proxy in front of the first installation until Caddy has successfully obtained a certificate, unless its TLS mode is configured correctly.
 
@@ -58,6 +58,18 @@ sudo fusiongatectl backup
 An update downloads the configured repository and Git ref, replaces only the managed application source, rebuilds the image, and preserves configuration, secrets, database files, and Caddy state.
 
 Backups briefly stop the FusionGate application container to produce a consistent archive. The archive contains the database and encryption key and must be protected like production credentials.
+
+## OAuth production notes
+
+Codex and Claude browser authorization use the official CLI-compatible `localhost` redirect URIs. The production server does **not** need to expose ports 1455 or 54545: after authorization, copy the full localhost callback URL from the browser address bar and paste it into the FusionGate management console. The pending authorization session is held in memory for 15 minutes and can be consumed only once.
+
+OAuth credentials imported from CLIProxyAPI or sub2api are encrypted with `FUSIONGATE_MASTER_KEY`. Before every update or migration, back up the following together:
+
+- `/opt/fusiongate/data/fusiongate.db` (and any `-wal` / `-shm` files when the service is running);
+- `/opt/fusiongate/config` or the secret source containing `FUSIONGATE_MASTER_KEY`;
+- `/opt/fusiongate/app` and the active Compose definition.
+
+Never paste OAuth JSON into shell history, deployment logs, issue trackers, or chat. Use the authenticated management page over HTTPS. Only import accounts you own or are authorized to administer.
 
 ## Firewall
 

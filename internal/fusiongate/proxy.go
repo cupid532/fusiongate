@@ -189,10 +189,25 @@ func joinURLQuery(base, endpoint, rawQuery string) (string, error) {
 
 func setProviderAuth(req *http.Request, z resolvedRoute) error {
 	switch z.Provider.Type {
-	case "openai", "openrouter", "openai_compatible":
+	case "openai", "openrouter", "openai_compatible", "codex_oauth":
 		req.Header.Set("Authorization", "Bearer "+z.Credential)
+		if z.Provider.Type == "codex_oauth" && z.AuthCredential != nil && z.AuthCredential.AccountID != "" {
+			req.Header.Set("ChatGPT-Account-ID", z.AuthCredential.AccountID)
+		}
 	case "anthropic":
 		req.Header.Set("x-api-key", z.Credential)
+	case "claude_oauth":
+		req.Header.Set("Authorization", "Bearer "+z.Credential)
+		beta := req.Header.Get("Anthropic-Beta")
+		if beta == "" {
+			beta = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
+		} else if !strings.Contains(beta, "oauth-2025-04-20") {
+			beta += ",oauth-2025-04-20"
+		}
+		req.Header.Set("Anthropic-Beta", beta)
+		if req.Header.Get("X-App") == "" {
+			req.Header.Set("X-App", "cli")
+		}
 	case "gemini":
 		query := req.URL.Query()
 		query.Set("key", z.Credential)
@@ -232,10 +247,17 @@ func downstreamCanceled(r *http.Request) bool {
 }
 
 func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z resolvedRoute, options proxyOptions) attemptResult {
+	if err := a.ensureFreshProviderCredential(incoming.Context(), &z); err != nil {
+		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "auth_expired", Err: err}
+	}
 	if options.Transparent && z.Route.PublicName != z.Route.UpstreamModel {
 		return attemptResult{Status: http.StatusServiceUnavailable, Retryable: true, Reason: "route_configuration_error", Err: fmt.Errorf("transparent routes require public_name to equal upstream_model")}
 	}
-	upstreamURL, err := joinURLQuery(z.Provider.BaseURL, options.Endpoint, incoming.URL.RawQuery)
+	endpoint := options.Endpoint
+	if z.Provider.Type == "codex_oauth" && strings.HasPrefix(endpoint, "/v1/") {
+		endpoint = strings.TrimPrefix(endpoint, "/v1")
+	}
+	upstreamURL, err := joinURLQuery(z.Provider.BaseURL, endpoint, incoming.URL.RawQuery)
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
@@ -255,7 +277,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		if req.Header.Get("Accept") == "" {
 			req.Header.Set("Accept", "application/json")
 		}
-		if z.Provider.Type == "anthropic" && req.Header.Get("anthropic-version") == "" {
+		if (z.Provider.Type == "anthropic" || z.Provider.Type == "claude_oauth") && req.Header.Get("anthropic-version") == "" {
 			req.Header.Set("anthropic-version", "2023-06-01")
 		}
 	}
