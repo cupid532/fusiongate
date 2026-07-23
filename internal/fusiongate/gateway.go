@@ -523,7 +523,7 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 	a.runRoutes(w, r, key, routes, "openai_chat", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		switch z.Provider.Type {
-		case "openai", "openrouter", "openai_compatible":
+		case "openai", "openrouter", "openai_compatible", "grok_oauth":
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
 		case "anthropic", "claude_oauth":
 			if stream || z.Provider.PassthroughMode == "transparent" {
@@ -719,7 +719,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
-		if z.Provider.Type == "openai" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" {
+		if z.Provider.Type == "openai" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth" {
 			compatible = append(compatible, z)
 		}
 	}

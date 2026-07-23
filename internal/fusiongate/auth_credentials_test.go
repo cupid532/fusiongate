@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -470,5 +471,202 @@ func TestInvalidImportSelectionDoesNotConsumePreview(t *testing.T) {
 	a.authImportCommit(validRec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(valid))), adminCtx{})
 	if validRec.Code != http.StatusOK {
 		t.Fatalf("valid retry status=%d body=%s", validRec.Code, validRec.Body.String())
+	}
+}
+
+type authRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f authRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func authJSONResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+}
+
+func TestCLIProxyXAICredentialImport(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	content := `{"type":"xai","auth_kind":"oauth","access_token":"xai-access-secret","refresh_token":"xai-refresh-secret","id_token":"xai-id-secret","expired":"2026-07-24T12:00:00Z","last_refresh":"2026-07-23T12:00:00Z","email":"GROK@EXAMPLE.COM","sub":"xai-subject-123","token_endpoint":"https://auth.x.ai/oauth/token","base_url":"https://cli-chat-proxy.grok.com/v1"}`
+	items, err := a.parseCredentialImports(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items=%d, want 1", len(items))
+	}
+	got := items[0].Credential
+	if got.Platform != "grok" || got.Source != "cliproxy" || got.AccountID != "xai-subject-123" || got.Email != "grok@example.com" {
+		t.Fatalf("xAI normalization=%#v", got)
+	}
+	if got.Extra["token_endpoint"] != "https://auth.x.ai/oauth/token" {
+		t.Fatalf("token endpoint=%#v", got.Extra)
+	}
+
+	payload, _ := json.Marshal(map[string]any{"content": content})
+	rec := httptest.NewRecorder()
+	a.authImportPreview(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(payload))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, secret := range []string{"xai-access-secret", "xai-refresh-secret", "xai-id-secret", "xai-subject-123", "GROK@EXAMPLE.COM"} {
+		if strings.Contains(rec.Body.String(), secret) {
+			t.Fatalf("preview leaked %q: %s", secret, rec.Body.String())
+		}
+	}
+}
+
+func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	var polls atomic.Int32
+	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case xaiOIDCDiscoveryURL:
+			return authJSONResponse(http.StatusOK, `{"device_authorization_endpoint":"https://auth.x.ai/oauth/device/code","token_endpoint":"https://auth.x.ai/oauth/token"}`), nil
+		case "https://auth.x.ai/oauth/device/code":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.Form.Get("client_id") != xaiOAuthClientID || r.Form.Get("scope") != xaiOAuthScope {
+				t.Fatalf("device form=%v", r.Form)
+			}
+			return authJSONResponse(http.StatusOK, `{"device_code":"device-super-secret","user_code":"ABCD-EFGH","verification_uri":"https://auth.x.ai/device","verification_uri_complete":"https://auth.x.ai/device?user_code=ABCD-EFGH","expires_in":900,"interval":2}`), nil
+		case "https://auth.x.ai/oauth/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatal(err)
+			}
+			if r.Form.Get("device_code") != "device-super-secret" || r.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code" {
+				t.Fatalf("poll form=%v", r.Form)
+			}
+			if polls.Add(1) == 1 {
+				return authJSONResponse(http.StatusBadRequest, `{"error":"authorization_pending"}`), nil
+			}
+			jwt := unsignedJWT(map[string]any{"sub": "grok-user-1", "email": "grok@example.com", "exp": time.Now().Add(time.Hour).Unix()})
+			return authJSONResponse(http.StatusOK, fmt.Sprintf(`{"access_token":"access-super-secret","refresh_token":"refresh-super-secret","id_token":%q,"expires_in":3600}`, jwt)), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}
+
+	startBody, _ := json.Marshal(map[string]any{"platform": "grok"})
+	startRec := httptest.NewRecorder()
+	a.oauthStart(startRec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(startBody))), adminCtx{})
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start status=%d body=%s", startRec.Code, startRec.Body.String())
+	}
+	if strings.Contains(startRec.Body.String(), "device-super-secret") {
+		t.Fatalf("start response leaked device code: %s", startRec.Body.String())
+	}
+	var started struct {
+		SessionID string `json:"session_id"`
+		Flow      string `json:"flow"`
+		UserCode  string `json:"user_code"`
+	}
+	if err := json.Unmarshal(startRec.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.Flow != "device" || started.UserCode != "ABCD-EFGH" || started.SessionID == "" {
+		t.Fatalf("start=%#v", started)
+	}
+
+	completeBody, _ := json.Marshal(map[string]any{"session_id": started.SessionID, "priority": 1})
+	pendingRec := httptest.NewRecorder()
+	a.oauthComplete(pendingRec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(completeBody))), adminCtx{})
+	if pendingRec.Code != http.StatusAccepted || !strings.Contains(pendingRec.Body.String(), `"pending":true`) {
+		t.Fatalf("pending status=%d body=%s", pendingRec.Code, pendingRec.Body.String())
+	}
+	if _, ok := a.oauthSessions[started.SessionID]; !ok {
+		t.Fatal("pending device session was consumed")
+	}
+
+	a.authMu.Lock()
+	session := a.oauthSessions[started.SessionID]
+	session.LastPoll = time.Time{}
+	a.oauthSessions[started.SessionID] = session
+	a.authMu.Unlock()
+	completeRec := httptest.NewRecorder()
+	a.oauthComplete(completeRec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(completeBody))), adminCtx{})
+	if completeRec.Code != http.StatusCreated {
+		t.Fatalf("complete status=%d body=%s", completeRec.Code, completeRec.Body.String())
+	}
+	for _, secret := range []string{"access-super-secret", "refresh-super-secret", "device-super-secret"} {
+		if strings.Contains(completeRec.Body.String(), secret) {
+			t.Fatalf("complete response leaked %q: %s", secret, completeRec.Body.String())
+		}
+	}
+	var providerType, baseURL, authKind string
+	if err := a.db.QueryRow(`SELECT type,base_url,auth_kind FROM providers`).Scan(&providerType, &baseURL, &authKind); err != nil {
+		t.Fatal(err)
+	}
+	if providerType != "grok_oauth" || baseURL != "https://cli-chat-proxy.grok.com" || authKind != "oauth" {
+		t.Fatalf("provider type=%q base=%q kind=%q", providerType, baseURL, authKind)
+	}
+}
+
+func TestXAIRefreshUsesTrustedStoredTokenEndpoint(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() != "https://auth.x.ai/oauth/token" {
+			t.Fatalf("refresh URL=%s", r.URL)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.Form.Get("client_id") != xaiOAuthClientID || r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "refresh-secret" {
+			t.Fatalf("refresh form=%v", r.Form)
+		}
+		return authJSONResponse(http.StatusOK, `{"access_token":"new-access","expires_in":3600}`), nil
+	})}
+	current := ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "cliproxy", AccessToken: "old-access", RefreshToken: "refresh-secret", AccountID: "subject", Extra: map[string]any{"token_endpoint": "https://auth.x.ai/oauth/token"}}
+	fresh, err := a.refreshOAuthCredential(context.Background(), current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.AccessToken != "new-access" || fresh.RefreshToken != "refresh-secret" || fresh.AccountID != "subject" || fresh.Extra["token_endpoint"] != "https://auth.x.ai/oauth/token" {
+		t.Fatalf("fresh=%#v", fresh)
+	}
+}
+
+func TestTrustedXAIEndpointRejectsDiscoveryInjection(t *testing.T) {
+	for _, raw := range []string{"http://auth.x.ai/token", "https://x.ai.evil.example/token", "https://evil.example/token", "https://user@auth.x.ai/token"} {
+		if isTrustedXAIEndpoint(raw) {
+			t.Fatalf("trusted malicious endpoint %q", raw)
+		}
+	}
+	for _, raw := range []string{"https://x.ai/token", "https://auth.x.ai/token"} {
+		if !isTrustedXAIEndpoint(raw) {
+			t.Fatalf("rejected trusted endpoint %q", raw)
+		}
+	}
+}
+
+func TestGrokOAuthProxyUsesBearerAndSingleV1Prefix(t *testing.T) {
+	z := resolvedRoute{Provider: Provider{Type: "grok_oauth", BaseURL: oauthProviderBaseURL("grok")}, Credential: "grok-secret"}
+	req := httptest.NewRequest(http.MethodPost, "https://gateway.example/v1/responses", nil)
+	upstream, err := joinURLQuery(z.Provider.BaseURL, "/v1/responses", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if upstream != "https://cli-chat-proxy.grok.com/v1/responses" {
+		t.Fatalf("upstream=%q", upstream)
+	}
+	req.URL, _ = url.Parse(upstream)
+	if err := setProviderAuth(req, z); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer grok-secret" {
+		t.Fatalf("Authorization=%q", got)
 	}
 }

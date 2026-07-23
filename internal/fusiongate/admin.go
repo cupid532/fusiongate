@@ -119,7 +119,7 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) {
 
 func validProviderType(t string) bool {
 	switch t {
-	case "openai", "openrouter", "openai_compatible", "anthropic", "gemini", "codex_oauth", "claude_oauth", "gemini_cli":
+	case "openai", "openrouter", "openai_compatible", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "gemini_cli":
 		return true
 	}
 	return false

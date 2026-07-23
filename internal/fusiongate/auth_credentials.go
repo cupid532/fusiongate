@@ -23,6 +23,8 @@ const (
 	codexOAuthRedirectURI  = "http://localhost:1455/auth/callback"
 	claudeOAuthClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	claudeOAuthRedirectURI = "http://localhost:54545/callback"
+	xaiOAuthClientID       = "b1a00492-073a-47ea-816f-4c329264a828"
+	xaiOAuthScope          = "openid profile email offline_access grok-cli:access api:access"
 	authSessionTTL         = 15 * time.Minute
 	authImportMaxBytes     = 2 << 20
 )
@@ -32,6 +34,7 @@ var (
 	codexOAuthTokenURL      = "https://auth.openai.com/oauth/token"
 	claudeOAuthAuthorizeURL = "https://claude.ai/oauth/authorize"
 	claudeOAuthTokenURL     = "https://api.anthropic.com/v1/oauth/token"
+	xaiOIDCDiscoveryURL     = "https://auth.x.ai/.well-known/openid-configuration"
 )
 
 type ProviderCredential struct {
@@ -51,10 +54,15 @@ type ProviderCredential struct {
 }
 
 type oauthSession struct {
-	Platform string
-	State    string
-	Verifier string
-	Created  time.Time
+	Platform      string
+	State         string
+	Verifier      string
+	Created       time.Time
+	DeviceCode    string
+	TokenEndpoint string
+	PollInterval  time.Duration
+	LastPoll      time.Time
+	ExpiresAt     time.Time
 }
 
 type credentialImport struct {
@@ -91,23 +99,34 @@ func normalizeOAuthPlatform(value string) string {
 		return "codex"
 	case "claude", "anthropic", "claude_oauth", "claude-code", "claude_code":
 		return "claude"
+	case "grok", "xai", "x.ai", "grok_oauth", "xai_oauth":
+		return "grok"
 	default:
 		return ""
 	}
 }
 
 func oauthProviderType(platform string) string {
-	if platform == "codex" {
+	switch platform {
+	case "codex":
 		return "codex_oauth"
+	case "grok":
+		return "grok_oauth"
+	default:
+		return "claude_oauth"
 	}
-	return "claude_oauth"
 }
 
 func oauthProviderBaseURL(platform string) string {
-	if platform == "codex" {
+	switch platform {
+	case "codex":
 		return "https://chatgpt.com/backend-api/codex"
+	case "grok":
+		// FusionGate appends /v1 endpoints, so keep the base URL free of /v1.
+		return "https://cli-chat-proxy.grok.com"
+	default:
+		return "https://api.anthropic.com"
 	}
-	return "https://api.anthropic.com"
 }
 
 func pkceVerifier() string { return base64.RawURLEncoding.EncodeToString(randomBytes(32)) }
@@ -129,6 +148,96 @@ func (a *App) pruneAuthMemoryLocked(t time.Time) {
 	}
 }
 
+func isTrustedXAIEndpoint(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme != "https" || u.User != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	return host == "x.ai" || strings.HasSuffix(host, ".x.ai")
+}
+
+type xaiOIDCConfiguration struct {
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
+	TokenEndpoint               string `json:"token_endpoint"`
+}
+
+func (a *App) xaiOIDCConfiguration(ctx context.Context) (xaiOIDCConfiguration, error) {
+	if !isTrustedXAIEndpoint(xaiOIDCDiscoveryURL) {
+		return xaiOIDCConfiguration{}, errors.New("xAI discovery configuration is invalid")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, xaiOIDCDiscoveryURL, nil)
+	if err != nil {
+		return xaiOIDCConfiguration{}, errors.New("xAI discovery configuration is invalid")
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return xaiOIDCConfiguration{}, errors.New("xAI authorization service is unavailable")
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return xaiOIDCConfiguration{}, errors.New("xAI authorization service is unavailable")
+	}
+	var config xaiOIDCConfiguration
+	if json.Unmarshal(body, &config) != nil || !isTrustedXAIEndpoint(config.DeviceAuthorizationEndpoint) || !isTrustedXAIEndpoint(config.TokenEndpoint) {
+		return xaiOIDCConfiguration{}, errors.New("xAI authorization configuration is invalid")
+	}
+	return config, nil
+}
+
+func (a *App) startXAIDeviceAuthorization(ctx context.Context) (oauthSession, map[string]any, error) {
+	config, err := a.xaiOIDCConfiguration(ctx)
+	if err != nil {
+		return oauthSession{}, nil, err
+	}
+	form := url.Values{"client_id": {xaiOAuthClientID}, "scope": {xaiOAuthScope}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, config.DeviceAuthorizationEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return oauthSession{}, nil, errors.New("xAI authorization setup failed")
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return oauthSession{}, nil, errors.New("xAI authorization service is unavailable")
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return oauthSession{}, nil, errors.New("xAI device authorization could not be started")
+	}
+	var device struct {
+		DeviceCode              string `json:"device_code"`
+		UserCode                string `json:"user_code"`
+		VerificationURI         string `json:"verification_uri"`
+		VerificationURIComplete string `json:"verification_uri_complete"`
+		ExpiresIn               int    `json:"expires_in"`
+		Interval                int    `json:"interval"`
+	}
+	if json.Unmarshal(body, &device) != nil || strings.TrimSpace(device.DeviceCode) == "" || strings.TrimSpace(device.UserCode) == "" || !isTrustedXAIEndpoint(device.VerificationURI) {
+		return oauthSession{}, nil, errors.New("xAI device authorization response is invalid")
+	}
+	if device.ExpiresIn <= 0 || time.Duration(device.ExpiresIn)*time.Second > authSessionTTL {
+		device.ExpiresIn = int(authSessionTTL.Seconds())
+	}
+	if device.Interval < 2 {
+		device.Interval = 5
+	}
+	sessionID := base64.RawURLEncoding.EncodeToString(randomBytes(32))
+	session := oauthSession{Platform: "grok", State: sessionID, Created: time.Now(), DeviceCode: device.DeviceCode, TokenEndpoint: config.TokenEndpoint, PollInterval: time.Duration(device.Interval) * time.Second, ExpiresAt: time.Now().Add(time.Duration(device.ExpiresIn) * time.Second)}
+	result := map[string]any{
+		"session_id": sessionID, "platform": "grok", "flow": "device", "verification_url": device.VerificationURI,
+		"user_code": device.UserCode, "expires_in": device.ExpiresIn, "poll_interval": device.Interval,
+		"instruction": "请在新窗口完成 xAI · Grok 授权，再回到此处确认。认证码不会保存到页面或日志。",
+	}
+	if isTrustedXAIEndpoint(device.VerificationURIComplete) {
+		result["verification_url_complete"] = device.VerificationURIComplete
+	}
+	return session, result, nil
+}
+
 func (a *App) oauthStart(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	if r.Method != http.MethodPost {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -143,7 +252,22 @@ func (a *App) oauthStart(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 	platform := normalizeOAuthPlatform(in.Platform)
 	if platform == "" {
-		fail(w, http.StatusBadRequest, "unsupported_platform", "only Codex and Claude authorization are supported")
+		fail(w, http.StatusBadRequest, "unsupported_platform", "only Codex, Claude, and Grok authorization are supported")
+		return
+	}
+	if platform == "grok" {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+		session, response, err := a.startXAIDeviceAuthorization(ctx)
+		if err != nil {
+			fail(w, http.StatusBadGateway, "oauth_start_failed", "xAI device authorization could not be started")
+			return
+		}
+		a.authMu.Lock()
+		a.pruneAuthMemoryLocked(time.Now())
+		a.oauthSessions[session.State] = session
+		a.authMu.Unlock()
+		writeJSON(w, http.StatusOK, response)
 		return
 	}
 	state := base64.RawURLEncoding.EncodeToString(randomBytes(32))
@@ -229,26 +353,75 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		fail(w, http.StatusBadRequest, "invalid_priority", "priority must be zero or greater")
 		return
 	}
+	sessionID := strings.TrimSpace(in.SessionID)
+	a.authMu.Lock()
+	a.pruneAuthMemoryLocked(time.Now())
+	session, ok := a.oauthSessions[sessionID]
+	a.authMu.Unlock()
+	if !ok || time.Since(session.Created) > authSessionTTL || (!session.ExpiresAt.IsZero() && time.Now().After(session.ExpiresAt)) {
+		fail(w, http.StatusBadRequest, "oauth_session_expired", "authorization session expired; start again")
+		return
+	}
+	if session.Platform == "grok" {
+		nowTime := time.Now()
+		a.authMu.Lock()
+		// Check and update under one lock so parallel requests cannot over-poll the device endpoint.
+		session, ok = a.oauthSessions[sessionID]
+		retryAfter := 0
+		if ok && !session.LastPoll.IsZero() && nowTime.Sub(session.LastPoll) < session.PollInterval {
+			wait := session.PollInterval - nowTime.Sub(session.LastPoll)
+			retryAfter = max(1, int(wait.Seconds())+1)
+		} else if ok {
+			session.LastPoll = nowTime
+			a.oauthSessions[sessionID] = session
+		}
+		a.authMu.Unlock()
+		if !ok {
+			fail(w, http.StatusBadRequest, "oauth_session_expired", "authorization session expired; start again")
+			return
+		}
+		if retryAfter > 0 {
+			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "retry_after": retryAfter})
+			return
+		}
+		credential, pending, retryAfter, err := a.pollXAIDeviceAuthorization(r.Context(), session)
+		if err != nil {
+			fail(w, http.StatusBadGateway, "oauth_exchange_failed", "xAI authorization could not be completed; start a new login and try again")
+			return
+		}
+		if pending {
+			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "retry_after": retryAfter})
+			return
+		}
+		id, createdName, err := a.saveOAuthProvider(r.Context(), strings.TrimSpace(in.Name), priority, credential, 0, false)
+		if err != nil {
+			if errors.Is(err, errDuplicateCredential) {
+				fail(w, http.StatusConflict, "credential_exists", "this authorized account already exists")
+			} else {
+				a.log.Error("OAuth credential save failed", "error", err)
+				fail(w, http.StatusInternalServerError, "credential_save_failed", "credential could not be saved")
+			}
+			return
+		}
+		a.authMu.Lock()
+		delete(a.oauthSessions, sessionID)
+		a.authMu.Unlock()
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted"})
+		return
+	}
 	code, callbackState, err := parseOAuthCallback(in.Callback)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "invalid_callback", err.Error())
-		return
-	}
-	a.authMu.Lock()
-	a.pruneAuthMemoryLocked(time.Now())
-	session, ok := a.oauthSessions[strings.TrimSpace(in.SessionID)]
-	if ok {
-		delete(a.oauthSessions, strings.TrimSpace(in.SessionID))
-	}
-	a.authMu.Unlock()
-	if !ok || time.Since(session.Created) > authSessionTTL {
-		fail(w, http.StatusBadRequest, "oauth_session_expired", "authorization session expired; start again")
 		return
 	}
 	if callbackState != "" && callbackState != session.State {
 		fail(w, http.StatusBadRequest, "oauth_state_mismatch", "authorization state does not match")
 		return
 	}
+	// Consume browser callback sessions before exchanging a code; authorization codes are single-use.
+	a.authMu.Lock()
+	delete(a.oauthSessions, sessionID)
+	a.authMu.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
 	credential, err := a.exchangeOAuthCode(ctx, session, code)
@@ -267,6 +440,53 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted"})
+}
+
+func (a *App) pollXAIDeviceAuthorization(ctx context.Context, session oauthSession) (ProviderCredential, bool, int, error) {
+	if !isTrustedXAIEndpoint(session.TokenEndpoint) || strings.TrimSpace(session.DeviceCode) == "" {
+		return ProviderCredential{}, false, 0, errors.New("xAI authorization session is invalid")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "client_id": {xaiOAuthClientID}, "device_code": {session.DeviceCode}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, session.TokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return ProviderCredential{}, false, 0, errors.New("xAI authorization request is invalid")
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return ProviderCredential{}, false, 0, errors.New("xAI authorization service is unavailable")
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return ProviderCredential{}, false, 0, errors.New("cannot read xAI authorization response")
+	}
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+		var failure struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(body, &failure)
+		switch failure.Error {
+		case "authorization_pending":
+			return ProviderCredential{}, true, max(2, int(session.PollInterval.Seconds())), nil
+		case "slow_down":
+			return ProviderCredential{}, true, max(5, int(session.PollInterval.Seconds())+5), nil
+		case "expired_token", "access_denied":
+			return ProviderCredential{}, false, 0, errors.New("xAI device authorization was not completed")
+		}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return ProviderCredential{}, false, 0, fmt.Errorf("xAI authorization service returned status %d", resp.StatusCode)
+	}
+	credential, err := credentialFromOAuthTokenBody(body, "grok", "fusiongate_oauth")
+	if err != nil {
+		return ProviderCredential{}, false, 0, err
+	}
+	credential.Extra = map[string]any{"token_endpoint": session.TokenEndpoint}
+	return credential, false, 0, nil
 }
 
 func (a *App) exchangeOAuthCode(ctx context.Context, session oauthSession, code string) (ProviderCredential, error) {
@@ -297,6 +517,10 @@ func (a *App) readOAuthTokenResponse(req *http.Request, platform, source string)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ProviderCredential{}, fmt.Errorf("authentication service returned status %d", resp.StatusCode)
 	}
+	return credentialFromOAuthTokenBody(body, platform, source)
+}
+
+func credentialFromOAuthTokenBody(body []byte, platform, source string) (ProviderCredential, error) {
 	var token struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
@@ -540,7 +764,7 @@ func (a *App) parseCredentialImports(content string) ([]credentialImport, error)
 		items = append(items, credentialImport{ID: len(items) + 1, Name: firstNonEmpty(name, suggestedCredentialName(credential, len(items)+1)), Credential: credential, Fingerprint: fingerprint, DuplicateID: duplicateID, Status: status})
 	}
 	if len(items) == 0 {
-		return nil, errors.New("no supported Codex or Claude credentials found")
+		return nil, errors.New("no supported Codex, Claude, or Grok credentials found")
 	}
 	return items, nil
 }
@@ -620,7 +844,7 @@ func normalizeImportedCredential(raw map[string]any) (ProviderCredential, string
 		platform = normalizeOAuthPlatform(explicitType)
 	}
 	_, sub2apiShape := raw["credentials"]
-	if sub2apiShape && explicitType != "" && explicitType != "oauth" && explicitType != "codex" && explicitType != "claude" && explicitType != "openai_oauth" && explicitType != "claude_oauth" {
+	if sub2apiShape && explicitType != "" && explicitType != "oauth" && explicitType != "codex" && explicitType != "claude" && explicitType != "grok" && explicitType != "xai" && explicitType != "openai_oauth" && explicitType != "claude_oauth" && explicitType != "grok_oauth" && explicitType != "xai_oauth" {
 		return ProviderCredential{}, "", errUnsupportedCredential
 	}
 	access := firstStringMaps(tokenMaps, []string{"access_token"}, []string{"accessToken"})
@@ -630,9 +854,15 @@ func normalizeImportedCredential(raw map[string]any) (ProviderCredential, string
 	refresh := firstStringMaps(tokenMaps, []string{"refresh_token"}, []string{"refreshToken"})
 	idToken := firstStringMaps(tokenMaps, []string{"id_token"}, []string{"idToken"})
 	if platform == "" {
-		if firstStringMaps(allMaps, []string{"chatgpt_account_id"}, []string{"chatgptAccountId"}, []string{"account_id"}, []string{"accountId"}, []string{"account", "id"}) != "" || idToken != "" {
+		if firstStringMaps(allMaps, []string{"chatgpt_account_id"}, []string{"chatgptAccountId"}, []string{"account_id"}, []string{"accountId"}, []string{"account", "id"}) != "" {
 			platform = "codex"
 		}
+	}
+	if platform == "" && strings.Contains(strings.ToLower(firstStringMaps(allMaps, []string{"base_url"}, []string{"baseURL"})), "grok.com") {
+		platform = "grok"
+	}
+	if platform == "" && idToken != "" {
+		platform = "codex"
 	}
 	if platform == "" {
 		return ProviderCredential{}, "", errUnsupportedCredential
@@ -644,13 +874,13 @@ func normalizeImportedCredential(raw map[string]any) (ProviderCredential, string
 	if sub2apiShape {
 		source = "sub2api"
 	}
-	if explicitType == "codex" || explicitType == "claude" || raw["last_refresh"] != nil || raw["expired"] != nil {
+	if explicitType == "codex" || explicitType == "claude" || explicitType == "grok" || explicitType == "xai" || raw["last_refresh"] != nil || raw["expired"] != nil {
 		source = "cliproxy"
 	}
 	c := ProviderCredential{
 		Version: 1, Kind: "oauth", Platform: platform, Source: source, AccessToken: access, RefreshToken: refresh, IDToken: idToken,
 		AccountID: firstStringMaps(allMaps,
-			[]string{"chatgpt_account_id"}, []string{"chatgptAccountId"}, []string{"account_id"}, []string{"accountId"},
+			[]string{"chatgpt_account_id"}, []string{"chatgptAccountId"}, []string{"account_id"}, []string{"accountId"}, []string{"sub"}, []string{"subject"},
 			[]string{"account", "id"}, []string{"account", "account_id"}, []string{"account", "chatgpt_account_id"}),
 		Email: firstStringMaps(allMaps, []string{"email"}, []string{"email_address"}, []string{"user", "email"}, []string{"account", "email"}),
 		ExpiresAt: firstTimeMaps(tokenMaps,
@@ -658,6 +888,9 @@ func normalizeImportedCredential(raw map[string]any) (ProviderCredential, string
 		LastRefresh: firstTimeMaps(tokenMaps,
 			[]string{"last_refresh"}, []string{"lastRefresh"}, []string{"last_refresh_at"}),
 		Scope: firstStringMaps(tokenMaps, []string{"scope"}),
+	}
+	if endpoint := firstStringMaps(tokenMaps, []string{"token_endpoint"}, []string{"tokenEndpoint"}); endpoint != "" && isTrustedXAIEndpoint(endpoint) {
+		c.Extra = map[string]any{"token_endpoint": endpoint}
 	}
 	enrichCredentialFromJWT(&c)
 	return c, firstStringMaps([]map[string]any{raw}, []string{"name"}, []string{"user", "name"}), nil
@@ -762,7 +995,7 @@ func enrichCredentialFromJWT(c *ProviderCredential) {
 			c.Email = firstStringMaps([]map[string]any{claims}, []string{"email"})
 		}
 		if c.AccountID == "" {
-			c.AccountID = firstStringMaps([]map[string]any{claims}, []string{"chatgpt_account_id"}, []string{"account_id"}, []string{"https://api.openai.com/auth", "chatgpt_account_id"}, []string{"https://api.openai.com/auth", "account_id"})
+			c.AccountID = firstStringMaps([]map[string]any{claims}, []string{"chatgpt_account_id"}, []string{"account_id"}, []string{"sub"}, []string{"subject"}, []string{"https://api.openai.com/auth", "chatgpt_account_id"}, []string{"https://api.openai.com/auth", "account_id"})
 		}
 		if c.ExpiresAt == "" {
 			if exp, ok := claims["exp"]; ok {
@@ -806,8 +1039,11 @@ func credentialStatus(c ProviderCredential) string {
 
 func suggestedCredentialName(c ProviderCredential, index int) string {
 	label := "Codex"
-	if c.Platform == "claude" {
+	switch c.Platform {
+	case "claude":
 		label = "Claude"
+	case "grok":
+		label = "Grok"
 	}
 	identity := maskEmail(c.Email)
 	if identity == "" {
@@ -934,11 +1170,28 @@ func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCreden
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var req *http.Request
-	if current.Platform == "codex" {
+	switch current.Platform {
+	case "codex":
 		form := url.Values{"client_id": {codexOAuthClientID}, "grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}, "scope": {"openid profile email"}}
 		req, _ = http.NewRequestWithContext(ctx, http.MethodPost, codexOAuthTokenURL, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	} else {
+	case "grok":
+		tokenEndpoint, _ := current.Extra["token_endpoint"].(string)
+		if !isTrustedXAIEndpoint(tokenEndpoint) {
+			config, err := a.xaiOIDCConfiguration(ctx)
+			if err != nil {
+				return current, err
+			}
+			tokenEndpoint = config.TokenEndpoint
+		}
+		form := url.Values{"client_id": {xaiOAuthClientID}, "grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}}
+		req, _ = http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		if current.Extra == nil {
+			current.Extra = map[string]any{}
+		}
+		current.Extra["token_endpoint"] = tokenEndpoint
+	default:
 		payload, _ := json.Marshal(map[string]any{"client_id": claudeOAuthClientID, "grant_type": "refresh_token", "refresh_token": current.RefreshToken})
 		req, _ = http.NewRequestWithContext(ctx, http.MethodPost, claudeOAuthTokenURL, bytes.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
@@ -960,5 +1213,6 @@ func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCreden
 	if fresh.Email == "" {
 		fresh.Email = current.Email
 	}
+	fresh.Extra = current.Extra
 	return fresh, nil
 }

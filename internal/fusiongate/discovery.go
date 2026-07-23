@@ -105,7 +105,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 	basePath := strings.TrimRight(u.Path, "/")
 	var paths []string
 	switch p.Type {
-	case "openai", "openrouter", "openai_compatible", "anthropic", "codex_oauth", "claude_oauth":
+	case "openai", "openrouter", "openai_compatible", "anthropic", "codex_oauth", "claude_oauth", "grok_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
 			paths = []string{basePath + "/models"}
 		} else {
@@ -152,6 +152,8 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 		if p.AuthCredential != nil && p.AuthCredential.AccountID != "" {
 			req.Header.Set("ChatGPT-Account-ID", p.AuthCredential.AccountID)
 		}
+	case "grok_oauth":
+		req.Header.Set("Authorization", "Bearer "+p.Credential)
 	case "anthropic":
 		req.Header.Set("x-api-key", p.Credential)
 		req.Header.Set("anthropic-version", "2023-06-01")
