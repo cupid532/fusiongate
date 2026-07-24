@@ -9,7 +9,7 @@
 - Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
 - 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
-- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude / Grok OAuth；普通 API 渠道保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
+- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude / Grok OAuth；普通 API 渠道可随时编辑名称、类型、Base URL、API Key 与调度设置，更换 Key 无需删除渠道或重建模型路由；保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
 - 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE）、Grok 设备授权，以及 CLIProxyAPI、sub2api 导出的 Codex / Claude / Grok OAuth JSON。JSON 可一次选择多个文件，必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。认证文件支持按厂商筛选、批量选择和敏感凭据 JSON 导出。
 - 公共模型 / 别名与多条候选路由；渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级。数字越大越优先，同级按渠道添加顺序自动故障转移；可在渠道页全局选择优先级、逐个轮询、智能轮询或智能选择。
 - 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、单探针半开恢复、指数冷却、`Retry-After`。

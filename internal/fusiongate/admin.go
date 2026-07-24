@@ -124,6 +124,14 @@ func validProviderType(t string) bool {
 	}
 	return false
 }
+
+func validEditableProviderType(t string) bool {
+	switch t {
+	case "openai", "openrouter", "openai_compatible", "anthropic", "gemini":
+		return true
+	}
+	return false
+}
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
@@ -178,6 +186,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		in.Name = strings.TrimSpace(in.Name)
 		in.Type = strings.TrimSpace(in.Type)
 		in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
+		in.Credential = strings.TrimSpace(in.Credential)
 		if in.Name == "" || !validProviderType(in.Type) || in.Credential == "" {
 			fail(w, http.StatusBadRequest, "invalid_request", "name, supported type, and credential are required")
 			return
@@ -422,6 +431,10 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case http.MethodPatch:
 		var in struct {
+			Name             *string `json:"name"`
+			Type             *string `json:"type"`
+			BaseURL          *string `json:"baseURL"`
+			Credential       *string `json:"credential"`
 			Enabled          *bool   `json:"enabled"`
 			Priority         *int    `json:"priority"`
 			Weight           *int    `json:"weight"`
@@ -438,26 +451,70 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
+		var currentEnabled int
+		var authKind, currentName, currentType, currentBaseURL string
+		if err := a.db.QueryRow(`SELECT enabled,auth_kind,name,type,base_url FROM providers WHERE id=?`, id).Scan(&currentEnabled, &authKind, &currentName, &currentType, &currentBaseURL); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				fail(w, http.StatusNotFound, "not_found", "provider not found")
+				return
+			}
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		connectionEditRequested := in.Name != nil || in.Type != nil || in.BaseURL != nil || in.Credential != nil
+		if connectionEditRequested && authKind != "api_key" {
+			fail(w, http.StatusBadRequest, "invalid_request", "OAuth providers must be managed from credential files")
+			return
+		}
+		if in.Name != nil {
+			value := strings.TrimSpace(*in.Name)
+			if value == "" {
+				fail(w, http.StatusBadRequest, "invalid_request", "provider name is required")
+				return
+			}
+			in.Name = &value
+		}
+		if in.Type != nil {
+			value := strings.TrimSpace(*in.Type)
+			if !validEditableProviderType(value) {
+				fail(w, http.StatusBadRequest, "invalid_request", "unsupported editable provider type")
+				return
+			}
+			in.Type = &value
+		}
+		if in.BaseURL != nil {
+			value := strings.TrimRight(strings.TrimSpace(*in.BaseURL), "/")
+			if err := validateUpstream(value, a.cfg); err != nil {
+				fail(w, http.StatusBadRequest, "unsafe_upstream", err.Error())
+				return
+			}
+			in.BaseURL = &value
+		}
+		var encryptedCredential any
+		credentialUpdated := false
+		if in.Credential != nil {
+			value := strings.TrimSpace(*in.Credential)
+			if value == "" {
+				in.Credential = nil
+			} else {
+				encrypted, err := a.encrypt(value)
+				if err != nil {
+					fail(w, http.StatusInternalServerError, "credential_error", err.Error())
+					return
+				}
+				encryptedCredential = encrypted
+				credentialUpdated = true
+			}
+		}
+		connectionChanged := credentialUpdated || (in.Name != nil && *in.Name != currentName) || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL)
 		if (in.Priority != nil && *in.Priority < 0) || (in.Weight != nil && *in.Weight < 1) || (in.MaxConcurrency != nil && *in.MaxConcurrency < 0) || (in.RequestTimeoutMS != nil && *in.RequestTimeoutMS < 1000) || (in.FailureThreshold != nil && *in.FailureThreshold < 1) || (in.CooldownSeconds != nil && *in.CooldownSeconds < 1) || (in.PassthroughMode != nil && !validPassthroughMode(*in.PassthroughMode)) || (in.ClientPolicy != nil && !validClientPolicy(*in.ClientPolicy)) {
 			fail(w, http.StatusBadRequest, "invalid_request", "invalid provider scheduling or forwarding configuration")
 			return
 		}
-		// Re-enabling a channel starts a fresh health window. This matters most
-		// for channels automatically closed after five consecutive failures.
-		resetOnEnable := false
-		if in.Enabled != nil && *in.Enabled {
-			var enabled int
-			if err := a.db.QueryRow(`SELECT enabled FROM providers WHERE id=?`, id).Scan(&enabled); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					fail(w, http.StatusNotFound, "not_found", "provider not found")
-					return
-				}
-				fail(w, http.StatusInternalServerError, "database_error", err.Error())
-				return
-			}
-			resetOnEnable = !strBool(enabled)
-		}
-		res, err := a.db.Exec(`UPDATE providers SET enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),updated_at=? WHERE id=?`, maybeBool(in.Enabled), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, now(), id)
+		// Re-enabling a channel or changing its connection details starts a
+		// fresh health window so an old circuit state does not hide a new key.
+		resetOnEnable := in.Enabled != nil && *in.Enabled && !strBool(currentEnabled)
+		res, err := a.db.Exec(`UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, now(), id)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -467,7 +524,7 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusNotFound, "not_found", "provider not found")
 			return
 		}
-		if in.ResetHealth || resetOnEnable {
+		if in.ResetHealth || resetOnEnable || connectionChanged {
 			_, err = a.db.Exec(`UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)
 			if err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -475,7 +532,7 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			}
 			a.resetProviderRuntime(id)
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true, "credential_updated": credentialUpdated})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")
 	}
