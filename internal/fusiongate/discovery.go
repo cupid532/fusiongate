@@ -79,6 +79,7 @@ type discoveryModelEntry struct {
 	ID                         string   `json:"id"`
 	Name                       string   `json:"name"`
 	Model                      string   `json:"model"`
+	Slug                       string   `json:"slug"`
 	DisplayName                string   `json:"display_name"`
 	DisplayNameCamel           string   `json:"displayName"`
 	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
@@ -247,6 +248,9 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 			}
 			if upstreamID == "" {
 				upstreamID = entry.Model
+			}
+			if upstreamID == "" {
+				upstreamID = entry.Slug
 			}
 			displayName = entry.DisplayName
 			if displayName == "" {

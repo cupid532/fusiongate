@@ -339,7 +339,11 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 				if tc.platform == "codex" {
 					key = "models"
 				}
-				writeJSON(w, http.StatusOK, map[string]any{key: []any{map[string]any{"id": "MODEL-One"}}})
+				entry := map[string]any{"id": "MODEL-One"}
+				if tc.platform == "codex" {
+					entry = map[string]any{"slug": "MODEL-One", "display_name": "Model One"}
+				}
+				writeJSON(w, http.StatusOK, map[string]any{key: []any{entry}})
 			}))
 			defer upstream.Close()
 
@@ -382,9 +386,9 @@ func TestDiscoverAndImportAllOAuthModelsUsesSingleRequest(t *testing.T) {
 			t.Fatalf("client_version=%q", got)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"models": []any{
-			map[string]any{"id": "MODEL-Z"},
-			map[string]any{"id": "Model-A"},
-			map[string]any{"id": "text-embedding-3-small"},
+			map[string]any{"slug": "MODEL-Z", "display_name": "Model Z"},
+			map[string]any{"slug": "Model-A", "display_name": "Model A"},
+			map[string]any{"slug": "text-embedding-3-small", "display_name": "Embedding"},
 		}})
 	}))
 	defer upstream.Close()
@@ -452,7 +456,7 @@ func TestOAuthDiscoveryUsesStoredAccessTokenBeforeExpiredMetadataRefresh(t *test
 			if got := r.Header.Get("Authorization"); got != "Bearer still-accepted-access" {
 				t.Fatalf("authorization=%q", got)
 			}
-			return authJSONResponse(http.StatusOK, `{"models":[{"id":"GPT-5.4"}]}`), nil
+			return authJSONResponse(http.StatusOK, `{"models":[{"slug":"GPT-5.4","display_name":"GPT-5.4"}]}`), nil
 		case codexOAuthTokenURL:
 			t.Fatal("discovery must not refresh before the model endpoint rejects the stored token")
 			return nil, nil
@@ -504,7 +508,7 @@ func TestOAuthDiscoveryRefreshesOnceAfterAuthenticationRejection(t *testing.T) {
 			case "Bearer stale-access":
 				return authJSONResponse(http.StatusUnauthorized, `{"error":"invalid token"}`), nil
 			case "Bearer fresh-access":
-				return authJSONResponse(http.StatusOK, `{"models":[{"id":"MODEL-FRESH"}]}`), nil
+				return authJSONResponse(http.StatusOK, `{"models":[{"slug":"MODEL-FRESH","display_name":"Model Fresh"}]}`), nil
 			default:
 				t.Fatalf("unexpected authorization=%q", r.Header.Get("Authorization"))
 				return nil, nil
