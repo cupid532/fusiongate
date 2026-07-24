@@ -565,3 +565,34 @@ func TestOAuthDiscoveryRefreshesOnceAfterAuthenticationRejection(t *testing.T) {
 		t.Fatalf("updated credential token=%q refresh=%q err=%v", token, updated.RefreshToken, err)
 	}
 }
+
+func TestAddCodexImageModelUsesAvailableHostModel(t *testing.T) {
+	models := []discoveredModel{
+		{ID: "gpt-5.4", UpstreamID: "gpt-5.4", Capabilities: "chat,stream"},
+		{ID: "gpt-5.5", UpstreamID: "GPT-5.5", Capabilities: "chat,stream"},
+	}
+	got := addCodexImageModel(models)
+	if len(got) != 4 {
+		t.Fatalf("models=%#v", got)
+	}
+	found := map[string]bool{}
+	for _, model := range got {
+		if model.ID == "gpt-image-1" || model.ID == "gpt-image-2" {
+			if model.UpstreamID != "GPT-5.5" || model.Capabilities != "image" {
+				t.Fatalf("image model=%#v", model)
+			}
+			found[model.ID] = true
+		}
+	}
+	if !found["gpt-image-1"] || !found["gpt-image-2"] {
+		t.Fatalf("synthetic image aliases missing: %#v", got)
+	}
+}
+
+func TestAddCodexImageModelRequiresSupportedHost(t *testing.T) {
+	models := []discoveredModel{{ID: "gpt-oss-20b", UpstreamID: "gpt-oss-20b", Capabilities: "chat,stream"}}
+	got := addCodexImageModel(models)
+	if len(got) != 1 {
+		t.Fatalf("models=%#v", got)
+	}
+}

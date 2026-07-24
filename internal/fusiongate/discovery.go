@@ -299,6 +299,37 @@ func discoveredCapabilities(id, providerType string, methods []string) (string, 
 	return "chat,stream", true
 }
 
+func addCodexImageModel(models []discoveredModel) []discoveredModel {
+	host := ""
+	for _, model := range models {
+		if model.ID == "gpt-5.5" && model.Capabilities != "unsupported" {
+			host = model.UpstreamID
+			break
+		}
+	}
+	if host == "" {
+		return models
+	}
+	existing := make(map[string]bool, len(models))
+	for _, model := range models {
+		existing[model.ID] = true
+	}
+	for _, alias := range []struct {
+		id, displayName string
+	}{
+		{"gpt-image-1", "GPT Image 1 (ChatGPT Plus compatibility)"},
+		{"gpt-image-2", "GPT Image 2 (ChatGPT Plus)"},
+	} {
+		if !existing[alias.id] {
+			models = append(models, discoveredModel{
+				ID: alias.id, UpstreamID: host, DisplayName: alias.displayName, Capabilities: "image",
+			})
+		}
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models
+}
+
 func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([]discoveredModel, error) {
 	urls, err := discoveryURLs(p)
 	if err != nil {
@@ -341,6 +372,9 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		}
 		if len(models) == 0 {
 			return nil, errors.New("upstream returned no models")
+		}
+		if p.Type == "codex_oauth" {
+			models = addCodexImageModel(models)
 		}
 		return models, nil
 	}

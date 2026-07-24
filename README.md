@@ -18,6 +18,7 @@
 - `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/images/generations`。
   - 所有 `/v1/*` 网关接口支持浏览器跨域调用、无需鉴权的 `OPTIONS` 预检和常用 SDK 自定义请求头；管理后台接口不开放跨域。
   - OpenAI Compatible：Chat、Responses、Images；Chat / Responses 支持安全流式转发。
+  - Codex OAuth Plus 生图兼容：发现到 `gpt-5.5` 时自动提供 `gpt-image-1` 与 `gpt-image-2` 图像别名；标准 `POST /v1/images/generations` 会转换成 Codex Responses 的 `image_generation` 内置工具调用，并把 SSE 中的真实图片结果转换回 OpenAI `b64_json` 响应。当前每次请求生成 1 张图，支持上游接受的 `size`、`output_format`、`output_compression`、`background`、`moderation` 与 `partial_images` 参数；不伪造 URL 或透明背景能力。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
   - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 原生代理。
 - API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限与安全再次复制；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。

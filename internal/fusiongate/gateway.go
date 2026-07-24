@@ -756,6 +756,9 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	stream, _ := body["stream"].(bool)
 	a.runRoutes(w, r, key, compatible, protocol, stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		if protocol == "openai_images" && z.Provider.Type == "codex_oauth" {
+			return a.codexImageProxy(w, r, raw, z, rid, onFirstByte)
+		}
 		return a.openAIProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte)
 	})
 }
