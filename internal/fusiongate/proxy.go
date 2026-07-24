@@ -194,6 +194,9 @@ func setProviderAuth(req *http.Request, z resolvedRoute) error {
 		if z.Provider.Type == "codex_oauth" && z.AuthCredential != nil && z.AuthCredential.AccountID != "" {
 			req.Header.Set("ChatGPT-Account-ID", z.AuthCredential.AccountID)
 		}
+		if z.Provider.Type == "grok_oauth" {
+			setGrokClientHeaders(req.Header)
+		}
 	case "anthropic":
 		req.Header.Set("x-api-key", z.Credential)
 	case "claude_oauth":

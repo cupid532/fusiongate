@@ -832,6 +832,27 @@ func TestGrokOAuthProxyUsesBearerAndSingleV1Prefix(t *testing.T) {
 	if got := req.Header.Get("Authorization"); got != "Bearer grok-secret" {
 		t.Fatalf("Authorization=%q", got)
 	}
+	if got := req.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+		t.Fatalf("X-XAI-Token-Auth=%q", got)
+	}
+	if got := req.Header.Get("X-Grok-Client-Version"); got != defaultGrokCLIVersion {
+		t.Fatalf("X-Grok-Client-Version=%q", got)
+	}
+	if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+defaultGrokCLIVersion {
+		t.Fatalf("User-Agent=%q", got)
+	}
+}
+
+func TestGrokClientVersionCanBeOverridden(t *testing.T) {
+	t.Setenv("FUSIONGATE_GROK_CLI_VERSION", "0.3.1")
+	req := httptest.NewRequest(http.MethodGet, "https://gateway.example/v1/models", nil)
+	setGrokClientHeaders(req.Header)
+	if got := req.Header.Get("X-Grok-Client-Version"); got != "0.3.1" {
+		t.Fatalf("X-Grok-Client-Version=%q", got)
+	}
+	if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/0.3.1" {
+		t.Fatalf("User-Agent=%q", got)
+	}
 }
 
 func TestOAuthProviderBatchEnableDisable(t *testing.T) {

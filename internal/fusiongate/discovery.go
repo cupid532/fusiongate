@@ -168,6 +168,7 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 		}
 	case "grok_oauth":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
+		setGrokClientHeaders(req.Header)
 	case "anthropic":
 		req.Header.Set("x-api-key", p.Credential)
 		req.Header.Set("anthropic-version", "2023-06-01")
