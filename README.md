@@ -16,6 +16,7 @@
 - 安全故障转移：连接/超时、429、部分路由错误与 5xx 可切换备用；空流或首字节前断流可切换，首字节发出后绝不拼接第二家响应；图片传输结果不确定时不自动重放。
 - 健康状态只处罚可归因于上游的失败；下游客户端主动取消不会污染 Provider 健康度。带 `Retry-After` 的 429 会立即进入冷却，避免继续冲击已限流渠道。
 - `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/images/generations`。
+  - 所有 `/v1/*` 网关接口支持浏览器跨域调用、无需鉴权的 `OPTIONS` 预检和常用 SDK 自定义请求头；管理后台接口不开放跨域。
   - OpenAI Compatible：Chat、Responses、Images；Chat / Responses 支持安全流式转发。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
   - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 原生代理。

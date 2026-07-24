@@ -38,6 +38,11 @@ type resolvedRoute struct {
 
 func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		setGatewayCORS(w, r)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		k, ok := a.authenticateKey(r)
 		if !ok {
 			fail(w, http.StatusUnauthorized, "invalid_api_key", "missing, expired, revoked, or invalid API key")
@@ -48,6 +53,28 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 			return
 		}
 		fn(w, r, k)
+	}
+}
+
+func setGatewayCORS(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Origin") == "" {
+		return
+	}
+	h := w.Header()
+	h.Set("Access-Control-Allow-Origin", "*")
+	h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	requestedHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers"))
+	if requestedHeaders == "" {
+		requestedHeaders = "Authorization, Content-Type, X-API-Key"
+	}
+	h.Set("Access-Control-Allow-Headers", requestedHeaders)
+	h.Set("Access-Control-Expose-Headers", "Content-Type, Retry-After, X-FusionGate-Request-ID")
+	h.Set("Access-Control-Max-Age", "86400")
+	h.Add("Vary", "Origin")
+	h.Add("Vary", "Access-Control-Request-Method")
+	h.Add("Vary", "Access-Control-Request-Headers")
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Access-Control-Request-Private-Network")), "true") {
+		h.Set("Access-Control-Allow-Private-Network", "true")
 	}
 }
 
