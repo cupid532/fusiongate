@@ -288,8 +288,20 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 			wantHeader: "Authorization",
 			wantValue:  "Bearer codex-oauth-access",
 			check: func(t *testing.T, r *http.Request) {
+				if r.URL.Path != "/models" {
+					t.Fatalf("path=%q", r.URL.Path)
+				}
+				if got := r.URL.Query().Get("client_version"); got != defaultCodexCLIVersion {
+					t.Fatalf("client_version=%q", got)
+				}
 				if got := r.Header.Get("ChatGPT-Account-ID"); got != "acct-discovery" {
 					t.Fatalf("ChatGPT-Account-ID=%q", got)
+				}
+				if got := r.Header.Get("Originator"); got != "codex_cli_rs" {
+					t.Fatalf("Originator=%q", got)
+				}
+				if got := r.Header.Get("User-Agent"); got != "codex_cli_rs/"+defaultCodexCLIVersion {
+					t.Fatalf("User-Agent=%q", got)
 				}
 			},
 		},
@@ -299,6 +311,9 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 			wantHeader: "Authorization",
 			wantValue:  "Bearer claude-oauth-access",
 			check: func(t *testing.T, r *http.Request) {
+				if r.URL.Path != "/v1/models" {
+					t.Fatalf("path=%q", r.URL.Path)
+				}
 				if r.Header.Get("Anthropic-Version") != "2023-06-01" || !strings.Contains(r.Header.Get("Anthropic-Beta"), "oauth-2025-04-20") || r.Header.Get("X-App") != "cli" {
 					t.Fatalf("Claude OAuth headers=%v", r.Header)
 				}
@@ -313,9 +328,6 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			accessToken := tc.platform + "-oauth-access"
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/v1/models" {
-					t.Fatalf("path=%q", r.URL.Path)
-				}
 				if got := r.Header.Get(tc.wantHeader); got != tc.wantValue {
 					t.Fatalf("%s=%q", tc.wantHeader, got)
 				}
@@ -323,7 +335,11 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 					t.Fatal("OAuth token leaked into discovery URL")
 				}
 				tc.check(t, r)
-				writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "MODEL-One"}}})
+				key := "data"
+				if tc.platform == "codex" {
+					key = "models"
+				}
+				writeJSON(w, http.StatusOK, map[string]any{key: []any{map[string]any{"id": "MODEL-One"}}})
 			}))
 			defer upstream.Close()
 
@@ -359,10 +375,13 @@ func TestDiscoverAndImportAllOAuthModelsUsesSingleRequest(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		if r.URL.Path != "/v1/models" {
+		if r.URL.Path != "/models" {
 			t.Fatalf("path=%q", r.URL.Path)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+		if got := r.URL.Query().Get("client_version"); got != defaultCodexCLIVersion {
+			t.Fatalf("client_version=%q", got)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"models": []any{
 			map[string]any{"id": "MODEL-Z"},
 			map[string]any{"id": "Model-A"},
 			map[string]any{"id": "text-embedding-3-small"},
@@ -428,12 +447,12 @@ func TestOAuthDiscoveryUsesStoredAccessTokenBeforeExpiredMetadataRefresh(t *test
 	var modelCalls atomic.Int32
 	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
-		case "https://models.example.test/v1/models":
+		case "https://models.example.test/models?client_version=" + defaultCodexCLIVersion:
 			modelCalls.Add(1)
 			if got := r.Header.Get("Authorization"); got != "Bearer still-accepted-access" {
 				t.Fatalf("authorization=%q", got)
 			}
-			return authJSONResponse(http.StatusOK, `{"data":[{"id":"GROK-4"}]}`), nil
+			return authJSONResponse(http.StatusOK, `{"models":[{"id":"GPT-5.4"}]}`), nil
 		case codexOAuthTokenURL:
 			t.Fatal("discovery must not refresh before the model endpoint rejects the stored token")
 			return nil, nil
@@ -479,13 +498,13 @@ func TestOAuthDiscoveryRefreshesOnceAfterAuthenticationRejection(t *testing.T) {
 	var modelCalls, refreshCalls atomic.Int32
 	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
-		case "https://models.example.test/v1/models":
+		case "https://models.example.test/models?client_version=" + defaultCodexCLIVersion:
 			modelCalls.Add(1)
 			switch r.Header.Get("Authorization") {
 			case "Bearer stale-access":
 				return authJSONResponse(http.StatusUnauthorized, `{"error":"invalid token"}`), nil
 			case "Bearer fresh-access":
-				return authJSONResponse(http.StatusOK, `{"data":[{"id":"MODEL-FRESH"}]}`), nil
+				return authJSONResponse(http.StatusOK, `{"models":[{"id":"MODEL-FRESH"}]}`), nil
 			default:
 				t.Fatalf("unexpected authorization=%q", r.Header.Get("Authorization"))
 				return nil, nil

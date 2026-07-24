@@ -119,7 +119,12 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 	basePath := strings.TrimRight(u.Path, "/")
 	var paths []string
 	switch p.Type {
-	case "openai", "openrouter", "openai_compatible", "anthropic", "codex_oauth", "claude_oauth", "grok_oauth":
+	case "codex_oauth":
+		// The ChatGPT Codex backend does not expose the OpenAI-compatible
+		// /v1/models endpoint. Its CLI endpoint requires the client version
+		// query parameter and returns the list in a top-level models field.
+		paths = []string{basePath + "/models"}
+	case "openai", "openrouter", "openai_compatible", "anthropic", "claude_oauth", "grok_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
 			paths = []string{basePath + "/models"}
 		} else {
@@ -143,6 +148,8 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		if p.Type == "gemini" {
 			q.Set("key", p.Credential)
 			q.Set("pageSize", "1000")
+		} else if p.Type == "codex_oauth" {
+			q.Set("client_version", codexCLIVersion())
 		} else if p.Type == "anthropic" || p.Type == "claude_oauth" {
 			q.Set("limit", "1000")
 		}
@@ -166,6 +173,7 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 		if p.AuthCredential != nil && p.AuthCredential.AccountID != "" {
 			req.Header.Set("ChatGPT-Account-ID", p.AuthCredential.AccountID)
 		}
+		setCodexClientHeaders(req.Header)
 	case "grok_oauth":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
 		setGrokClientHeaders(req.Header)

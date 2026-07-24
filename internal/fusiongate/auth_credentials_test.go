@@ -491,9 +491,10 @@ func TestConcurrentOAuthRefreshOnlyCallsEndpointOnce(t *testing.T) {
 
 func TestOAuthProviderHeadersAndCodexPath(t *testing.T) {
 	t.Run("codex", func(t *testing.T) {
-		var path, auth, account string
+		var path, auth, account, originator, userAgent string
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path, auth, account = r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("ChatGPT-Account-ID")
+			originator, userAgent = r.Header.Get("Originator"), r.Header.Get("User-Agent")
 			writeJSON(w, http.StatusOK, map[string]any{"id": "resp", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}})
 		}))
 		defer upstream.Close()
@@ -507,8 +508,8 @@ func TestOAuthProviderHeadersAndCodexPath(t *testing.T) {
 		rec := httptest.NewRecorder()
 		incoming := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"hi"}`))
 		result := a.proxyUpstream(rec, incoming, z, proxyOptions{Endpoint: "/v1/responses", RawBody: []byte(`{"model":"gpt-test","input":"hi"}`), UsageFormat: "openai", GatewayID: "g"})
-		if result.Status != http.StatusOK || path != "/responses" || auth != "Bearer codex-access" || account != "acct-id" {
-			t.Fatalf("result=%+v path=%q auth=%q account=%q body=%s", result, path, auth, account, rec.Body.String())
+		if result.Status != http.StatusOK || path != "/responses" || auth != "Bearer codex-access" || account != "acct-id" || originator != "codex_cli_rs" || userAgent != "codex_cli_rs/"+defaultCodexCLIVersion {
+			t.Fatalf("result=%+v path=%q auth=%q account=%q originator=%q user-agent=%q body=%s", result, path, auth, account, originator, userAgent, rec.Body.String())
 		}
 	})
 
@@ -852,6 +853,25 @@ func TestGrokClientVersionCanBeOverridden(t *testing.T) {
 	}
 	if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/0.3.1" {
 		t.Fatalf("User-Agent=%q", got)
+	}
+}
+
+func TestCodexCLIVersionCanBeOverridden(t *testing.T) {
+	t.Setenv("FUSIONGATE_CODEX_CLI_VERSION", "0.130.0")
+	req := httptest.NewRequest(http.MethodGet, "https://chatgpt.com/backend-api/codex/models", nil)
+	setCodexClientHeaders(req.Header)
+	if got := req.Header.Get("Originator"); got != "codex_cli_rs" {
+		t.Fatalf("Originator=%q", got)
+	}
+	if got := req.Header.Get("User-Agent"); got != "codex_cli_rs/0.130.0" {
+		t.Fatalf("User-Agent=%q", got)
+	}
+	urls, err := discoveryURLs(discoveryProvider{Type: "codex_oauth", BaseURL: "https://chatgpt.com/backend-api/codex"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(urls) != 1 || urls[0] != "https://chatgpt.com/backend-api/codex/models?client_version=0.130.0" {
+		t.Fatalf("urls=%v", urls)
 	}
 }
 

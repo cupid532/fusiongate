@@ -191,8 +191,11 @@ func setProviderAuth(req *http.Request, z resolvedRoute) error {
 	switch z.Provider.Type {
 	case "openai", "openrouter", "openai_compatible", "codex_oauth", "grok_oauth":
 		req.Header.Set("Authorization", "Bearer "+z.Credential)
-		if z.Provider.Type == "codex_oauth" && z.AuthCredential != nil && z.AuthCredential.AccountID != "" {
-			req.Header.Set("ChatGPT-Account-ID", z.AuthCredential.AccountID)
+		if z.Provider.Type == "codex_oauth" {
+			if z.AuthCredential != nil && z.AuthCredential.AccountID != "" {
+				req.Header.Set("ChatGPT-Account-ID", z.AuthCredential.AccountID)
+			}
+			setCodexClientHeaders(req.Header)
 		}
 		if z.Provider.Type == "grok_oauth" {
 			setGrokClientHeaders(req.Header)
