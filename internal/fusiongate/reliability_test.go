@@ -409,7 +409,7 @@ func TestRetryAfterPropagatesAfterAllProvidersRateLimit(t *testing.T) {
 	}
 }
 
-func TestImageTransportFailureIsNotReplayed(t *testing.T) {
+func TestImageTransportFailureFailsOverBeforeClientResponse(t *testing.T) {
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hijacker := w.(http.Hijacker)
 		conn, _, err := hijacker.Hijack()
@@ -421,7 +421,7 @@ func TestImageTransportFailureIsNotReplayed(t *testing.T) {
 	var backupCalls atomic.Int32
 	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		backupCalls.Add(1)
-		writeJSON(w, http.StatusOK, map[string]any{"data": []any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"b64_json": "YmFja3Vw"}}})
 	}))
 	defer backup.Close()
 	a, err := New(testConfig(t))
@@ -429,17 +429,23 @@ func TestImageTransportFailureIsNotReplayed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
+	if _, err := a.db.Exec(`UPDATE settings SET value=? WHERE key='routing_strategy'`, StrategyPriorityFailover); err != nil {
+		t.Fatal(err)
+	}
 	p1 := insertTestProvider(t, a, "image-primary", "openai_compatible", broken.URL, "one", 2, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "image-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, p1, "image-model", "upstream", "image", 1)
 	insertTestRoute(t, a, p2, "image-model", "upstream", "image", 1)
 	key := insertTestKey(t, a, true)
 	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"image-model","prompt":"cat"}`, "test/1")
-	if rec.Code != http.StatusBadGateway {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if backupCalls.Load() != 0 {
-		t.Fatalf("image request replayed to backup %d times", backupCalls.Load())
+	if backupCalls.Load() != 1 {
+		t.Fatalf("backup calls=%d, want 1", backupCalls.Load())
+	}
+	if !strings.Contains(rec.Body.String(), "YmFja3Vw") {
+		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
 

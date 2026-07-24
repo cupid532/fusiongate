@@ -817,7 +817,8 @@ func (a *App) images(w http.ResponseWriter, r *http.Request, key authKey) {
 		fail(w, http.StatusForbidden, "images_not_allowed", "this key is not permitted to generate images")
 		return
 	}
-	// Image generation may have side effects. Transport failures are not replayed because
-	// the gateway cannot prove the upstream did not already accept the job.
-	a.openAIEndpoint(w, r, key, "openai_images", "/v1/images/generations", "image", false)
+	// Fail over when the chosen channel never produced a client-visible response
+	// (connect/timeout, 401/403/429/5xx before body copy). Once headers/body are
+	// written for a terminal non-retryable result, runRoutes stops as usual.
+	a.openAIEndpoint(w, r, key, "openai_images", "/v1/images/generations", "image", true)
 }

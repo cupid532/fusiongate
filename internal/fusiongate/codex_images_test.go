@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -113,6 +114,54 @@ func TestCodexOAuthImageGenerationUsesResponsesImageTool(t *testing.T) {
 	}
 }
 
+func TestCodexOAuthImageGenerationFansOutBatchConcurrently(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index := calls.Add(1)
+		encodedImage := base64.StdEncoding.EncodeToString([]byte("image-bytes-" + string(rune('A'+index-1))))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"image_generation_call\",\"result\":\"" + encodedImage + "\",\"revised_prompt\":\"batch " + string(rune('0'+index)) + "\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n"))
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertCodexOAuthTestProvider(t, a, upstream.URL)
+	insertTestRoute(t, a, providerID, "gpt-image-2", "gpt-5.5", "image", 10)
+	key := insertTestKey(t, a, true)
+
+	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","n":3,"response_format":"b64_json"}`, "test/1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("upstream calls=%d, want 3", calls.Load())
+	}
+	var response struct {
+		Data []struct {
+			Base64        string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Data) != 3 {
+		t.Fatalf("response data=%#v", response.Data)
+	}
+	seen := map[string]bool{}
+	for _, item := range response.Data {
+		if item.Base64 == "" || seen[item.Base64] {
+			t.Fatalf("duplicate or empty image payload: %#v", response.Data)
+		}
+		seen[item.Base64] = true
+	}
+}
+
 func TestCodexOAuthImageGenerationRejectsUnsupportedShapeBeforeUpstream(t *testing.T) {
 	calls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,12 +179,20 @@ func TestCodexOAuthImageGenerationRejectsUnsupportedShapeBeforeUpstream(t *testi
 	insertTestRoute(t, a, providerID, "gpt-image-2", "gpt-5.5", "image", 10)
 	key := insertTestKey(t, a, true)
 
-	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","n":2}`, "test/1")
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "n=1") {
+	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","n":11}`, "test/1")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "between 1 and 10") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if calls != 0 {
 		t.Fatalf("upstream calls=%d", calls)
+	}
+
+	rec = gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","response_format":"url"}`, "test/1")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "b64_json") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if calls != 0 {
+		t.Fatalf("upstream calls=%d after url rejection", calls)
 	}
 }
 
@@ -145,5 +202,50 @@ func TestParseCodexImageSSEDoesNotExposeTextFallbackAsImage(t *testing.T) {
 	_, err := parseCodexImageSSE(raw)
 	if err == nil || !strings.Contains(err.Error(), "without an image result") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCodexOAuthImageGenerationFailsOverWhenPrimaryReturnsRetryableError(t *testing.T) {
+	var primaryCalls, backupCalls atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
+		http.Error(w, "temporary", http.StatusBadGateway)
+	}))
+	defer primary.Close()
+	encodedImage := base64.StdEncoding.EncodeToString([]byte("failover-image"))
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"image_generation_call\",\"result\":\"" + encodedImage + "\"}}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	}))
+	defer backup.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if _, err := a.db.Exec(`UPDATE settings SET value=? WHERE key='routing_strategy'`, StrategyPriorityFailover); err != nil {
+		t.Fatal(err)
+	}
+	primaryID := insertTestProvider(t, a, "input-like", "openai_compatible", primary.URL, "one", 2, 1, "normalized", "any", 0, 3, 30)
+	backupID := insertCodexOAuthTestProvider(t, a, backup.URL)
+	if _, err := a.db.Exec(`UPDATE providers SET priority=1 WHERE id=?`, backupID); err != nil {
+		t.Fatal(err)
+	}
+	insertTestRoute(t, a, primaryID, "gpt-image-2", "gpt-image-2", "image", 1)
+	insertTestRoute(t, a, backupID, "gpt-image-2", "gpt-5.5", "image", 1)
+	key := insertTestKey(t, a, true)
+
+	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw a cat","n":1,"response_format":"b64_json"}`, "test/1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
+		t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+	if !strings.Contains(rec.Body.String(), encodedImage) {
+		t.Fatalf("body=%s", rec.Body.String())
 	}
 }
