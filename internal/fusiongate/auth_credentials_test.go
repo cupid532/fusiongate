@@ -875,6 +875,36 @@ func TestCodexCLIVersionCanBeOverridden(t *testing.T) {
 	}
 }
 
+func TestNormalizedOpenAIBodyOmitsStreamOptionsForCodex(t *testing.T) {
+	raw := []byte(`{"model":"public-model","stream":true,"stream_options":{"include_usage":true}}`)
+	body, err := normalizedOpenAIBody(raw, "upstream-model", true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["model"] != "upstream-model" {
+		t.Fatalf("model=%v", decoded["model"])
+	}
+	if _, exists := decoded["stream_options"]; exists {
+		t.Fatalf("stream_options must be omitted for Codex: %s", body)
+	}
+
+	body, err = normalizedOpenAIBody([]byte(`{"model":"public-model","stream":true}`), "upstream-model", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	streamOptions, ok := decoded["stream_options"].(map[string]any)
+	if !ok || streamOptions["include_usage"] != true {
+		t.Fatalf("regular OpenAI stream_options=%v", decoded["stream_options"])
+	}
+}
+
 func TestOAuthProviderBatchEnableDisable(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

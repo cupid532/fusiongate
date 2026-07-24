@@ -515,7 +515,7 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 	body := raw
 	var err error
 	if !transparent {
-		body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, stream)
+		body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, stream, z.Provider.Type != "codex_oauth")
 		if err != nil {
 			return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 		}

@@ -224,13 +224,16 @@ func setProviderAuth(req *http.Request, z resolvedRoute) error {
 	return nil
 }
 
-func normalizedOpenAIBody(raw []byte, upstreamModel string, stream bool) ([]byte, error) {
+func normalizedOpenAIBody(raw []byte, upstreamModel string, stream, includeStreamUsage bool) ([]byte, error) {
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err
 	}
 	body["model"] = upstreamModel
-	if stream {
+	if !includeStreamUsage {
+		// The ChatGPT Codex backend rejects OpenAI API stream_options.
+		delete(body, "stream_options")
+	} else if stream {
 		if streamOptions, ok := body["stream_options"].(map[string]any); ok {
 			streamOptions["include_usage"] = true
 		} else if _, exists := body["stream_options"]; !exists {
