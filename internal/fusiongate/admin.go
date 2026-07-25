@@ -135,7 +135,7 @@ func validEditableProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id) FROM providers p ORDER BY p.priority DESC,p.id`)
+		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms FROM providers p ORDER BY p.priority DESC,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -145,7 +145,8 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		for rows.Next() {
 			var p Provider
 			var enabled, hasRefresh int
-			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount); err != nil {
+			var groupID sql.NullInt64
+			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -157,7 +158,12 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 				p.AuthEmail = maskEmail(p.AuthEmail)
 				p.AuthAccountID = maskIdentity(p.AuthAccountID)
 			}
+			if groupID.Valid {
+				v := groupID.Int64
+				p.GroupID = &v
+			}
 			p.Inflight = a.providerInflight(p.ID)
+			p.HealthScore = calculateHealthScore(p)
 			out = append(out, p)
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -378,6 +384,23 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 	id, _ := strconv.ParseInt(idText, 10, 64)
+	if len(parts) == 2 && parts[1] == "check-health" {
+		if r.Method != http.MethodPost {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+			return
+		}
+		result, err := a.CheckProviderNow(r.Context(), id)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "health_check_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     result.Status,
+			"latency_ms": result.LatencyMS,
+			"error":      result.Error,
+		})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "discover-models" {
 		if r.Method != http.MethodPost {
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -446,6 +469,9 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			FailureThreshold *int    `json:"failure_threshold"`
 			CooldownSeconds  *int    `json:"cooldown_seconds"`
 			ResetHealth      bool    `json:"reset_health"`
+			GroupID          *int64  `json:"group_id"`
+			ClearGroup       bool    `json:"clear_group"`
+			GroupSortOrder   *int    `json:"group_sort_order"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -514,7 +540,14 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		// Re-enabling a channel or changing its connection details starts a
 		// fresh health window so an old circuit state does not hide a new key.
 		resetOnEnable := in.Enabled != nil && *in.Enabled && !strBool(currentEnabled)
-		res, err := a.db.Exec(`UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, now(), id)
+		var groupIDArg any
+		if in.ClearGroup {
+			groupIDArg = sql.NullInt64{}
+		} else if in.GroupID != nil {
+			groupIDArg = *in.GroupID
+		}
+		groupAssignRequested := in.ClearGroup || in.GroupID != nil
+		res, err := a.db.Exec(`UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, groupAssignRequested, groupIDArg, in.GroupSortOrder, now(), id)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -543,6 +576,43 @@ func maybeBool(v *bool) any {
 		return nil
 	}
 	return boolInt(*v)
+}
+
+// calculateHealthScore computes a 0-100 score for sorting OAuth providers.
+// Non-OAuth providers always return 100 (they rely on existing circuit-breaker status).
+func calculateHealthScore(p Provider) int {
+	if p.AuthKind != "oauth" {
+		return 100
+	}
+	var base int
+	switch p.HealthCheckStatus {
+	case "healthy":
+		base = 100
+	case "pending", "":
+		base = 75
+	case "rate_limited":
+		base = 40
+	case "timeout", "network_error", "server_error":
+		base = 30
+	case "auth_expired":
+		base = 0
+	default:
+		base = 50
+	}
+	penalty := p.ConsecutiveFailures * 8
+	if p.HealthCheckLatencyMS > 3000 {
+		penalty += 10
+	} else if p.HealthCheckLatencyMS > 1500 {
+		penalty += 5
+	}
+	score := base - penalty
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
 }
 func isID(v string) bool { _, e := strconv.ParseInt(v, 10, 64); return e == nil }
 
@@ -1134,4 +1204,126 @@ func urlParse(v string) (*url.URL, error) {
 }
 func isPrivate(ip netip.Addr) bool {
 	return ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast()
+}
+
+// providerGroups handles GET and POST for provider groups
+func (a *App) providerGroups(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := a.db.Query(`
+			SELECT g.id, g.name, g.collapsed, g.sort_order, g.created_at, g.updated_at,
+			       COUNT(p.id),
+			       SUM(CASE WHEN p.enabled=1 AND p.health_check_status='healthy' THEN 1 ELSE 0 END)
+			FROM provider_groups g
+			LEFT JOIN providers p ON p.group_id=g.id
+			GROUP BY g.id
+			ORDER BY g.sort_order, g.id`)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		defer rows.Close()
+		out := []ProviderGroup{}
+		for rows.Next() {
+			var g ProviderGroup
+			var collapsed int
+			var memberCount, healthyCount sql.NullInt64
+			if err := rows.Scan(&g.ID, &g.Name, &collapsed, &g.SortOrder, &g.CreatedAt, &g.UpdatedAt, &memberCount, &healthyCount); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			g.Collapsed = strBool(collapsed)
+			g.MemberCount = int(memberCount.Int64)
+			g.HealthyCount = int(healthyCount.Int64)
+			out = append(out, g)
+		}
+		writeJSON(w, http.StatusOK, out)
+	case http.MethodPost:
+		var in struct {
+			Name      string `json:"name"`
+			SortOrder *int   `json:"sort_order"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		in.Name = strings.TrimSpace(in.Name)
+		if in.Name == "" {
+			fail(w, http.StatusBadRequest, "invalid_request", "group name is required")
+			return
+		}
+		sortOrder := 0
+		if in.SortOrder != nil {
+			sortOrder = *in.SortOrder
+		}
+		res, err := a.db.Exec(`INSERT INTO provider_groups(name, collapsed, sort_order, created_at, updated_at) VALUES(?,0,?,?,?)`,
+			in.Name, sortOrder, now(), now())
+		if err != nil {
+			fail(w, http.StatusConflict, "group_conflict", "a group with that name already exists")
+			return
+		}
+		id, _ := res.LastInsertId()
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": in.Name})
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
+	}
+}
+
+// providerGroupByID handles PATCH and DELETE on /api/admin/provider-groups/{id}
+func (a *App) providerGroupByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	idText := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/provider-groups/"), "/")
+	if !isID(idText) {
+		fail(w, http.StatusNotFound, "not_found", "group not found")
+		return
+	}
+	id, _ := strconv.ParseInt(idText, 10, 64)
+
+	switch r.Method {
+	case http.MethodPatch:
+		var in struct {
+			Name      *string `json:"name"`
+			Collapsed *bool   `json:"collapsed"`
+			SortOrder *int    `json:"sort_order"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if in.Name != nil {
+			v := strings.TrimSpace(*in.Name)
+			if v == "" {
+				fail(w, http.StatusBadRequest, "invalid_request", "group name cannot be empty")
+				return
+			}
+			in.Name = &v
+		}
+		res, err := a.db.Exec(`UPDATE provider_groups SET name=COALESCE(?,name), collapsed=COALESCE(?,collapsed), sort_order=COALESCE(?,sort_order), updated_at=? WHERE id=?`,
+			in.Name, maybeBool(in.Collapsed), in.SortOrder, now(), id)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			fail(w, http.StatusNotFound, "not_found", "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	case http.MethodDelete:
+		// Un-assign providers in this group before deleting
+		_, _ = a.db.Exec(`UPDATE providers SET group_id=NULL WHERE group_id=?`, id)
+		res, err := a.db.Exec(`DELETE FROM provider_groups WHERE id=?`, id)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			fail(w, http.StatusNotFound, "not_found", "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")
+	}
 }

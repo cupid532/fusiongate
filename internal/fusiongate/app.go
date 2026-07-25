@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ type App struct {
 	authImports       map[string]credentialImportSession
 	ledgerCleanupMu   sync.Mutex
 	lastLedgerCleanup time.Time
+	healthChecker     *HealthChecker
 }
 type rateWindow struct {
 	At    time.Time
@@ -82,6 +84,24 @@ type Provider struct {
 	LastFailureAt       string `json:"last_failure_at,omitempty"`
 	Inflight            int    `json:"inflight"`
 	ModelCount          int    `json:"model_count"`
+	GroupID             *int64 `json:"group_id,omitempty"`
+	GroupSortOrder      int    `json:"group_sort_order"`
+	LastHealthCheckAt   string `json:"last_health_check_at,omitempty"`
+	HealthCheckStatus   string `json:"health_check_status"`
+	HealthCheckError    string `json:"health_check_error,omitempty"`
+	HealthCheckLatencyMS int64 `json:"health_check_latency_ms"`
+	HealthScore         int    `json:"health_score"`
+}
+
+type ProviderGroup struct {
+	ID            int64  `json:"id"`
+	Name          string `json:"name"`
+	Collapsed     bool   `json:"collapsed"`
+	SortOrder     int    `json:"sort_order"`
+	MemberCount   int    `json:"member_count"`
+	HealthyCount  int    `json:"healthy_count"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
 }
 
 type Route struct {
@@ -175,9 +195,53 @@ func New(cfg Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	a.healthChecker = NewHealthChecker(a, healthCheckIntervalFromEnv(), healthCheckConcurrencyFromEnv())
 	return a, nil
 }
-func (a *App) Close() error { return a.db.Close() }
+func (a *App) Close() error {
+	if a.healthChecker != nil {
+		a.healthChecker.Stop()
+	}
+	return a.db.Close()
+}
+
+// StartBackgroundTasks starts the health checker and other periodic background
+// jobs. The caller supplies a context that, when canceled, stops all tasks.
+func (a *App) StartBackgroundTasks(ctx context.Context) {
+	if a.healthChecker != nil {
+		a.healthChecker.Start(ctx)
+	}
+}
+
+func healthCheckIntervalFromEnv() time.Duration {
+	v := strings.TrimSpace(os.Getenv("FUSIONGATE_HEALTH_CHECK_INTERVAL"))
+	if v == "" {
+		return 15 * time.Minute
+	}
+	if v == "0" || strings.EqualFold(v, "off") || strings.EqualFold(v, "false") {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 15 * time.Minute
+	}
+	return d
+}
+
+func healthCheckConcurrencyFromEnv() int {
+	v := strings.TrimSpace(os.Getenv("FUSIONGATE_HEALTH_CHECK_CONCURRENCY"))
+	if v == "" {
+		return 5
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 5
+	}
+	if n > 20 {
+		n = 20
+	}
+	return n
+}
 
 func (a *App) migrate(ctx context.Context) error {
 	_, err := a.db.ExecContext(ctx, `
@@ -283,6 +347,40 @@ CREATE INDEX IF NOT EXISTS idx_ledger_model_created ON request_ledger(public_mod
 CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_order, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_auth_fingerprint ON providers(auth_fingerprint) WHERE auth_fingerprint <> '';
 UPDATE request_ledger SET usage_reported=1 WHERE usage_reported=0 AND (input_tokens>0 OR output_tokens>0 OR cached_tokens>0 OR reasoning_tokens>0);`)
+	if err != nil {
+		return err
+	}
+
+	// Provider groups table
+	_, err = a.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS provider_groups (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  collapsed INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_groups_order ON provider_groups(sort_order, id);`)
+	if err != nil {
+		return err
+	}
+
+	// Add health check and group columns to providers
+	for _, column := range []struct{ table, name, ddl string }{
+		{"providers", "group_id", "INTEGER REFERENCES provider_groups(id) ON DELETE SET NULL"},
+		{"providers", "group_sort_order", "INTEGER NOT NULL DEFAULT 0"},
+		{"providers", "last_health_check_at", "TEXT"},
+		{"providers", "health_check_status", "TEXT NOT NULL DEFAULT 'pending'"},
+		{"providers", "health_check_error", "TEXT NOT NULL DEFAULT ''"},
+		{"providers", "health_check_latency_ms", "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := ensureColumn(ctx, a.db, column.table, column.name, column.ddl); err != nil {
+			return err
+		}
+	}
+
+	_, err = a.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_providers_group ON providers(group_id, group_sort_order, id);`)
 	return err
 }
 
@@ -425,6 +523,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
 	mux.HandleFunc("/api/admin/providers/batch", a.admin(a.providerBatch))
 	mux.HandleFunc("/api/admin/providers/", a.admin(a.providerByID))
+	mux.HandleFunc("/api/admin/provider-groups", a.admin(a.providerGroups))
+	mux.HandleFunc("/api/admin/provider-groups/", a.admin(a.providerGroupByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))
 	mux.HandleFunc("/api/admin/keys", a.admin(a.keys))

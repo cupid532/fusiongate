@@ -50,6 +50,9 @@ func main() {
 		log.Fatal(err)
 	}
 	defer app.Close()
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+	app.StartBackgroundTasks(bgCtx)
 	srv := &http.Server{Addr: cfg.Addr, Handler: app.Router(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {
 		fmt.Printf("FusionGate listening on http://%s\n", cfg.Addr)
@@ -60,6 +63,7 @@ func main() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
+	bgCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
