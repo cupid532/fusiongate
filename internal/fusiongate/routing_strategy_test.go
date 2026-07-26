@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func releaseSelectedRoute(a *App, z resolvedRoute) {
@@ -144,6 +145,70 @@ func TestAdaptivePrefersStableLowLatencyRoute(t *testing.T) {
 	}
 	if counts[1] < counts[2]*8 {
 		t.Fatalf("adaptive selection was not decisive enough: %v", counts)
+	}
+}
+
+func TestAdaptiveUsesFirstByteInsteadOfOutputLength(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routes := []resolvedRoute{schedulerRoute(1, 1, "model", 0, 0), schedulerRoute(2, 2, "model", 0, 1)}
+	a.routeMu.Lock()
+	// Provider 1 produced a long answer but became interactive quickly. Provider
+	// 2 had a short total response but made the user wait ten seconds for output.
+	a.providerStates[1] = &providerRuntime{EWMALatencyMS: 30000, EWMAFirstByteMS: 500}
+	a.providerStates[2] = &providerRuntime{EWMALatencyMS: 1200, EWMAFirstByteMS: 10000}
+	a.routeMu.Unlock()
+	counts := map[int64]int{}
+	for range 300 {
+		z, _, ok := a.acquireRoute(routes, map[int64]bool{}, StrategyAdaptive)
+		if !ok {
+			t.Fatal("expected adaptive route")
+		}
+		counts[z.Route.ID]++
+		releaseSelectedRoute(a, z)
+	}
+	if counts[1] < counts[2]*5 {
+		t.Fatalf("adaptive route ignored first-byte latency: %v", counts)
+	}
+}
+
+func TestRateLimitDoesNotPolluteAdaptiveLatency(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "rate-limited", "openai_compatible", "http://rate-limit.test", "secret", 1, 1, "normalized", "any", 0, 3, 30)
+	z := resolvedRoute{
+		Route:    Route{ID: 1, ProviderID: providerID, PublicName: "model"},
+		Provider: Provider{ID: providerID, Priority: 1, Weight: 1, FailureThreshold: 3, CooldownSeconds: 30},
+	}
+	a.routeMu.Lock()
+	a.providerStates[providerID] = &providerRuntime{EWMALatencyMS: 800, EWMAFirstByteMS: 300}
+	a.routeMu.Unlock()
+
+	a.completeRoute(z, attemptResult{Status: http.StatusTooManyRequests, Retryable: true, Reason: "upstream_rate_limited"}, 10*time.Millisecond, 5*time.Millisecond)
+
+	a.routeMu.Lock()
+	state := *a.providerStates[providerID]
+	a.routeMu.Unlock()
+	if state.EWMALatencyMS != 800 || state.EWMAFirstByteMS != 300 {
+		t.Fatalf("429 changed latency EWMA: total=%v first_byte=%v", state.EWMALatencyMS, state.EWMAFirstByteMS)
+	}
+	if state.CircuitOpenUntil.IsZero() || !state.CircuitOpenUntil.After(time.Now()) {
+		t.Fatalf("429 did not open cooldown: %+v", state)
+	}
+	var status string
+	var latencyMS, firstByteMS int64
+	var circuitOpenUntil string
+	if err := a.db.QueryRow(`SELECT status,last_latency_ms,last_first_byte_ms,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&status, &latencyMS, &firstByteMS, &circuitOpenUntil); err != nil {
+		t.Fatal(err)
+	}
+	if status != "rate_limited" || latencyMS != 800 || firstByteMS != 300 || circuitOpenUntil == "" {
+		t.Fatalf("status=%q latency=%d first_byte=%d open_until=%q", status, latencyMS, firstByteMS, circuitOpenUntil)
 	}
 }
 

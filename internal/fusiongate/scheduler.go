@@ -19,6 +19,7 @@ type providerRuntime struct {
 	HalfOpenProbe       bool
 	AutoDisabled        bool
 	EWMALatencyMS       float64
+	EWMAFirstByteMS     float64
 }
 
 type attemptResult struct {
@@ -71,7 +72,11 @@ func (a *App) stateForLocked(p Provider) *providerRuntime {
 	if state != nil {
 		return state
 	}
-	state = &providerRuntime{ConsecutiveFailures: p.ConsecutiveFailures, EWMALatencyMS: float64(p.LastLatencyMS)}
+	state = &providerRuntime{
+		ConsecutiveFailures: p.ConsecutiveFailures,
+		EWMALatencyMS:       float64(p.LastLatencyMS),
+		EWMAFirstByteMS:     float64(p.LastFirstByteMS),
+	}
 	if t := parseTime(p.CircuitOpenUntil); t != nil {
 		state.CircuitOpenUntil = *t
 	}
@@ -195,9 +200,17 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 		if weight <= 0 {
 			weight = 1
 		}
+		// Interactive clients care much more about time-to-first-byte than the
+		// total duration of a response, which is also affected by output length.
+		// Fall back to total latency until a successful streaming observation is
+		// available for this provider.
+		observedLatency := state.EWMAFirstByteMS
+		if observedLatency <= 0 {
+			observedLatency = state.EWMALatencyMS
+		}
 		latencyFactor := 1.0
-		if state.EWMALatencyMS > 0 {
-			latencyFactor = math.Max(0.18, 1200.0/(1200.0+state.EWMALatencyMS))
+		if observedLatency > 0 {
+			latencyFactor = math.Max(0.06, 1500.0/(1500.0+observedLatency))
 		}
 		failureFactor := math.Pow(0.55, float64(state.ConsecutiveFailures))
 		loadFactor := 1.0 / float64(state.Inflight+1)
@@ -261,7 +274,7 @@ func providerStatus(result attemptResult) string {
 // enables it. Transient rate limiting remains a temporary circuit condition.
 const autoDisableAfterConsecutiveFailures = 5
 
-func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.Duration) {
+func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.Duration, firstByte ...time.Duration) {
 	a.routeMu.Lock()
 	state := a.stateForLocked(z.Provider)
 	if state.Inflight > 0 {
@@ -274,27 +287,41 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		a.routeMu.Unlock()
 		return
 	}
-	latencyMS := float64(latency.Milliseconds())
-	if latencyMS < 1 {
-		latencyMS = 1
-	}
-	if state.EWMALatencyMS == 0 {
-		state.EWMALatencyMS = latencyMS
-	} else {
-		state.EWMALatencyMS = state.EWMALatencyMS*0.8 + latencyMS*0.2
-	}
 	if isNeutralResult(result) {
 		a.routeMu.Unlock()
 		return
 	}
 
 	status := providerStatus(result)
+	providerFailure := isProviderFailure(result)
+	if !providerFailure {
+		latencyMS := float64(latency.Milliseconds())
+		if latencyMS < 1 {
+			latencyMS = 1
+		}
+		if state.EWMALatencyMS == 0 {
+			state.EWMALatencyMS = latencyMS
+		} else {
+			state.EWMALatencyMS = state.EWMALatencyMS*0.8 + latencyMS*0.2
+		}
+		if len(firstByte) > 0 && firstByte[0] > 0 {
+			firstByteMS := float64(firstByte[0].Milliseconds())
+			if firstByteMS < 1 {
+				firstByteMS = 1
+			}
+			if state.EWMAFirstByteMS == 0 {
+				state.EWMAFirstByteMS = firstByteMS
+			} else {
+				state.EWMAFirstByteMS = state.EWMAFirstByteMS*0.75 + firstByteMS*0.25
+			}
+		}
+	}
 	lastError := ""
 	lastSuccessAt := ""
 	lastFailureAt := ""
 	openUntil := ""
 	autoDisabled := false
-	if isProviderFailure(result) {
+	if providerFailure {
 		state.ConsecutiveFailures++
 		lastFailureAt = now()
 		lastError = result.Reason
@@ -338,7 +365,16 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 			}
 			state.CircuitOpenUntil = time.Now().Add(cooldown)
 			openUntil = state.CircuitOpenUntil.UTC().Format(time.RFC3339Nano)
-			status = "circuit_open"
+			switch result.Status {
+			case http.StatusTooManyRequests:
+				// Keep the reason visible in the console while CircuitOpenUntil
+				// prevents this account from being selected during cooldown.
+				status = "rate_limited"
+			case http.StatusUnauthorized, http.StatusForbidden:
+				status = "auth_expired"
+			default:
+				status = "circuit_open"
+			}
 		}
 	} else {
 		state.ConsecutiveFailures = 0
@@ -347,12 +383,13 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	}
 	failures := state.ConsecutiveFailures
 	ewma := int64(state.EWMALatencyMS)
+	ewmaFirstByte := int64(state.EWMAFirstByteMS)
 	if openUntil == "" && !state.CircuitOpenUntil.IsZero() {
 		openUntil = state.CircuitOpenUntil.UTC().Format(time.RFC3339Nano)
 	}
 	a.routeMu.Unlock()
 
-	_, err := a.db.Exec(`UPDATE providers SET enabled=CASE WHEN ? THEN 0 ELSE enabled END,status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=? WHERE id=?`, boolInt(autoDisabled), status, failures, nullableTime(openUntil), lastError, ewma, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), z.Provider.ID)
+	_, err := a.db.Exec(`UPDATE providers SET enabled=CASE WHEN ? THEN 0 ELSE enabled END,status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_first_byte_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=? WHERE id=?`, boolInt(autoDisabled), status, failures, nullableTime(openUntil), lastError, ewma, ewmaFirstByte, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), z.Provider.ID)
 	if err != nil {
 		a.log.Error("provider health update", "provider_id", z.Provider.ID, "error", err)
 	}

@@ -581,7 +581,7 @@ func TestRateLimitWithoutRetryAfterImmediatelyOpensProviderCircuit(t *testing.T)
 	if err := a.db.QueryRow(`SELECT enabled,status,last_error FROM providers WHERE id=?`, p1).Scan(&enabled, &status, &lastError); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 1 || status != "circuit_open" || lastError != "upstream_rate_limited" {
+	if enabled != 1 || status != "rate_limited" || lastError != "upstream_rate_limited" {
 		t.Fatalf("provider enabled=%d status=%q last_error=%q", enabled, status, lastError)
 	}
 }
@@ -609,7 +609,7 @@ func TestRepeatedRateLimitsDoNotAutoDisableProvider(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError, &circuitOpenUntil); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 1 || failures != autoDisableAfterConsecutiveFailures+2 || status != "circuit_open" || lastError != "upstream_rate_limited" || circuitOpenUntil == nil {
+	if enabled != 1 || failures != autoDisableAfterConsecutiveFailures+2 || status != "rate_limited" || lastError != "upstream_rate_limited" || circuitOpenUntil == nil {
 		t.Fatalf("rate-limited provider enabled=%d failures=%d status=%q last_error=%q circuit_open_until=%v", enabled, failures, status, lastError, circuitOpenUntil)
 	}
 	a.routeMu.Lock()

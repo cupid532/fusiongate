@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -189,7 +190,7 @@ func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,r.input_price_micros,r.output_price_micros,
 	       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
-       p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,
+	       p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,'')
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
 WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1
@@ -211,7 +212,7 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 			&z.Provider.Priority, &z.Provider.Weight, &z.Provider.Status, &z.Provider.Notes,
 			&z.Provider.PassthroughMode, &z.Provider.ClientPolicy, &z.Provider.MaxConcurrency, &z.Provider.RequestTimeoutMS,
 			&z.Provider.FailureThreshold, &z.Provider.CooldownSeconds, &z.Provider.ConsecutiveFailures,
-			&z.Provider.CircuitOpenUntil, &z.Provider.LastError, &z.Provider.LastLatencyMS,
+			&z.Provider.CircuitOpenUntil, &z.Provider.LastError, &z.Provider.LastLatencyMS, &z.Provider.LastFirstByteMS,
 			&z.Provider.LastSuccessAt, &z.Provider.LastFailureAt,
 		); err != nil {
 			return nil, err
@@ -483,9 +484,17 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		tried[z.Route.ID] = true
 		started := time.Now()
 		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, gatewayID, attempt, previousReason)
-		result := execute(z, attemptID, func() { a.recordFirstByte(ledgerID, started) })
+		var observedFirstByteMS atomic.Int64
+		result := execute(z, attemptID, func() {
+			elapsed := time.Since(started).Milliseconds()
+			if elapsed < 1 {
+				elapsed = 1
+			}
+			observedFirstByteMS.CompareAndSwap(0, elapsed)
+			a.recordFirstByte(ledgerID, started)
+		})
 		latency := time.Since(started)
-		a.completeRoute(z, result, latency)
+		a.completeRoute(z, result, latency, time.Duration(observedFirstByteMS.Load())*time.Millisecond)
 		status := result.Status
 		if status == 0 {
 			status = http.StatusBadGateway

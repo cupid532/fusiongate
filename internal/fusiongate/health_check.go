@@ -29,9 +29,22 @@ type HealthChecker struct {
 }
 
 type healthCheckResult struct {
-	Status    string
-	LatencyMS int64
-	Error     string
+	Status      string
+	Mode        string
+	LatencyMS   int64
+	FirstByteMS int64
+	Model       string
+	ModelCount  int
+	Error       string
+}
+
+const (
+	healthCheckModeConnectivity = "connectivity"
+	healthCheckModeGeneration   = "generation"
+)
+
+func validHealthCheckMode(mode string) bool {
+	return mode == healthCheckModeConnectivity || mode == healthCheckModeGeneration
 }
 
 func NewHealthChecker(app *App, interval time.Duration, maxConcurrent int) *HealthChecker {
@@ -173,17 +186,27 @@ func (h *HealthChecker) checkProvider(parent context.Context, providerID int64) 
 	ctx, cancel := context.WithTimeout(parent, h.timeout)
 	defer cancel()
 
-	result := h.probeProvider(ctx, providerID)
+	// Background checks deliberately use the read-only model-list endpoint. A
+	// real generation probe remains an explicit manual action because it can
+	// consume quota and is more likely to trigger upstream rate limits.
+	result := h.probeProviderMode(ctx, providerID, healthCheckModeConnectivity)
 	h.updateHealthStatus(providerID, result)
 }
 
 func (h *HealthChecker) probeProvider(ctx context.Context, providerID int64) healthCheckResult {
+	return h.probeProviderMode(ctx, providerID, healthCheckModeGeneration)
+}
+
+func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64, mode string) healthCheckResult {
+	if !validHealthCheckMode(mode) {
+		return healthCheckResult{Status: "config_error", Mode: mode, Error: "invalid health check mode"}
+	}
 	start := time.Now()
 
 	// 加载 provider 信息
 	p, err := h.app.loadDiscoveryProvider(ctx, providerID)
 	if err != nil {
-		return healthCheckResult{Status: "config_error", Error: "failed to load provider"}
+		return healthCheckResult{Status: "config_error", Mode: mode, Error: "failed to load provider"}
 	}
 
 	// OAuth 凭证：探测前先检查是否需要续签
@@ -208,10 +231,27 @@ func (h *HealthChecker) probeProvider(ctx context.Context, providerID int64) hea
 		}
 	}
 
+	if mode == healthCheckModeConnectivity {
+		models, discoveryErr := h.app.fetchDiscoveredModels(ctx, p)
+		latency := time.Since(start).Milliseconds()
+		if discoveryErr == nil {
+			return healthCheckResult{Status: "healthy", Mode: mode, LatencyMS: latency, ModelCount: len(models)}
+		}
+		if ctx.Err() != nil {
+			return healthCheckResult{Status: "timeout", Mode: mode, LatencyMS: latency, Error: "request timeout"}
+		}
+		var httpErr *discoveryHTTPError
+		if errors.As(discoveryErr, &httpErr) {
+			status, message := h.parseProbeResponse(httpErr.Status, nil)
+			return healthCheckResult{Status: status, Mode: mode, LatencyMS: latency, Error: message}
+		}
+		return healthCheckResult{Status: "network_error", Mode: mode, LatencyMS: latency, Error: sanitizeError(discoveryErr.Error())}
+	}
+
 	// 根据 provider 类型选择探测模型
 	probeModel := h.selectProbeModel(ctx, p)
 	if probeModel == "" {
-		return healthCheckResult{Status: "unsupported", Error: "provider type does not support health check"}
+		return healthCheckResult{Status: "unsupported", Mode: mode, Error: "provider type does not support health check"}
 	}
 
 	// 构造最小请求（1 token）
@@ -228,47 +268,48 @@ func (h *HealthChecker) probeProvider(ctx context.Context, providerID int64) hea
 	endpoint := h.buildProbeEndpoint(p)
 	req, err := h.buildProbeRequest(ctx, p, endpoint, reqBody)
 	if err != nil {
-		return healthCheckResult{Status: "config_error", Error: err.Error()}
+		return healthCheckResult{Status: "config_error", Mode: mode, Model: probeModel, Error: err.Error()}
 	}
 
 	// 发起探测请求
 	resp, err := h.app.client.Do(req)
-	latency := time.Since(start).Milliseconds()
+	firstByte := time.Since(start).Milliseconds()
 
 	if err != nil {
+		latency := time.Since(start).Milliseconds()
 		if ctx.Err() != nil {
-			return healthCheckResult{Status: "timeout", LatencyMS: latency, Error: "request timeout"}
+			return healthCheckResult{Status: "timeout", Mode: mode, Model: probeModel, LatencyMS: latency, Error: "request timeout"}
 		}
-		return healthCheckResult{Status: "network_error", LatencyMS: latency, Error: sanitizeError(err.Error())}
+		return healthCheckResult{Status: "network_error", Mode: mode, Model: probeModel, LatencyMS: latency, Error: sanitizeError(err.Error())}
 	}
 	defer resp.Body.Close()
 
 	// 读取响应（限制大小）
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 50<<10))
+	latency := time.Since(start).Milliseconds()
 
 	// 解析状态
 	status, errMsg := h.parseProbeResponse(resp.StatusCode, body)
 	if p.Type == "codex_oauth" {
 		status, errMsg = h.parseCodexProbeResponse(resp.StatusCode, body)
 	}
-	return healthCheckResult{Status: status, LatencyMS: latency, Error: errMsg}
+	return healthCheckResult{Status: status, Mode: mode, Model: probeModel, LatencyMS: latency, FirstByteMS: firstByte, Error: errMsg}
 }
 
 func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvider) string {
+	var configured string
+	if err := h.app.db.QueryRowContext(ctx, `
+		SELECT upstream_model FROM model_routes
+		WHERE provider_id=? AND enabled=1
+		ORDER BY priority DESC, sort_order ASC, id ASC
+		LIMIT 1
+	`, p.ID).Scan(&configured); err == nil && strings.TrimSpace(configured) != "" {
+		return configured
+	}
 	switch p.Type {
 	case "grok_oauth":
 		return "grok-2-mini"
 	case "codex_oauth":
-		var model string
-		err := h.app.db.QueryRowContext(ctx, `
-			SELECT upstream_model FROM model_routes
-			WHERE provider_id=? AND enabled=1
-			ORDER BY priority ASC, sort_order ASC, id ASC
-			LIMIT 1
-		`, p.ID).Scan(&model)
-		if err == nil && strings.TrimSpace(model) != "" {
-			return model
-		}
 		return "gpt-5.4"
 	case "claude_oauth":
 		return "claude-3-5-haiku-20241022"
@@ -431,9 +472,13 @@ func (h *HealthChecker) updateHealthStatus(providerID int64, result healthCheckR
 		    health_check_status=?,
 		    health_check_error=?,
 		    health_check_latency_ms=?,
+		    health_check_mode=?,
+		    health_check_first_byte_ms=?,
+		    health_check_model=?,
+		    health_check_model_count=?,
 		    updated_at=?
 		WHERE id=?
-	`, now(), result.Status, result.Error, result.LatencyMS, now(), providerID)
+	`, now(), result.Status, result.Error, result.LatencyMS, result.Mode, result.FirstByteMS, result.Model, result.ModelCount, now(), providerID)
 
 	if err != nil {
 		h.app.log.Error("failed to update health status", "provider_id", providerID, "error", err)
@@ -442,6 +487,13 @@ func (h *HealthChecker) updateHealthStatus(providerID int64, result healthCheckR
 
 // CheckProviderNow 立即检查单个 provider（同步）
 func (a *App) CheckProviderNow(ctx context.Context, providerID int64) (healthCheckResult, error) {
+	return a.CheckProviderNowMode(ctx, providerID, healthCheckModeGeneration)
+}
+
+func (a *App) CheckProviderNowMode(ctx context.Context, providerID int64, mode string) (healthCheckResult, error) {
+	if !validHealthCheckMode(mode) {
+		return healthCheckResult{}, errors.New("health check mode must be connectivity or generation")
+	}
 	var authKind string
 	err := a.db.QueryRowContext(ctx, `SELECT auth_kind FROM providers WHERE id=?`, providerID).Scan(&authKind)
 	if err != nil {
@@ -456,7 +508,7 @@ func (a *App) CheckProviderNow(ctx context.Context, providerID int64) (healthChe
 	defer a.endHealthProbe(providerID)
 
 	checker := NewHealthChecker(a, 15*time.Minute, 1)
-	result := checker.probeProvider(ctx, providerID)
+	result := checker.probeProviderMode(ctx, providerID, mode)
 	checker.updateHealthStatus(providerID, result)
 	return result, nil
 }

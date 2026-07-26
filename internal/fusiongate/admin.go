@@ -135,7 +135,7 @@ func validEditableProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms FROM providers p ORDER BY p.priority DESC,p.id`)
+		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count FROM providers p ORDER BY p.priority DESC,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -146,7 +146,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			var p Provider
 			var enabled, hasRefresh int
 			var groupID sql.NullInt64
-			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS); err != nil {
+			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastFirstByteMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS, &p.HealthCheckMode, &p.HealthCheckFirstByteMS, &p.HealthCheckModel, &p.HealthCheckModelCount); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -395,12 +395,16 @@ func (a *App) healthChecks(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	case http.MethodPost:
 		var in struct {
 			ProviderIDs []int64 `json:"provider_ids"`
+			Mode        string  `json:"mode"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		job, err := a.healthCheckJobs.Start(r.Context(), in.ProviderIDs)
+		if in.Mode == "" {
+			in.Mode = healthCheckModeConnectivity
+		}
+		job, err := a.healthCheckJobs.StartMode(r.Context(), in.ProviderIDs, in.Mode)
 		if errors.Is(err, errHealthCheckAlreadyRunning) {
 			fail(w, http.StatusConflict, "health_check_running", "another health check is already running; wait for it to finish or cancel it")
 			return
@@ -732,7 +736,7 @@ func (a *App) routes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		rows, err := a.db.Query(`
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
        r.input_price_micros,r.output_price_micros,p.name,p.type,
-       p.enabled,p.status,p.last_latency_ms,p.consecutive_failures
+	       p.enabled,p.status,p.last_latency_ms,p.last_first_byte_ms,p.consecutive_failures
 FROM model_routes r
 JOIN providers p ON p.id=r.provider_id
 ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
@@ -745,7 +749,7 @@ ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 		for rows.Next() {
 			var x Route
 			var en, providerEnabled int
-			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder, &x.InputPriceMicros, &x.OutputPriceMicros, &x.ProviderName, &x.ProviderType, &providerEnabled, &x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFailures); err != nil {
+			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder, &x.InputPriceMicros, &x.OutputPriceMicros, &x.ProviderName, &x.ProviderType, &providerEnabled, &x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFirstByteMS, &x.ProviderFailures); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -753,7 +757,11 @@ ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 			x.ProviderEnabled = strBool(providerEnabled)
 			x.ProviderInflight = a.providerInflight(x.ProviderID)
 			if x.ProviderEnabled {
-				x.HealthScore = routeHealthScore(x.ProviderStatus, x.ProviderLatencyMS, x.ProviderFailures, x.ProviderInflight)
+				observedLatency := x.ProviderFirstByteMS
+				if observedLatency <= 0 {
+					observedLatency = x.ProviderLatencyMS
+				}
+				x.HealthScore = routeHealthScore(x.ProviderStatus, observedLatency, x.ProviderFailures, x.ProviderInflight)
 			}
 			out = append(out, x)
 		}

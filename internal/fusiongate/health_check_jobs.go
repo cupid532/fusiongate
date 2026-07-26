@@ -14,7 +14,8 @@ import (
 const (
 	manualHealthCheckMaxItems    = 100
 	manualHealthCheckConcurrency = 3
-	manualHealthCheckTimeout     = 12 * time.Second
+	manualConnectivityTimeout    = 12 * time.Second
+	manualGenerationTimeout      = 35 * time.Second
 	manualHealthCheckRetention   = 30 * time.Minute
 )
 
@@ -42,6 +43,7 @@ type healthCheckTarget struct {
 
 type healthCheckJob struct {
 	ID         string                  `json:"id"`
+	Mode       string                  `json:"mode"`
 	Status     string                  `json:"status"`
 	Total      int                     `json:"total"`
 	Completed  int                     `json:"completed"`
@@ -62,6 +64,10 @@ type healthCheckItemResult struct {
 	ProviderName string `json:"provider_name"`
 	Status       string `json:"status"`
 	LatencyMS    int64  `json:"latency_ms"`
+	FirstByteMS  int64  `json:"first_byte_ms"`
+	Mode         string `json:"mode"`
+	Model        string `json:"model,omitempty"`
+	ModelCount   int    `json:"model_count"`
 	Error        string `json:"error,omitempty"`
 	StartedAt    string `json:"started_at,omitempty"`
 	FinishedAt   string `json:"finished_at,omitempty"`
@@ -93,6 +99,13 @@ func (m *healthCheckJobManager) Close() {
 }
 
 func (m *healthCheckJobManager) Start(ctx context.Context, providerIDs []int64) (healthCheckJob, error) {
+	return m.StartMode(ctx, providerIDs, healthCheckModeGeneration)
+}
+
+func (m *healthCheckJobManager) StartMode(ctx context.Context, providerIDs []int64, mode string) (healthCheckJob, error) {
+	if !validHealthCheckMode(mode) {
+		return healthCheckJob{}, errors.New("health check mode must be connectivity or generation")
+	}
 	targets, err := m.loadTargets(ctx, providerIDs)
 	if err != nil {
 		return healthCheckJob{}, err
@@ -109,6 +122,7 @@ func (m *healthCheckJobManager) Start(ctx context.Context, providerIDs []int64) 
 	jobCtx, cancel := context.WithCancel(m.ctx)
 	job := &healthCheckJob{
 		ID:        jobID,
+		Mode:      mode,
 		Status:    "queued",
 		Total:     len(targets),
 		CreatedAt: now(),
@@ -120,6 +134,7 @@ func (m *healthCheckJobManager) Start(ctx context.Context, providerIDs []int64) 
 		job.Results[i] = healthCheckItemResult{
 			ProviderID:   target.ProviderID,
 			ProviderName: target.ProviderName,
+			Mode:         mode,
 			Status:       "queued",
 		}
 	}
@@ -301,6 +316,7 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 		return
 	}
 	item := job.Results[index]
+	mode := job.Mode
 	job.Results[index].Status = "running"
 	job.Results[index].StartedAt = now()
 	m.mu.Unlock()
@@ -315,19 +331,25 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 			<-timer.C
 		}
 		m.finishItem(jobID, index, healthCheckItemResult{
-			ProviderID: item.ProviderID, ProviderName: item.ProviderName,
+			ProviderID: item.ProviderID, ProviderName: item.ProviderName, Mode: mode,
 			Status: "cancelled", Error: "health check cancelled",
 		})
 		return
 	case <-timer.C:
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, manualHealthCheckTimeout)
-	result, err := m.app.CheckProviderNow(probeCtx, item.ProviderID)
+	timeout := manualConnectivityTimeout
+	if mode == healthCheckModeGeneration {
+		timeout = manualGenerationTimeout
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	result, err := m.app.CheckProviderNowMode(probeCtx, item.ProviderID, mode)
 	cancel()
 	finished := healthCheckItemResult{
 		ProviderID: item.ProviderID, ProviderName: item.ProviderName,
-		Status: result.Status, LatencyMS: result.LatencyMS, Error: result.Error,
+		Status: result.Status, Mode: mode, LatencyMS: result.LatencyMS,
+		FirstByteMS: result.FirstByteMS, Model: result.Model,
+		ModelCount: result.ModelCount, Error: result.Error,
 	}
 	if ctx.Err() != nil {
 		finished.Status = "cancelled"

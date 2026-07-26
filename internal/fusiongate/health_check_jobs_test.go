@@ -147,11 +147,58 @@ func TestHealthChecksAdminEndpointStartsJob(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &job); err != nil {
 		t.Fatal(err)
 	}
-	if job.ID == "" || job.Total != 1 {
+	if job.ID == "" || job.Total != 1 || job.Mode != healthCheckModeConnectivity {
 		t.Fatalf("job=%+v", job)
 	}
 	_, _ = a.healthCheckJobs.Cancel(job.ID)
 	_ = waitForHealthCheckJob(t, a, job.ID)
+}
+
+func TestHealthChecksAdminEndpointAcceptsGenerationMode(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{
+		Version: 1, Kind: "oauth", Platform: "codex", Source: "fusiongate_oauth",
+		AccessToken: "generation-health", AccountID: "generation-health",
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "generation-health", 1, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := `{"provider_ids":[` + jsonNumber(providerID) + `],"mode":"generation"}`
+	recorder := httptest.NewRecorder()
+	a.healthChecks(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/health-checks", strings.NewReader(body)), adminCtx{})
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var job healthCheckJob
+	if err := json.Unmarshal(recorder.Body.Bytes(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Mode != healthCheckModeGeneration {
+		t.Fatalf("job=%+v", job)
+	}
+	_, _ = a.healthCheckJobs.Cancel(job.ID)
+	_ = waitForHealthCheckJob(t, a, job.ID)
+}
+
+func TestHealthChecksAdminEndpointRejectsInvalidMode(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	recorder := httptest.NewRecorder()
+	a.healthChecks(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/health-checks", strings.NewReader(`{"provider_ids":[1],"mode":"destructive"}`)), adminCtx{})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func waitForHealthCheckJob(t *testing.T, a *App, jobID string) healthCheckJob {

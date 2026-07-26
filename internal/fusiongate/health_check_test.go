@@ -49,7 +49,7 @@ func TestCodexHealthProbeUsesResponsesProtocolAndConfiguredModel(t *testing.T) {
 
 	h := NewHealthChecker(a, time.Minute, 1)
 	result := h.probeProvider(context.Background(), providerID)
-	if result.Status != "healthy" || result.Error != "" {
+	if result.Status != "healthy" || result.Error != "" || result.Mode != healthCheckModeGeneration || result.Model != "gpt-route-model" || result.FirstByteMS < 0 {
 		t.Fatalf("result=%+v", result)
 	}
 	if path != "/responses" || accept != "text/event-stream" || account != "health-account" || model != "gpt-route-model" {
@@ -57,6 +57,56 @@ func TestCodexHealthProbeUsesResponsesProtocolAndConfiguredModel(t *testing.T) {
 	}
 	if _, ok := input.([]any); !ok || store != false || stream != true {
 		t.Fatalf("input=%#v store=%#v stream=%#v", input, store, stream)
+	}
+}
+
+func TestConnectivityHealthProbeUsesModelListWithoutGeneration(t *testing.T) {
+	var modelCalls, generationCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/models":
+			modelCalls++
+			if got := r.URL.Query().Get("client_version"); got != defaultCodexCLIVersion {
+				t.Errorf("client_version=%q, want %q", got, defaultCodexCLIVersion)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer connectivity-access" {
+				t.Errorf("authorization=%q", got)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"models": []any{map[string]any{"slug": "GPT-5.4", "display_name": "GPT-5.4"}}})
+		case "/responses":
+			generationCalls++
+			http.Error(w, "generation must not run", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{
+		Version: 1, Kind: "oauth", Platform: "codex", Source: "fusiongate_oauth",
+		AccessToken: "connectivity-access", AccountID: "connectivity-account",
+		ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "codex-connectivity", 1, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET base_url=? WHERE id=?`, upstream.URL, providerID); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHealthChecker(a, time.Minute, 1)
+	result := h.probeProviderMode(context.Background(), providerID, healthCheckModeConnectivity)
+	if result.Status != "healthy" || result.Error != "" || result.Mode != healthCheckModeConnectivity || result.ModelCount != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+	if modelCalls != 1 || generationCalls != 0 {
+		t.Fatalf("model calls=%d generation calls=%d", modelCalls, generationCalls)
 	}
 }
 
