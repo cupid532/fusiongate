@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -142,10 +143,21 @@ func TestMessagesUsesOpenAICompatibleRoute(t *testing.T) {
 		if body["model"] != "provider-claude" {
 			t.Errorf("model=%#v", body["model"])
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			t.Errorf("automatic gzip negotiation missing: %q", r.Header.Get("Accept-Encoding"))
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "application/json")
+		gz := gzip.NewWriter(w)
+		if err := json.NewEncoder(gz).Encode(map[string]any{
 			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "pong"}, "finish_reason": "stop"}},
 			"usage":   map[string]any{"prompt_tokens": 3, "completion_tokens": 1},
-		})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := gz.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}))
 	defer upstream.Close()
 
@@ -158,7 +170,15 @@ func TestMessagesUsesOpenAICompatibleRoute(t *testing.T) {
 	insertTestRoute(t, a, providerID, "claude-test", "provider-claude", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 
-	rec := gatewayRequest(t, a, "/v1/messages", key, `{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`, "claude-cli/1")
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "claude-cli/1")
+	// Reproduce Caddy/desktop compression negotiation. The bridge must remove
+	// this explicit header so net/http can transparently decode upstream gzip.
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}

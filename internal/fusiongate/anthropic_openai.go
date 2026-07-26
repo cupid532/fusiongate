@@ -35,6 +35,10 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
 	copyUpstreamRequestHeaders(req.Header, incoming.Header)
+	// This path parses and rewrites the upstream body. Do not forward a client or
+	// reverse proxy's explicit compression negotiation: net/http only performs
+	// transparent gzip decompression when it owns the Accept-Encoding header.
+	req.Header.Del("Accept-Encoding")
 	if _, present := incoming.Header["User-Agent"]; !present {
 		req.Header.Set("User-Agent", "")
 	}
