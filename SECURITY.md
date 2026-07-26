@@ -21,7 +21,7 @@ Include affected versions, reproduction steps, impact, and any suggested mitigat
 ## OAuth credential handling
 
 - Codex / Claude browser authorization uses PKCE S256, a cryptographically random state, a 15-minute in-memory session, and one-time session consumption. Grok uses the official device authorization flow.
-- CLIProxyAPI / sub2api JSON is parsed only in authenticated administrator endpoints. Import preview is masked and does not return Access Token, Refresh Token, ID Token, or the original JSON. Multiple files may be selected, but no account is selected or imported by default.
+- Imported OAuth JSON is parsed only in authenticated administrator endpoints. Import preview is masked and does not return Access Token, Refresh Token, ID Token, or the original JSON. Common CLIProxyAPI / sub2api shapes remain supported. Multiple files may be selected, but no account is selected or imported by default.
 - Credential export requires an explicit sensitive-data acknowledgement, accepts only existing OAuth providers, is limited to 200 records, and returns `no-store` download responses. Exported JSON is never written to application logs or browser storage.
 - The complete OAuth credential object is encrypted at rest with AES-256-GCM. Token endpoint response bodies, imported JSON, Authorization headers, and request/response content are not written to application logs.
 - Refresh occurs shortly before expiry. Rotated Refresh Tokens are stored atomically with the refreshed credential; failures expose only a generic status and allow normal provider failover.

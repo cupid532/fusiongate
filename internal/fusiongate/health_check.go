@@ -151,10 +151,23 @@ func (h *HealthChecker) checkBatch(parent context.Context) {
 }
 
 func (h *HealthChecker) checkProvider(parent context.Context, providerID int64) {
-	// 随机延迟避免批量探测特征
+	if !h.app.beginHealthProbe(providerID) {
+		return
+	}
+	defer h.app.endHealthProbe(providerID)
+
+	// 随机延迟避免批量探测特征；等待可取消，停机时不会拖住任务。
 	if h.maxDelay > h.minDelay {
 		jitter := h.minDelay + time.Duration(rand.Int63n(int64(h.maxDelay-h.minDelay)))
-		time.Sleep(jitter)
+		timer := time.NewTimer(jitter)
+		select {
+		case <-parent.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-timer.C:
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(parent, h.timeout)
@@ -430,19 +443,41 @@ func (h *HealthChecker) updateHealthStatus(providerID int64, result healthCheckR
 // CheckProviderNow 立即检查单个 provider（同步）
 func (a *App) CheckProviderNow(ctx context.Context, providerID int64) (healthCheckResult, error) {
 	var authKind string
-	var enabled int
-	err := a.db.QueryRowContext(ctx, `SELECT auth_kind, enabled FROM providers WHERE id=?`, providerID).Scan(&authKind, &enabled)
+	err := a.db.QueryRowContext(ctx, `SELECT auth_kind FROM providers WHERE id=?`, providerID).Scan(&authKind)
 	if err != nil {
 		return healthCheckResult{}, errors.New("provider not found")
 	}
 	if authKind != "oauth" {
 		return healthCheckResult{}, errors.New("health check only supports OAuth providers")
 	}
+	if !a.beginHealthProbe(providerID) {
+		return healthCheckResult{}, errHealthProbeAlreadyRunning
+	}
+	defer a.endHealthProbe(providerID)
 
 	checker := NewHealthChecker(a, 15*time.Minute, 1)
 	result := checker.probeProvider(ctx, providerID)
 	checker.updateHealthStatus(providerID, result)
 	return result, nil
+}
+
+func (a *App) beginHealthProbe(providerID int64) bool {
+	a.healthProbeMu.Lock()
+	defer a.healthProbeMu.Unlock()
+	if a.healthProbes == nil {
+		a.healthProbes = make(map[int64]struct{})
+	}
+	if _, running := a.healthProbes[providerID]; running {
+		return false
+	}
+	a.healthProbes[providerID] = struct{}{}
+	return true
+}
+
+func (a *App) endHealthProbe(providerID int64) {
+	a.healthProbeMu.Lock()
+	delete(a.healthProbes, providerID)
+	a.healthProbeMu.Unlock()
 }
 
 func sanitizeError(err string) string {

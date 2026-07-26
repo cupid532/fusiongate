@@ -375,6 +375,80 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	writeJSON(w, http.StatusOK, map[string]any{"action": in.Action, "affected": affected})
 }
 
+func (a *App) healthChecks(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if a.healthCheckJobs == nil {
+		fail(w, http.StatusServiceUnavailable, "health_check_unavailable", "health check service is unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		job, err := a.healthCheckJobs.Active()
+		if errors.Is(err, errHealthCheckJobNotFound) {
+			writeJSON(w, http.StatusOK, map[string]any{"active": false})
+			return
+		}
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "health_check_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"active": true, "job": job})
+	case http.MethodPost:
+		var in struct {
+			ProviderIDs []int64 `json:"provider_ids"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		job, err := a.healthCheckJobs.Start(r.Context(), in.ProviderIDs)
+		if errors.Is(err, errHealthCheckAlreadyRunning) {
+			fail(w, http.StatusConflict, "health_check_running", "another health check is already running; wait for it to finish or cancel it")
+			return
+		}
+		if err != nil {
+			fail(w, http.StatusBadRequest, "invalid_provider_selection", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, job)
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
+	}
+}
+
+func (a *App) healthCheckByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if a.healthCheckJobs == nil {
+		fail(w, http.StatusServiceUnavailable, "health_check_unavailable", "health check service is unavailable")
+		return
+	}
+	jobID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/health-checks/"), "/")
+	if jobID == "" || len(jobID) > 64 || strings.Contains(jobID, "/") {
+		fail(w, http.StatusNotFound, "not_found", "health check job not found")
+		return
+	}
+	var (
+		job healthCheckJob
+		err error
+	)
+	switch r.Method {
+	case http.MethodGet:
+		job, err = a.healthCheckJobs.Get(jobID)
+	case http.MethodDelete:
+		job, err = a.healthCheckJobs.Cancel(jobID)
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or DELETE required")
+		return
+	}
+	if errors.Is(err, errHealthCheckJobNotFound) {
+		fail(w, http.StatusNotFound, "not_found", "health check job not found")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "health_check_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, job)
+}
+
 func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	suffix := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/providers/"), "/")
 	parts := strings.Split(suffix, "/")
@@ -390,6 +464,10 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		result, err := a.CheckProviderNow(r.Context(), id)
+		if errors.Is(err, errHealthProbeAlreadyRunning) {
+			fail(w, http.StatusConflict, "health_check_running", err.Error())
+			return
+		}
 		if err != nil {
 			fail(w, http.StatusBadRequest, "health_check_failed", err.Error())
 			return

@@ -63,7 +63,7 @@ Backups briefly stop the FusionGate application container to produce a consisten
 
 Codex and Claude browser authorization use the official CLI-compatible `localhost` redirect URIs. The production server does **not** need to expose ports 1455 or 54545: after authorization, copy the full localhost callback URL from the browser address bar and paste it into the FusionGate management console. Grok uses device authorization and does not require a callback port. Pending authorization sessions are held in memory for 15 minutes and can be consumed only once.
 
-OAuth credentials imported from CLIProxyAPI or sub2api are encrypted with `FUSIONGATE_MASTER_KEY`. Before every update or migration, back up the following together:
+Imported OAuth credentials are encrypted with `FUSIONGATE_MASTER_KEY`. Before every update or migration, back up the following together:
 
 - `/opt/fusiongate/data/fusiongate.db` (and any `-wal` / `-shm` files when the service is running);
 - `/opt/fusiongate/config` or the secret source containing `FUSIONGATE_MASTER_KEY`;

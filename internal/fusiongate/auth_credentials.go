@@ -1043,7 +1043,7 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 	sharedRisk := sharedGrokImport(c)
 	sharedNote := ""
 	if sharedRisk {
-		sharedNote = "shared_import_risk: 与外部 runtime 共用 Grok refresh token，已默认停用且禁止 FusionGate 续期；请用设备授权获取独立凭证"
+		sharedNote = "shared_import_risk: 导入的 Grok refresh token 可能仍被其他运行实例使用，已默认停用且禁止 FusionGate 续期；请用设备授权获取独立凭证"
 	}
 	if duplicateID > 0 {
 		if !updateExisting {
@@ -1257,7 +1257,7 @@ func normalizeImportedCredential(raw map[string]any) (ProviderCredential, string
 		extra["token_endpoint"] = endpoint
 	}
 	if headers, ok := raw["headers"].(map[string]any); ok && len(headers) > 0 {
-		// Preserve CLIProxy/Grok client headers so upstream metadata stays consistent.
+		// Preserve imported Grok client headers so upstream metadata stays consistent.
 		copied := map[string]any{}
 		for k, v := range headers {
 			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -1518,7 +1518,7 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 		return errors.New("OAuth credential expired and has no refresh token")
 	}
 	if externalOAuthOwner(credential) {
-		// CPA/CLIProxy (or sub2api) owns refresh-token rotation for imported
+		// The source process owns refresh-token rotation for externally imported
 		// credentials. FusionGate may keep using a still-valid access token,
 		// but must never hit the token endpoint or it can revoke the source side.
 		// Native FusionGate OAuth (source=fusiongate_oauth) is intentionally
@@ -1532,7 +1532,7 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 		if owner == "" {
 			owner = "external"
 		}
-		detail := fmt.Sprintf("external OAuth credential (%s): access token expired; wait for source runtime refresh/sync (FusionGate will not rotate imported refresh tokens)", owner)
+		detail := fmt.Sprintf("externally managed OAuth credential (%s): access token expired; update the imported credential at its source (FusionGate will not rotate imported refresh tokens)", owner)
 		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
 		return errors.New(detail)
 	}
@@ -1649,7 +1649,7 @@ func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCreden
 }
 
 // externalOAuthOwner reports credentials that another runtime is responsible for
-// refreshing (CLIProxy/CPA, sub2api, ...). FusionGate must not rotate those
+// refreshing. FusionGate must not rotate those
 // refresh tokens. Credentials created via FusionGate device/browser OAuth
 // (source=fusiongate_oauth) keep using FusionGate's own refresh loop.
 func externalOAuthOwner(c ProviderCredential) bool {
@@ -1703,13 +1703,13 @@ func (a *App) proactiveRefreshOAuthCredentials(parent context.Context) {
 	defer cancel()
 
 	// Prefer soon-to-expire *FusionGate-owned* credentials that still have a
-	// refresh token. CPA/CLIProxy imports are excluded (synced externally).
+	// refresh token. Externally managed imports are excluded.
 	// Retry refresh_failed only occasionally, and skip permanent invalid_grant/
 	// revoked failures so we do not hammer upstream with dead refresh tokens.
 	lead := time.Now().UTC().Add(oauthRefreshLeadTime()).Format(time.RFC3339)
 	retryFailedBefore := time.Now().UTC().Add(-6 * time.Hour).Format(time.RFC3339)
-	// Only refresh credentials FusionGate itself owns. CPA/CLIProxy imports are
-	// synced in from the source runtime and must not be rotated here.
+	// Only refresh credentials FusionGate itself owns. Externally managed imports
+	// must be updated by their source and must not be rotated here.
 	rows, err := a.db.QueryContext(ctx, `
 		SELECT id FROM providers
 		WHERE auth_kind='oauth' AND enabled=1 AND auth_has_refresh=1

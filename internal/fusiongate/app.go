@@ -47,6 +47,9 @@ type App struct {
 	ledgerCleanupMu   sync.Mutex
 	lastLedgerCleanup time.Time
 	healthChecker     *HealthChecker
+	healthCheckJobs   *healthCheckJobManager
+	healthProbeMu     sync.Mutex
+	healthProbes      map[int64]struct{}
 }
 type rateWindow struct {
 	At    time.Time
@@ -182,7 +185,7 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}}
+	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -196,11 +199,15 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	a.healthChecker = NewHealthChecker(a, healthCheckIntervalFromEnv(), healthCheckConcurrencyFromEnv())
+	a.healthCheckJobs = newHealthCheckJobManager(a)
 	return a, nil
 }
 func (a *App) Close() error {
 	if a.healthChecker != nil {
 		a.healthChecker.Stop()
+	}
+	if a.healthCheckJobs != nil {
+		a.healthCheckJobs.Close()
 	}
 	return a.db.Close()
 }
@@ -525,6 +532,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
 	mux.HandleFunc("/api/admin/providers/batch", a.admin(a.providerBatch))
 	mux.HandleFunc("/api/admin/providers/", a.admin(a.providerByID))
+	mux.HandleFunc("/api/admin/health-checks", a.admin(a.healthChecks))
+	mux.HandleFunc("/api/admin/health-checks/", a.admin(a.healthCheckByID))
 	mux.HandleFunc("/api/admin/provider-groups", a.admin(a.providerGroups))
 	mux.HandleFunc("/api/admin/provider-groups/", a.admin(a.providerGroupByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))

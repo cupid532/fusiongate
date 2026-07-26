@@ -10,7 +10,7 @@ import (
 // OAuth bearer token. FusionGate is an API gateway, so it must provide the
 // same compatibility metadata when it calls cli-chat-proxy.grok.com.
 //
-// Keep these defaults aligned with CLIProxyAPI / Grok shell clients. Mismatched
+// Keep these defaults aligned with the official Grok shell client. Mismatched
 // client metadata can cause upstream auth failures even with a valid token.
 const defaultGrokCLIVersion = "0.2.93"
 const defaultGrokClientIdentifier = "grok-shell"
