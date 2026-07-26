@@ -514,13 +514,21 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 	transparent := z.Provider.PassthroughMode == "transparent"
 	body := raw
 	var err error
+	upstreamSSE := false
+	bufferResponsesSSE := false
 	if !transparent {
-		body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, stream, z.Provider.Type != "codex_oauth")
+		if z.Provider.Type == "codex_oauth" && endpoint == "/v1/responses" {
+			body, err = normalizedCodexResponsesBody(raw, z.Route.UpstreamModel)
+			upstreamSSE = true
+			bufferResponsesSSE = !stream
+		} else {
+			body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, stream, z.Provider.Type != "codex_oauth")
+		}
 		if err != nil {
 			return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 		}
 	}
-	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte})
+	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: upstreamSSE, BufferResponsesSSE: bufferResponsesSSE})
 }
 
 func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {

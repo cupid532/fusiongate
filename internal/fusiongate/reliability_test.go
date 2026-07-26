@@ -532,6 +532,104 @@ func TestRetryAfterImmediatelyOpensProviderCircuit(t *testing.T) {
 	}
 }
 
+func TestRateLimitWithoutRetryAfterImmediatelyOpensProviderCircuit(t *testing.T) {
+	var primaryCalls, backupCalls atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryCalls.Add(1)
+		http.Error(w, "limited", http.StatusTooManyRequests)
+	}))
+	defer primary.Close()
+	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backupCalls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{}})
+	}))
+	defer backup.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	p1 := insertTestProvider(t, a, "rate-limited-no-retry-after", "openai_compatible", primary.URL, "one", 2, 1, "normalized", "any", 0, 5, 30)
+	p2 := insertTestProvider(t, a, "rate-backup-no-retry-after", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 5, 30)
+	insertTestRoute(t, a, p1, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, p2, "model", "upstream", "chat", 1)
+	key := insertTestKey(t, a, false)
+
+	for range 2 {
+		rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"model","messages":[]}`, "test/1")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+	if primaryCalls.Load() != 1 || backupCalls.Load() != 2 {
+		t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
+	}
+	a.routeMu.Lock()
+	state := a.stateForLocked(Provider{ID: p1})
+	openUntil, failures := state.CircuitOpenUntil, state.ConsecutiveFailures
+	a.routeMu.Unlock()
+	if failures != 1 {
+		t.Fatalf("consecutive failures=%d, want 1", failures)
+	}
+	if time.Until(openUntil) < 4*time.Minute+55*time.Second {
+		t.Fatalf("circuit open until %s", openUntil)
+	}
+
+	var enabled int
+	var status, lastError string
+	if err := a.db.QueryRow(`SELECT enabled,status,last_error FROM providers WHERE id=?`, p1).Scan(&enabled, &status, &lastError); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 || status != "circuit_open" || lastError != "upstream_rate_limited" {
+		t.Fatalf("provider enabled=%d status=%q last_error=%q", enabled, status, lastError)
+	}
+}
+
+func TestRepeatedRateLimitsDoNotAutoDisableProvider(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	providerID := insertTestProvider(t, a, "temporary-rate-limit", "openai_compatible", "http://provider.test", "secret", 1, 1, "normalized", "any", 0, 1, 30)
+	z := resolvedRoute{
+		Route:    Route{ID: 1, ProviderID: providerID, PublicName: "model", UpstreamModel: "upstream"},
+		Provider: Provider{ID: providerID, FailureThreshold: 1, CooldownSeconds: 30},
+	}
+	limited := attemptResult{Status: http.StatusTooManyRequests, Retryable: true, Reason: "upstream_rate_limited"}
+	for range autoDisableAfterConsecutiveFailures + 2 {
+		a.completeRoute(z, limited, time.Millisecond)
+	}
+
+	var enabled, failures int
+	var status, lastError string
+	var circuitOpenUntil any
+	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError, &circuitOpenUntil); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 || failures != autoDisableAfterConsecutiveFailures+2 || status != "circuit_open" || lastError != "upstream_rate_limited" || circuitOpenUntil == nil {
+		t.Fatalf("rate-limited provider enabled=%d failures=%d status=%q last_error=%q circuit_open_until=%v", enabled, failures, status, lastError, circuitOpenUntil)
+	}
+	a.routeMu.Lock()
+	state := a.stateForLocked(z.Provider)
+	if state.AutoDisabled || state.CircuitOpenUntil.IsZero() {
+		a.routeMu.Unlock()
+		t.Fatalf("rate-limited runtime state auto_disabled=%v open_until=%s", state.AutoDisabled, state.CircuitOpenUntil)
+	}
+	a.routeMu.Unlock()
+
+	a.completeRoute(z, attemptResult{Status: http.StatusOK, Handled: true}, time.Millisecond)
+	var recoveredCircuit any
+	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError, &recoveredCircuit); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 || failures != 0 || status != "healthy" || lastError != "" || recoveredCircuit != nil {
+		t.Fatalf("recovered provider enabled=%d failures=%d status=%q last_error=%q circuit_open_until=%v", enabled, failures, status, lastError, recoveredCircuit)
+	}
+}
+
 func TestDownstreamCancellationDoesNotDegradeProvider(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

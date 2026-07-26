@@ -176,7 +176,7 @@ func (h *HealthChecker) probeProvider(ctx context.Context, providerID int64) hea
 	// OAuth 凭证：探测前先检查是否需要续签
 	if p.AuthCredential != nil && p.AuthCredential.RefreshToken != "" {
 		expires := parseTime(p.AuthCredential.ExpiresAt)
-		if expires == nil || !expires.After(time.Now().Add(2*time.Minute)) {
+		if expires == nil || !expires.After(time.Now().Add(oauthRefreshLeadTime())) {
 			// 构造最小 resolvedRoute 用于调用 refresh
 			z := &resolvedRoute{
 				Provider: Provider{
@@ -196,7 +196,7 @@ func (h *HealthChecker) probeProvider(ctx context.Context, providerID int64) hea
 	}
 
 	// 根据 provider 类型选择探测模型
-	probeModel := h.selectProbeModel(p.Type)
+	probeModel := h.selectProbeModel(ctx, p)
 	if probeModel == "" {
 		return healthCheckResult{Status: "unsupported", Error: "provider type does not support health check"}
 	}
@@ -235,15 +235,28 @@ func (h *HealthChecker) probeProvider(ctx context.Context, providerID int64) hea
 
 	// 解析状态
 	status, errMsg := h.parseProbeResponse(resp.StatusCode, body)
+	if p.Type == "codex_oauth" {
+		status, errMsg = h.parseCodexProbeResponse(resp.StatusCode, body)
+	}
 	return healthCheckResult{Status: status, LatencyMS: latency, Error: errMsg}
 }
 
-func (h *HealthChecker) selectProbeModel(providerType string) string {
-	switch providerType {
+func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvider) string {
+	switch p.Type {
 	case "grok_oauth":
 		return "grok-2-mini"
 	case "codex_oauth":
-		return "gpt-4o-mini"
+		var model string
+		err := h.app.db.QueryRowContext(ctx, `
+			SELECT upstream_model FROM model_routes
+			WHERE provider_id=? AND enabled=1
+			ORDER BY priority ASC, sort_order ASC, id ASC
+			LIMIT 1
+		`, p.ID).Scan(&model)
+		if err == nil && strings.TrimSpace(model) != "" {
+			return model
+		}
+		return "gpt-5.4"
 	case "claude_oauth":
 		return "claude-3-5-haiku-20241022"
 	case "openai", "openai_compatible":
@@ -262,6 +275,8 @@ func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider) string {
 		return base + "/v1/messages"
 	case "grok_oauth":
 		return base + "/v1/responses"
+	case "codex_oauth":
+		return base + "/responses"
 	default:
 		return base + "/v1/chat/completions"
 	}
@@ -277,6 +292,19 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 			},
 			"max_tokens": 1,
 		}
+	} else if p.Type == "codex_oauth" {
+		body = map[string]interface{}{
+			"model": body["model"],
+			"input": []any{map[string]any{
+				"role": "user",
+				"content": []any{map[string]any{
+					"type": "input_text",
+					"text": "Reply OK",
+				}},
+			}},
+			"store":  false,
+			"stream": true,
+		}
 	}
 
 	payload, err := json.Marshal(body)
@@ -291,7 +319,11 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 
 	// 设置认证头
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	if p.Type == "codex_oauth" {
+		req.Header.Set("Accept", "text/event-stream")
+	} else {
+		req.Header.Set("Accept", "application/json")
+	}
 
 	switch p.Type {
 	case "grok_oauth":
@@ -316,6 +348,25 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 	}
 
 	return req, nil
+}
+
+func (h *HealthChecker) parseCodexProbeResponse(statusCode int, body []byte) (string, string) {
+	if statusCode != http.StatusOK && statusCode != http.StatusCreated {
+		if statusCode == http.StatusBadRequest {
+			return "config_error", parseErrorMessage(body, "Codex rejected the probe request")
+		}
+		return h.parseProbeResponse(statusCode, body)
+	}
+	if _, _, err := completedResponseFromSSE(body); err == nil {
+		return "healthy", ""
+	}
+	var response map[string]any
+	if json.Unmarshal(body, &response) == nil {
+		if status, _ := response["status"].(string); status == "completed" {
+			return "healthy", ""
+		}
+	}
+	return "unknown_error", "Codex probe stream ended without response.completed"
 }
 
 func (h *HealthChecker) parseProbeResponse(statusCode int, body []byte) (string, string) {
@@ -352,6 +403,9 @@ func parseErrorMessage(body []byte, fallback string) string {
 		}
 		if msg, ok := data["message"].(string); ok && msg != "" {
 			return truncate(msg, 200)
+		}
+		if detail, ok := data["detail"].(string); ok && detail != "" {
+			return truncate(detail, 200)
 		}
 	}
 	return fallback

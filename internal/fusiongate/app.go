@@ -53,55 +53,55 @@ type rateWindow struct {
 	Count int
 }
 type Provider struct {
-	ID                  int64  `json:"id"`
-	Name                string `json:"name"`
-	Type                string `json:"type"`
-	BaseURL             string `json:"base_url"`
-	CredentialHint      string `json:"credential_hint"`
-	AuthKind            string `json:"auth_kind"`
-	AuthSource          string `json:"auth_source"`
-	AuthEmail           string `json:"auth_email,omitempty"`
-	AuthAccountID       string `json:"auth_account_id,omitempty"`
-	AuthExpiresAt       string `json:"auth_expires_at,omitempty"`
-	AuthStatus          string `json:"auth_status"`
-	HasRefreshToken     bool   `json:"has_refresh_token"`
-	Status              string `json:"status"`
-	Notes               string `json:"notes"`
-	Enabled             bool   `json:"enabled"`
-	Priority            int    `json:"priority"`
-	Weight              int    `json:"weight"`
-	PassthroughMode     string `json:"passthrough_mode"`
-	ClientPolicy        string `json:"client_policy"`
-	MaxConcurrency      int    `json:"max_concurrency"`
-	RequestTimeoutMS    int    `json:"request_timeout_ms"`
-	FailureThreshold    int    `json:"failure_threshold"`
-	CooldownSeconds     int    `json:"cooldown_seconds"`
-	ConsecutiveFailures int    `json:"consecutive_failures"`
-	CircuitOpenUntil    string `json:"circuit_open_until,omitempty"`
-	LastError           string `json:"last_error,omitempty"`
-	LastLatencyMS       int64  `json:"last_latency_ms"`
-	LastSuccessAt       string `json:"last_success_at,omitempty"`
-	LastFailureAt       string `json:"last_failure_at,omitempty"`
-	Inflight            int    `json:"inflight"`
-	ModelCount          int    `json:"model_count"`
-	GroupID             *int64 `json:"group_id,omitempty"`
-	GroupSortOrder      int    `json:"group_sort_order"`
-	LastHealthCheckAt   string `json:"last_health_check_at,omitempty"`
-	HealthCheckStatus   string `json:"health_check_status"`
-	HealthCheckError    string `json:"health_check_error,omitempty"`
-	HealthCheckLatencyMS int64 `json:"health_check_latency_ms"`
-	HealthScore         int    `json:"health_score"`
+	ID                   int64  `json:"id"`
+	Name                 string `json:"name"`
+	Type                 string `json:"type"`
+	BaseURL              string `json:"base_url"`
+	CredentialHint       string `json:"credential_hint"`
+	AuthKind             string `json:"auth_kind"`
+	AuthSource           string `json:"auth_source"`
+	AuthEmail            string `json:"auth_email,omitempty"`
+	AuthAccountID        string `json:"auth_account_id,omitempty"`
+	AuthExpiresAt        string `json:"auth_expires_at,omitempty"`
+	AuthStatus           string `json:"auth_status"`
+	HasRefreshToken      bool   `json:"has_refresh_token"`
+	Status               string `json:"status"`
+	Notes                string `json:"notes"`
+	Enabled              bool   `json:"enabled"`
+	Priority             int    `json:"priority"`
+	Weight               int    `json:"weight"`
+	PassthroughMode      string `json:"passthrough_mode"`
+	ClientPolicy         string `json:"client_policy"`
+	MaxConcurrency       int    `json:"max_concurrency"`
+	RequestTimeoutMS     int    `json:"request_timeout_ms"`
+	FailureThreshold     int    `json:"failure_threshold"`
+	CooldownSeconds      int    `json:"cooldown_seconds"`
+	ConsecutiveFailures  int    `json:"consecutive_failures"`
+	CircuitOpenUntil     string `json:"circuit_open_until,omitempty"`
+	LastError            string `json:"last_error,omitempty"`
+	LastLatencyMS        int64  `json:"last_latency_ms"`
+	LastSuccessAt        string `json:"last_success_at,omitempty"`
+	LastFailureAt        string `json:"last_failure_at,omitempty"`
+	Inflight             int    `json:"inflight"`
+	ModelCount           int    `json:"model_count"`
+	GroupID              *int64 `json:"group_id,omitempty"`
+	GroupSortOrder       int    `json:"group_sort_order"`
+	LastHealthCheckAt    string `json:"last_health_check_at,omitempty"`
+	HealthCheckStatus    string `json:"health_check_status"`
+	HealthCheckError     string `json:"health_check_error,omitempty"`
+	HealthCheckLatencyMS int64  `json:"health_check_latency_ms"`
+	HealthScore          int    `json:"health_score"`
 }
 
 type ProviderGroup struct {
-	ID            int64  `json:"id"`
-	Name          string `json:"name"`
-	Collapsed     bool   `json:"collapsed"`
-	SortOrder     int    `json:"sort_order"`
-	MemberCount   int    `json:"member_count"`
-	HealthyCount  int    `json:"healthy_count"`
-	CreatedAt     string `json:"created_at"`
-	UpdatedAt     string `json:"updated_at"`
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	Collapsed    bool   `json:"collapsed"`
+	SortOrder    int    `json:"sort_order"`
+	MemberCount  int    `json:"member_count"`
+	HealthyCount int    `json:"healthy_count"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 type Route struct {
@@ -211,6 +211,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	if a.healthChecker != nil {
 		a.healthChecker.Start(ctx)
 	}
+	go a.runOAuthRefreshLoop(ctx)
 }
 
 func healthCheckIntervalFromEnv() time.Duration {
@@ -499,11 +500,12 @@ func parseTime(s string) *time.Time {
 	if s == "" {
 		return nil
 	}
-	v, e := time.Parse(time.RFC3339Nano, s)
-	if e != nil {
-		return nil
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05Z07:00", "2006-01-02 15:04:05", "2006-01-02"} {
+		if v, e := time.Parse(layout, s); e == nil {
+			return &v
+		}
 	}
-	return &v
+	return nil
 }
 func boolInt(b bool) int {
 	if b {
@@ -539,6 +541,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/auth/models/sync", a.admin(a.authModelSync))
 	mux.HandleFunc("/api/admin/auth/oauth/start", a.admin(a.oauthStart))
 	mux.HandleFunc("/api/admin/auth/oauth/complete", a.admin(a.oauthComplete))
+	mux.HandleFunc("/api/admin/auth/quota/", a.admin(a.authQuota))
 	mux.HandleFunc("/v1/models", a.api(a.models))
 	mux.HandleFunc("/v1/chat/completions", a.api(a.chat))
 	mux.HandleFunc("/v1/responses", a.api(a.responses))

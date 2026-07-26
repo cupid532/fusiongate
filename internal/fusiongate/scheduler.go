@@ -256,8 +256,9 @@ func providerStatus(result attemptResult) string {
 }
 
 // autoDisableAfterConsecutiveFailures is deliberately independent from the
-// temporary circuit-breaker threshold: a channel that repeatedly fails across
-// cooldown probes is taken out of rotation until an administrator enables it.
+// temporary circuit-breaker threshold: a channel that repeatedly has permanent
+// failures across cooldown probes is taken out of rotation until an administrator
+// enables it. Transient rate limiting remains a temporary circuit condition.
 const autoDisableAfterConsecutiveFailures = 5
 
 func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.Duration) {
@@ -305,8 +306,9 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 			threshold = 3
 		}
 		immediate := result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden ||
-			(result.Status == http.StatusTooManyRequests && result.RetryAfter > 0)
-		if state.ConsecutiveFailures >= autoDisableAfterConsecutiveFailures {
+			result.Status == http.StatusTooManyRequests
+		autoDisableEligible := result.Status != http.StatusTooManyRequests
+		if autoDisableEligible && state.ConsecutiveFailures >= autoDisableAfterConsecutiveFailures {
 			// Closing, rather than deleting, preserves the channel and its
 			// diagnostics while excluding it from every new route resolution.
 			state.AutoDisabled = true

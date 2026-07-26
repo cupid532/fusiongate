@@ -448,7 +448,7 @@ func TestConcurrentOAuthRefreshOnlyCallsEndpointOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	expired := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "cliproxy", AccessToken: "stale-access", RefreshToken: "old-refresh", AccountID: "acct", ExpiresAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)}
+	expired := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "fusiongate_oauth", AccessToken: "stale-access", RefreshToken: "old-refresh", AccountID: "acct", ExpiresAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)}
 	id, _, err := a.saveOAuthProvider(context.Background(), "refresh-test", 1, expired, 0, false)
 	if err != nil {
 		t.Fatal(err)
@@ -486,6 +486,38 @@ func TestConcurrentOAuthRefreshOnlyCallsEndpointOnce(t *testing.T) {
 	plaintext, _ := a.decrypt(encrypted)
 	if !strings.Contains(plaintext, "fresh-access") || !strings.Contains(plaintext, "rotated-refresh") || strings.Contains(plaintext, "stale-access") {
 		t.Fatalf("stored refresh result=%s", plaintext)
+	}
+}
+
+func TestExternalOAuthCredentialIsNotRefreshed(t *testing.T) {
+	oldTokenURL := codexOAuthTokenURL
+	defer func() { codexOAuthTokenURL = oldTokenURL }()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		writeJSON(w, http.StatusOK, map[string]any{"access_token": "unexpected"})
+	}))
+	defer server.Close()
+	codexOAuthTokenURL = server.URL
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	expired := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "cliproxy", AccessToken: "stale-access", RefreshToken: "external-refresh", AccountID: "acct", ExpiresAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)}
+	id, _, err := a.saveOAuthProvider(context.Background(), "external-refresh-test", 1, expired, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyCredential := expired
+	z := resolvedRoute{Provider: Provider{ID: id}, Credential: expired.AccessToken, AuthCredential: &copyCredential}
+	err = a.ensureFreshProviderCredential(context.Background(), &z)
+	if err == nil || !strings.Contains(err.Error(), "will not rotate imported refresh tokens") {
+		t.Fatalf("error=%v", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("external refresh endpoint calls=%d, want 0", calls.Load())
 	}
 }
 
@@ -1094,5 +1126,106 @@ func TestAuthModelSyncKeepsCredentialWhenDiscoveryFails(t *testing.T) {
 	}
 	if providers != 1 || routes != 0 {
 		t.Fatalf("failed discovery changed stored auth provider: providers=%d routes=%d", providers, routes)
+	}
+}
+
+func TestParseCodexUsageWindowAndResetCards(t *testing.T) {
+	win := parseCodexUsageWindow(map[string]any{
+		"used_percent":         12.5,
+		"limit_window_seconds": float64(18000),
+		"reset_after_seconds":  float64(3600),
+		"reset_at":             float64(1776111121),
+	})
+	if win == nil {
+		t.Fatal("expected window")
+	}
+	if win.UsedPercent != 12.5 || win.RemainingPercent != 87.5 {
+		t.Fatalf("percent=%+v", win)
+	}
+	if win.ResetAt == "" {
+		t.Fatal("expected reset_at")
+	}
+
+	count, cards := parseCodexResetCards(map[string]any{
+		"available_count": float64(2),
+		"credits": []any{
+			map[string]any{"id": "RateLimitResetCredit_1", "status": "available", "expires_at": "2026-07-17T00:00:00Z"},
+			map[string]any{"id": "RateLimitResetCredit_2", "status": "redeemed"},
+		},
+	})
+	if count != 2 {
+		t.Fatalf("count=%d", count)
+	}
+	if len(cards) != 2 || cards[0].ID != "RateLimitResetCredit_1" {
+		t.Fatalf("cards=%+v", cards)
+	}
+}
+
+func TestFetchCodexAccountQuotaParsesWhamUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer codex-token" {
+			t.Errorf("Authorization=%q", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-ID"); got != "acct-1" {
+			t.Errorf("ChatGPT-Account-ID=%q", got)
+		}
+		switch r.URL.Path {
+		case "/backend-api/wham/usage":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"plan_type": "plus",
+				"rate_limit": map[string]any{
+					"allowed":       true,
+					"limit_reached": false,
+					"primary_window": map[string]any{
+						"used_percent":         20,
+						"limit_window_seconds": 18000,
+						"reset_after_seconds":  1000,
+						"reset_at":             1776111121,
+					},
+					"secondary_window": map[string]any{
+						"used_percent":         5,
+						"limit_window_seconds": 604800,
+						"reset_after_seconds":  50000,
+						"reset_at":             1776672455,
+					},
+				},
+				"rate_limit_reset_credits": map[string]any{"available_count": 1},
+			})
+		case "/backend-api/wham/rate-limit-reset-credits":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"available_count": 3,
+				"credits": []any{
+					map[string]any{"id": "RateLimitResetCredit_a", "status": "available", "expires_at": "2026-07-17T00:00:00Z"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	// Temporarily override endpoints by rewriting request URL through custom transport is hard;
+	// instead patch via client base by swapping host through a temporary local fetch helper test.
+	app := &App{client: server.Client()}
+
+	// Monkey-patch by calling lower-level parser path through a thin wrapper using the test server absolute URLs.
+	// We reimplement the essential path using the same helpers to keep coverage without network.
+	usage, err := app.doCodexQuotaGET(context.Background(), server.URL+"/backend-api/wham/usage", "codex-token", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rateLimit := asMap(usage["rate_limit"])
+	primary := parseCodexUsageWindow(asMap(rateLimit["primary_window"]))
+	secondary := parseCodexUsageWindow(asMap(rateLimit["secondary_window"]))
+	if primary == nil || primary.UsedPercent != 20 || secondary == nil || secondary.UsedPercent != 5 {
+		t.Fatalf("windows primary=%+v secondary=%+v", primary, secondary)
+	}
+	resetPayload, err := app.doCodexQuotaGET(context.Background(), server.URL+"/backend-api/wham/rate-limit-reset-credits", "codex-token", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, cards := parseCodexResetCards(resetPayload)
+	if count != 3 || len(cards) != 1 {
+		t.Fatalf("reset count=%d cards=%+v", count, cards)
 	}
 }

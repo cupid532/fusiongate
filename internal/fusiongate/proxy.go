@@ -25,6 +25,8 @@ type proxyOptions struct {
 	GatewayID          string
 	SafeTransportRetry bool
 	OnFirstByte        func()
+	UpstreamSSE        bool
+	BufferResponsesSSE bool
 }
 
 type firstByteReadCloser struct {
@@ -243,6 +245,100 @@ func normalizedOpenAIBody(raw []byte, upstreamModel string, stream, includeStrea
 	return json.Marshal(body)
 }
 
+func normalizedCodexResponsesBody(raw []byte, upstreamModel string) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	body["model"] = upstreamModel
+	switch input := body["input"].(type) {
+	case string:
+		body["input"] = []any{map[string]any{
+			"role": "user",
+			"content": []any{map[string]any{
+				"type": "input_text",
+				"text": input,
+			}},
+		}}
+	case map[string]any:
+		body["input"] = []any{input}
+	}
+	// The ChatGPT Codex backend only accepts non-persistent streaming
+	// Responses requests. FusionGate buffers the final completed event when
+	// the downstream client requested a regular JSON response.
+	body["store"] = false
+	body["stream"] = true
+	delete(body, "stream_options")
+	// The ChatGPT Codex backend currently rejects the public Responses API
+	// max_output_tokens field. Omit it rather than turning otherwise valid
+	// OpenAI-compatible requests into HTTP 400 responses.
+	delete(body, "max_output_tokens")
+	return json.Marshal(body)
+}
+
+func completedResponseFromSSE(body []byte) ([]byte, Usage, error) {
+	normalized := bytes.ReplaceAll(body, []byte("\r"), nil)
+	output := map[int]any{}
+	var completed map[string]any
+	for _, event := range bytes.Split(normalized, []byte("\n\n")) {
+		var data []string
+		for _, line := range strings.Split(strings.TrimSpace(string(event)), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		payload := strings.Join(data, "\n")
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var decoded map[string]any
+		if json.Unmarshal([]byte(payload), &decoded) != nil {
+			continue
+		}
+		switch decoded["type"] {
+		case "response.output_item.done":
+			index, ok := decoded["output_index"].(float64)
+			item, itemOK := decoded["item"].(map[string]any)
+			if ok && itemOK && index >= 0 && index == float64(int(index)) {
+				output[int(index)] = item
+			}
+		case "response.completed":
+			response, ok := decoded["response"].(map[string]any)
+			if !ok {
+				return nil, Usage{CostType: "unknown"}, fmt.Errorf("response.completed event did not include a response object")
+			}
+			completed = response
+		}
+	}
+	if completed == nil {
+		return nil, Usage{CostType: "unknown"}, fmt.Errorf("upstream stream ended without response.completed")
+	}
+	// The ChatGPT Codex backend emits completed output items as separate SSE
+	// events but currently leaves response.completed.response.output empty.
+	// Reassemble those items for downstream clients expecting normal JSON.
+	if existing, ok := completed["output"].([]any); !ok || len(existing) == 0 {
+		maxIndex := -1
+		for index := range output {
+			if index > maxIndex {
+				maxIndex = index
+			}
+		}
+		if maxIndex >= 0 {
+			items := make([]any, maxIndex+1)
+			for index, item := range output {
+				items[index] = item
+			}
+			completed["output"] = items
+		}
+	}
+	encoded, err := json.Marshal(completed)
+	if err != nil {
+		return nil, Usage{CostType: "unknown"}, err
+	}
+	return encoded, parseOpenAIUsage(completed), nil
+}
+
 func providerContext(parent context.Context, p Provider) (context.Context, context.CancelFunc) {
 	timeout := p.RequestTimeoutMS
 	if timeout <= 0 {
@@ -283,7 +379,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	}
 	if !options.Transparent {
 		req.Header.Set("Content-Type", "application/json")
-		if req.Header.Get("Accept") == "" {
+		if options.UpstreamSSE {
+			req.Header.Set("Accept", "text/event-stream")
+		} else if req.Header.Get("Accept") == "" {
 			req.Header.Set("Accept", "application/json")
 		}
 		if (z.Provider.Type == "anthropic" || z.Provider.Type == "claude_oauth") && req.Header.Get("anthropic-version") == "" {
@@ -321,6 +419,34 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: reason, Err: copyErr}
 	}
 
+	if options.BufferResponsesSSE {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBufferedUpstreamBody+1))
+		if readErr != nil {
+			if downstreamCanceled(incoming) {
+				return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
+			}
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_stream_interrupted", Err: readErr}
+		}
+		if len(body) > maxBufferedUpstreamBody {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_response_too_large", Err: fmt.Errorf("buffered Responses stream exceeded %d bytes", maxBufferedUpstreamBody)}
+		}
+		completed, usage, parseErr := completedResponseFromSSE(body)
+		if parseErr != nil {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_stream", Err: parseErr}
+		}
+		cost(z, &usage)
+		copyUpstreamResponseHeaders(w.Header(), resp.Header)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", strconv.Itoa(len(completed)))
+		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
+		w.WriteHeader(resp.StatusCode)
+		_, writeErr := w.Write(completed)
+		reason := ""
+		if writeErr != nil {
+			reason = "downstream_write_error"
+		}
+		return attemptResult{Status: resp.StatusCode, Handled: true, Usage: usage, Reason: reason, Err: writeErr}
+	}
 	if options.Stream {
 		first := make([]byte, 32<<10)
 		n, readErr := resp.Body.Read(first)

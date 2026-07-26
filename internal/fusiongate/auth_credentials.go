@@ -150,6 +150,40 @@ type credentialExportEntry struct {
 	Source           string `json:"source"`
 }
 
+type codexUsageWindow struct {
+	UsedPercent        float64 `json:"used_percent"`
+	RemainingPercent   float64 `json:"remaining_percent"`
+	LimitWindowSeconds int64   `json:"limit_window_seconds,omitempty"`
+	ResetAfterSeconds  int64   `json:"reset_after_seconds,omitempty"`
+	ResetAt            string  `json:"reset_at,omitempty"`
+}
+
+type codexResetCard struct {
+	ID        string `json:"id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	ResetType string `json:"reset_type,omitempty"`
+	GrantedAt string `json:"granted_at,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+type codexAccountQuota struct {
+	PlanType         string            `json:"plan_type,omitempty"`
+	SubscriptionPlan string            `json:"subscription_plan,omitempty"`
+	Allowed          bool              `json:"allowed"`
+	LimitReached     bool              `json:"limit_reached"`
+	Primary          *codexUsageWindow `json:"primary,omitempty"`
+	Secondary        *codexUsageWindow `json:"secondary,omitempty"`
+	ResetCards       int               `json:"reset_cards"`
+	ResetCardDetails []codexResetCard  `json:"reset_card_details,omitempty"`
+	CreditsBalance   *float64          `json:"credits_balance,omitempty"`
+	CreditsUnlimited bool              `json:"credits_unlimited,omitempty"`
+	// Legacy fields kept for older UI snippets.
+	TotalQuota     float64 `json:"total_quota"`
+	UsedQuota      float64 `json:"used_quota"`
+	RemainingQuota float64 `json:"remaining_quota"`
+	NextResetDate  string  `json:"next_reset_date,omitempty"`
+}
+
 func normalizeOAuthPlatform(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "codex", "openai", "chatgpt", "codex_oauth", "openai_oauth":
@@ -563,6 +597,34 @@ func (a *App) exchangeOAuthCode(ctx context.Context, session oauthSession, code 
 	return a.readOAuthTokenResponse(req, "claude", "fusiongate_oauth")
 }
 
+func oauthTokenErrorMessage(status int, body []byte) string {
+	msg := strings.TrimSpace(string(body))
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) == nil {
+		parts := make([]string, 0, 3)
+		if v := strings.TrimSpace(asString(payload["error"])); v != "" {
+			parts = append(parts, v)
+		}
+		if v := strings.TrimSpace(asString(payload["error_description"])); v != "" {
+			parts = append(parts, v)
+		}
+		if v := strings.TrimSpace(asString(payload["message"])); v != "" && (len(parts) == 0 || !strings.Contains(strings.Join(parts, " "), v)) {
+			parts = append(parts, v)
+		}
+		if len(parts) > 0 {
+			msg = strings.Join(parts, ": ")
+		}
+	}
+	msg = strings.Join(strings.Fields(msg), " ")
+	if msg == "" {
+		msg = fmt.Sprintf("HTTP %d", status)
+	}
+	if len(msg) > 240 {
+		msg = msg[:240] + "…"
+	}
+	return msg
+}
+
 func (a *App) readOAuthTokenResponse(req *http.Request, platform, source string) (ProviderCredential, error) {
 	resp, err := a.client.Do(req)
 	if err != nil {
@@ -574,7 +636,7 @@ func (a *App) readOAuthTokenResponse(req *http.Request, platform, source string)
 		return ProviderCredential{}, errors.New("cannot read authentication response")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ProviderCredential{}, fmt.Errorf("authentication service returned status %d", resp.StatusCode)
+		return ProviderCredential{}, fmt.Errorf("authentication service returned status %d: %s", resp.StatusCode, oauthTokenErrorMessage(resp.StatusCode, body))
 	}
 	return credentialFromOAuthTokenBody(body, platform, source)
 }
@@ -978,6 +1040,11 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		return 0, "", err
 	}
 	status := credentialStatus(c)
+	sharedRisk := sharedGrokImport(c)
+	sharedNote := ""
+	if sharedRisk {
+		sharedNote = "shared_import_risk: 与外部 runtime 共用 Grok refresh token，已默认停用且禁止 FusionGate 续期；请用设备授权获取独立凭证"
+	}
 	if duplicateID > 0 {
 		if !updateExisting {
 			return duplicateID, requestedName, errDuplicateCredential
@@ -987,7 +1054,9 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		if err != nil {
 			return 0, "", err
 		}
-		_, err = a.db.ExecContext(ctx, `UPDATE providers SET type=?,base_url=?,credential=?,auth_kind='oauth',auth_source=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status=?,auth_fingerprint=?,auth_has_refresh=?,updated_at=? WHERE id=?`, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), duplicateID)
+		// Shared Grok imports stay disabled so proactive refresh never revokes the source side.
+		enabledVal := map[bool]int{true: 1, false: 0}[status != "expired" && !sharedRisk]
+		_, err = a.db.ExecContext(ctx, `UPDATE providers SET type=?,base_url=?,credential=?,auth_kind='oauth',auth_source=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status=?,auth_fingerprint=?,auth_has_refresh=?,status=?,enabled=?,notes=CASE WHEN ?!='' THEN ? ELSE notes END,last_error='',health_check_status='',health_check_error='',updated_at=? WHERE id=?`, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), map[bool]string{true: "unknown", false: "auth_expired"}[status != "expired"], enabledVal, sharedNote, sharedNote, now(), duplicateID)
 		return duplicateID, currentName, err
 	}
 	name := strings.TrimSpace(requestedName)
@@ -995,8 +1064,8 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		name = suggestedCredentialName(c, 1)
 	}
 	name = a.uniqueProviderName(ctx, name)
-	enabled := status != "expired"
-	res, err := a.db.ExecContext(ctx, `INSERT INTO providers(name,type,base_url,credential,enabled,priority,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_account_id,auth_email,auth_expires_at,auth_last_refresh_at,auth_status,auth_fingerprint,auth_has_refresh,created_at,updated_at) VALUES(?,?,?,?,?,?,100,'unknown','','normalized','any',0,120000,3,30,'oauth',?,?,?,?,?,?,?,?,?,?)`, name, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, boolInt(enabled), priority, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), now())
+	enabled := status != "expired" && !sharedRisk
+	res, err := a.db.ExecContext(ctx, `INSERT INTO providers(name,type,base_url,credential,enabled,priority,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_account_id,auth_email,auth_expires_at,auth_last_refresh_at,auth_status,auth_fingerprint,auth_has_refresh,created_at,updated_at) VALUES(?,?,?,?,?,?,100,'unknown',?,'normalized','any',0,120000,3,30,'oauth',?,?,?,?,?,?,?,?,?,?)`, name, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, boolInt(enabled), priority, sharedNote, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), now())
 	if err != nil {
 		return 0, "", err
 	}
@@ -1183,8 +1252,27 @@ func normalizeImportedCredential(raw map[string]any) (ProviderCredential, string
 			[]string{"last_refresh"}, []string{"lastRefresh"}, []string{"last_refresh_at"}),
 		Scope: firstStringMaps(tokenMaps, []string{"scope"}),
 	}
+	extra := map[string]any{}
 	if endpoint := firstStringMaps(tokenMaps, []string{"token_endpoint"}, []string{"tokenEndpoint"}); endpoint != "" && isTrustedXAIEndpoint(endpoint) {
-		c.Extra = map[string]any{"token_endpoint": endpoint}
+		extra["token_endpoint"] = endpoint
+	}
+	if headers, ok := raw["headers"].(map[string]any); ok && len(headers) > 0 {
+		// Preserve CLIProxy/Grok client headers so upstream metadata stays consistent.
+		copied := map[string]any{}
+		for k, v := range headers {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				copied[k] = strings.TrimSpace(s)
+			}
+		}
+		if len(copied) > 0 {
+			extra["headers"] = copied
+		}
+	}
+	if expiresIn := firstStringMaps(tokenMaps, []string{"expires_in"}, []string{"expiresIn"}); expiresIn != "" {
+		extra["expires_in"] = expiresIn
+	}
+	if len(extra) > 0 {
+		c.Extra = extra
 	}
 	enrichCredentialFromJWT(&c)
 	return c, firstStringMaps([]map[string]any{raw}, []string{"name"}, []string{"user", "name"}), nil
@@ -1423,11 +1511,30 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 	}
 	credential := *z.AuthCredential
 	expires := parseTime(credential.ExpiresAt)
-	if !force && (expires == nil || expires.After(time.Now().Add(2*time.Minute))) {
+	if !force && (expires == nil || expires.After(time.Now().Add(oauthRefreshLeadTime()))) {
 		return nil
 	}
 	if credential.RefreshToken == "" {
 		return errors.New("OAuth credential expired and has no refresh token")
+	}
+	if externalOAuthOwner(credential) {
+		// CPA/CLIProxy (or sub2api) owns refresh-token rotation for imported
+		// credentials. FusionGate may keep using a still-valid access token,
+		// but must never hit the token endpoint or it can revoke the source side.
+		// Native FusionGate OAuth (source=fusiongate_oauth) is intentionally
+		// NOT covered here and continues to refresh itself.
+		if !force {
+			if expires != nil && expires.After(time.Now()) {
+				return nil
+			}
+		}
+		owner := strings.TrimSpace(credential.Source)
+		if owner == "" {
+			owner = "external"
+		}
+		detail := fmt.Sprintf("external OAuth credential (%s): access token expired; wait for source runtime refresh/sync (FusionGate will not rotate imported refresh tokens)", owner)
+		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
+		return errors.New(detail)
 	}
 	a.refreshMu.Lock()
 	defer a.refreshMu.Unlock()
@@ -1445,22 +1552,30 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 		return err
 	}
 	if !force {
-		if currentExpires := parseTime(current.ExpiresAt); currentExpires == nil || currentExpires.After(time.Now().Add(2*time.Minute)) {
+		if currentExpires := parseTime(current.ExpiresAt); currentExpires == nil || currentExpires.After(time.Now().Add(oauthRefreshLeadTime())) {
 			z.AuthCredential, z.Credential = &current, token
 			return nil
 		}
 	}
 	refreshed, err := a.refreshOAuthCredential(ctx, current)
 	if err != nil {
-		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET auth_status='refresh_failed',status='auth_expired',last_error='OAuth refresh failed',updated_at=? WHERE id=?`, now(), z.Provider.ID)
-		return errors.New("OAuth token refresh failed")
+		detail := strings.TrimSpace(err.Error())
+		if detail == "" {
+			detail = "OAuth refresh failed"
+		}
+		if len(detail) > 300 {
+			detail = detail[:300] + "…"
+		}
+		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET auth_status='refresh_failed',status='auth_expired',last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
+		a.log.Warn("oauth refresh failed", "provider_id", z.Provider.ID, "platform", current.Platform, "error", detail)
+		return fmt.Errorf("OAuth token refresh failed: %s", detail)
 	}
 	payload, _ := json.Marshal(refreshed)
 	sealed, err := a.encrypt(string(payload))
 	if err != nil {
 		return err
 	}
-	_, err = a.db.ExecContext(ctx, `UPDATE providers SET credential=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status='ready',auth_has_refresh=?,updated_at=? WHERE id=?`, sealed, refreshed.AccountID, refreshed.Email, nullableString(refreshed.ExpiresAt), nullableString(refreshed.LastRefresh), boolInt(refreshed.RefreshToken != ""), now(), z.Provider.ID)
+	_, err = a.db.ExecContext(ctx, `UPDATE providers SET credential=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status='ready',auth_has_refresh=?,status='unknown',last_error='',updated_at=? WHERE id=?`, sealed, refreshed.AccountID, refreshed.Email, nullableString(refreshed.ExpiresAt), nullableString(refreshed.LastRefresh), boolInt(refreshed.RefreshToken != ""), now(), z.Provider.ID)
 	if err != nil {
 		return err
 	}
@@ -1503,7 +1618,9 @@ func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCreden
 	if err != nil {
 		return current, err
 	}
-	if fresh.RefreshToken == "" {
+	// xAI (and some other providers) rotate refresh tokens on every successful refresh.
+	// Keeping a stale refresh token here permanently breaks auto-renewal.
+	if strings.TrimSpace(fresh.RefreshToken) == "" {
 		fresh.RefreshToken = current.RefreshToken
 	}
 	if fresh.IDToken == "" {
@@ -1515,6 +1632,658 @@ func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCreden
 	if fresh.Email == "" {
 		fresh.Email = current.Email
 	}
-	fresh.Extra = current.Extra
+	// Preserve non-token metadata (token endpoint / client headers) across rotation.
+	if current.Extra != nil {
+		merged := make(map[string]any, len(current.Extra)+2)
+		for k, v := range current.Extra {
+			merged[k] = v
+		}
+		if fresh.Extra != nil {
+			for k, v := range fresh.Extra {
+				merged[k] = v
+			}
+		}
+		fresh.Extra = merged
+	}
 	return fresh, nil
+}
+
+// externalOAuthOwner reports credentials that another runtime is responsible for
+// refreshing (CLIProxy/CPA, sub2api, ...). FusionGate must not rotate those
+// refresh tokens. Credentials created via FusionGate device/browser OAuth
+// (source=fusiongate_oauth) keep using FusionGate's own refresh loop.
+func externalOAuthOwner(c ProviderCredential) bool {
+	src := strings.ToLower(strings.TrimSpace(c.Source))
+	switch src {
+	case "cliproxy", "cli-proxy", "cli_proxy", "cpa", "sub2api":
+		return true
+	default:
+		return false
+	}
+}
+
+// sharedGrokImport is kept as a narrow alias for Grok-specific import UX/notes.
+func sharedGrokImport(c ProviderCredential) bool {
+	return normalizeOAuthPlatform(c.Platform) == "grok" && externalOAuthOwner(c)
+}
+
+func oauthRefreshLeadTime() time.Duration {
+	// Refresh a bit early so traffic never hits an already-expired access token.
+	return 15 * time.Minute
+}
+
+func (a *App) runOAuthRefreshLoop(ctx context.Context) {
+	// Stagger startup so health checks and migrations settle first.
+	timer := time.NewTimer(45 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
+	a.proactiveRefreshOAuthCredentials(ctx)
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.proactiveRefreshOAuthCredentials(ctx)
+		}
+	}
+}
+
+func (a *App) proactiveRefreshOAuthCredentials(parent context.Context) {
+	if parent.Err() != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 4*time.Minute)
+	defer cancel()
+
+	// Prefer soon-to-expire *FusionGate-owned* credentials that still have a
+	// refresh token. CPA/CLIProxy imports are excluded (synced externally).
+	// Retry refresh_failed only occasionally, and skip permanent invalid_grant/
+	// revoked failures so we do not hammer upstream with dead refresh tokens.
+	lead := time.Now().UTC().Add(oauthRefreshLeadTime()).Format(time.RFC3339)
+	retryFailedBefore := time.Now().UTC().Add(-6 * time.Hour).Format(time.RFC3339)
+	// Only refresh credentials FusionGate itself owns. CPA/CLIProxy imports are
+	// synced in from the source runtime and must not be rotated here.
+	rows, err := a.db.QueryContext(ctx, `
+		SELECT id FROM providers
+		WHERE auth_kind='oauth' AND enabled=1 AND auth_has_refresh=1
+		  AND lower(COALESCE(auth_source,'')) NOT IN ('cliproxy','cli-proxy','cli_proxy','cpa','sub2api')
+		  AND (
+			(
+			  auth_status!='refresh_failed'
+			  AND (auth_expires_at IS NULL OR auth_expires_at = '' OR auth_expires_at <= ?)
+			)
+			OR (
+			  auth_status='refresh_failed'
+			  AND updated_at <= ?
+			  AND lower(COALESCE(last_error,'')) NOT LIKE '%revoked%'
+			  AND lower(COALESCE(last_error,'')) NOT LIKE '%invalid_grant%'
+			  AND lower(COALESCE(last_error,'')) NOT LIKE '%invalid refresh%'
+			)
+		  )
+		ORDER BY
+			CASE WHEN auth_status='refresh_failed' THEN 1 ELSE 0 END ASC,
+			COALESCE(auth_expires_at, '1970-01-01') ASC,
+			id ASC
+		LIMIT 40
+	`, lead, retryFailedBefore)
+	if err != nil {
+		a.log.Warn("oauth proactive refresh query failed", "error", err)
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return
+	}
+
+	ok, failed := 0, 0
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := a.refreshProviderByID(ctx, id, false); err != nil {
+			failed++
+			// Keep going; individual failures are recorded on the provider row.
+			continue
+		}
+		ok++
+	}
+	if ok > 0 || failed > 0 {
+		a.log.Info("oauth proactive refresh pass", "refreshed", ok, "failed", failed, "selected", len(ids))
+	}
+}
+
+func (a *App) refreshProviderByID(ctx context.Context, providerID int64, force bool) error {
+	p, err := a.loadDiscoveryProvider(ctx, providerID)
+	if err != nil {
+		return err
+	}
+	if p.AuthCredential == nil {
+		return errors.New("provider has no oauth credential")
+	}
+	z := &resolvedRoute{
+		Provider: Provider{
+			ID:   p.ID,
+			Name: p.Name,
+			Type: p.Type,
+		},
+		AuthCredential: p.AuthCredential,
+		Credential:     p.Credential,
+	}
+	return a.refreshProviderCredential(ctx, z, force)
+}
+
+func formatUnixTimestamp(seconds int64) string {
+	if seconds <= 0 {
+		return ""
+	}
+	return time.Unix(seconds, 0).UTC().Format(time.RFC3339)
+}
+
+func parseCodexUsageWindow(raw map[string]any) *codexUsageWindow {
+	if raw == nil {
+		return nil
+	}
+	used := asFloat64(raw["used_percent"])
+	if used < 0 {
+		used = 0
+	}
+	if used > 100 {
+		used = 100
+	}
+	win := &codexUsageWindow{
+		UsedPercent:        used,
+		RemainingPercent:   100 - used,
+		LimitWindowSeconds: asInt64(raw["limit_window_seconds"]),
+		ResetAfterSeconds:  asInt64(raw["reset_after_seconds"]),
+	}
+	switch v := raw["reset_at"].(type) {
+	case float64:
+		win.ResetAt = formatUnixTimestamp(int64(v))
+	case json.Number:
+		n, _ := v.Int64()
+		win.ResetAt = formatUnixTimestamp(n)
+	case string:
+		if strings.TrimSpace(v) != "" {
+			win.ResetAt = strings.TrimSpace(v)
+		}
+	}
+	if win.ResetAt == "" && win.ResetAfterSeconds > 0 {
+		win.ResetAt = time.Now().UTC().Add(time.Duration(win.ResetAfterSeconds) * time.Second).Format(time.RFC3339)
+	}
+	return win
+}
+
+func asFloat64(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	case json.Number:
+		f, _ := n.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(n), 64)
+		return f
+	default:
+		return 0
+	}
+}
+
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	case string:
+		i, _ := strconv.ParseInt(strings.TrimSpace(n), 10, 64)
+		return i
+	default:
+		return 0
+	}
+}
+
+func asString(v any) string {
+	switch s := v.(type) {
+	case string:
+		return strings.TrimSpace(s)
+	case json.Number:
+		return s.String()
+	default:
+		return ""
+	}
+}
+
+func asMap(v any) map[string]any {
+	m, _ := v.(map[string]any)
+	return m
+}
+
+func asSlice(v any) []any {
+	s, _ := v.([]any)
+	return s
+}
+
+func setCodexQuotaRequestHeaders(req *http.Request, accessToken, accountID string) {
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("OpenAI-Beta", "codex-1")
+	req.Header.Set("OAI-Product-Sku", "CODEX")
+	if accountID = strings.TrimSpace(accountID); accountID != "" {
+		req.Header.Set("ChatGPT-Account-ID", accountID)
+	}
+	setCodexClientHeaders(req.Header)
+	// Reset-credit inventory/consume endpoints are exercised by Codex Desktop clients.
+	req.Header.Set("originator", "Codex Desktop")
+	req.Header.Set("User-Agent", "Codex Desktop")
+}
+
+func (a *App) doCodexQuotaRequest(ctx context.Context, method, endpoint, accessToken, accountID string, body any) (map[string]any, int, error) {
+	var reader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
+		reader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
+	if err != nil {
+		return nil, 0, err
+	}
+	setCodexQuotaRequestHeaders(req, accessToken, accountID)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := a.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(raw))
+		if len(msg) > 240 {
+			msg = msg[:240] + "…"
+		}
+		if msg == "" {
+			msg = resp.Status
+		}
+		return nil, resp.StatusCode, fmt.Errorf("%s returned HTTP %d: %s", endpoint, resp.StatusCode, msg)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return map[string]any{}, resp.StatusCode, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("decode %s: %w", endpoint, err)
+	}
+	return payload, resp.StatusCode, nil
+}
+
+func (a *App) doCodexQuotaGET(ctx context.Context, endpoint, accessToken, accountID string) (map[string]any, error) {
+	payload, _, err := a.doCodexQuotaRequest(ctx, http.MethodGet, endpoint, accessToken, accountID, nil)
+	return payload, err
+}
+
+func parseCodexResetCards(payload map[string]any) (int, []codexResetCard) {
+	if payload == nil {
+		return 0, nil
+	}
+	var cards []codexResetCard
+	addCard := func(item map[string]any) {
+		if item == nil {
+			return
+		}
+		card := codexResetCard{
+			ID:        firstNonEmpty(asString(item["id"]), asString(item["credit_id"])),
+			Status:    firstNonEmpty(asString(item["status"]), "available"),
+			ResetType: firstNonEmpty(asString(item["reset_type"]), asString(item["resetType"]), "codex_rate_limits"),
+			GrantedAt: firstNonEmpty(asString(item["granted_at"]), asString(item["grantedAt"])),
+			ExpiresAt: firstNonEmpty(asString(item["expires_at"]), asString(item["expiresAt"])),
+		}
+		if card.ID == "" && card.Status == "" && card.ExpiresAt == "" {
+			return
+		}
+		cards = append(cards, card)
+	}
+
+	for _, key := range []string{"credits", "items", "rate_limit_reset_credits", "data"} {
+		switch typed := payload[key].(type) {
+		case []any:
+			for _, entry := range typed {
+				addCard(asMap(entry))
+			}
+		case map[string]any:
+			if nested := asSlice(typed["credits"]); len(nested) > 0 {
+				for _, entry := range nested {
+					addCard(asMap(entry))
+				}
+			} else if nested := asSlice(typed["items"]); len(nested) > 0 {
+				for _, entry := range nested {
+					addCard(asMap(entry))
+				}
+			}
+		}
+	}
+
+	count := int(asInt64(payload["available_count"]))
+	if count == 0 {
+		count = int(asInt64(payload["availableCount"]))
+	}
+	if count == 0 && len(cards) > 0 {
+		available := 0
+		for _, card := range cards {
+			status := strings.ToLower(card.Status)
+			if status == "" || status == "available" {
+				available++
+			}
+		}
+		count = available
+	}
+	return count, cards
+}
+
+func (a *App) fetchCodexAccountQuota(ctx context.Context, accessToken, accountID string) (*codexAccountQuota, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	usageURL := "https://chatgpt.com/backend-api/wham/usage"
+	usage, err := a.doCodexQuotaGET(ctx, usageURL, accessToken, accountID)
+	if err != nil {
+		return nil, err
+	}
+
+	rateLimit := asMap(usage["rate_limit"])
+	primary := parseCodexUsageWindow(asMap(rateLimit["primary_window"]))
+	secondary := parseCodexUsageWindow(asMap(rateLimit["secondary_window"]))
+
+	quota := &codexAccountQuota{
+		PlanType:         firstNonEmpty(asString(usage["plan_type"]), asString(usage["planType"])),
+		SubscriptionPlan: firstNonEmpty(asString(usage["plan_type"]), asString(usage["planType"])),
+		Allowed:          true,
+		Primary:          primary,
+		Secondary:        secondary,
+	}
+	if rateLimit != nil {
+		if allowed, ok := rateLimit["allowed"].(bool); ok {
+			quota.Allowed = allowed
+		}
+		if reached, ok := rateLimit["limit_reached"].(bool); ok {
+			quota.LimitReached = reached
+		} else if reached, ok := rateLimit["limitReached"].(bool); ok {
+			quota.LimitReached = reached
+		}
+	}
+
+	// Prefer dedicated reset-credit inventory; fall back to summary embedded in /wham/usage.
+	resetPayload, resetErr := a.doCodexQuotaGET(ctx, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", accessToken, accountID)
+	if resetErr == nil {
+		quota.ResetCards, quota.ResetCardDetails = parseCodexResetCards(resetPayload)
+	} else {
+		a.log.Warn("codex reset-credit inventory fetch failed", "error", resetErr)
+		if embedded := asMap(usage["rate_limit_reset_credits"]); embedded != nil {
+			quota.ResetCards, quota.ResetCardDetails = parseCodexResetCards(embedded)
+		} else if embedded := asMap(usage["rateLimitResetCredits"]); embedded != nil {
+			quota.ResetCards, quota.ResetCardDetails = parseCodexResetCards(embedded)
+		}
+	}
+
+	if credits := asMap(usage["credits"]); credits != nil {
+		if balance, ok := credits["balance"]; ok {
+			value := asFloat64(balance)
+			quota.CreditsBalance = &value
+		}
+		if unlimited, ok := credits["unlimited"].(bool); ok {
+			quota.CreditsUnlimited = unlimited
+		} else if hasCredits, ok := credits["hasCredits"].(bool); ok && !hasCredits {
+			zero := 0.0
+			quota.CreditsBalance = &zero
+		}
+	}
+
+	// Legacy percent-style fields for the existing UI helpers.
+	if primary != nil {
+		quota.TotalQuota = 100
+		quota.UsedQuota = primary.UsedPercent
+		quota.RemainingQuota = primary.RemainingPercent
+		quota.NextResetDate = primary.ResetAt
+	} else if secondary != nil {
+		quota.TotalQuota = 100
+		quota.UsedQuota = secondary.UsedPercent
+		quota.RemainingQuota = secondary.RemainingPercent
+		quota.NextResetDate = secondary.ResetAt
+	}
+
+	return quota, nil
+}
+
+func (a *App) loadCodexOAuthCredential(ctx context.Context, id int64) (ProviderCredential, error) {
+	var providerType, authKind string
+	var encrypted []byte
+	err := a.db.QueryRowContext(ctx, `SELECT type, auth_kind, credential FROM providers WHERE id=?`, id).Scan(&providerType, &authKind, &encrypted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProviderCredential{}, errProviderNotFound
+	}
+	if err != nil {
+		return ProviderCredential{}, err
+	}
+	if authKind != "oauth" || providerType != "codex_oauth" {
+		return ProviderCredential{}, errUnsupportedQuotaProvider
+	}
+	plaintext, err := a.decrypt(encrypted)
+	if err != nil {
+		return ProviderCredential{}, err
+	}
+	var credential ProviderCredential
+	if err := json.Unmarshal([]byte(plaintext), &credential); err != nil {
+		return ProviderCredential{}, err
+	}
+	return credential, nil
+}
+
+func (a *App) persistOAuthCredential(ctx context.Context, id int64, updated ProviderCredential) {
+	payload, marshalErr := json.Marshal(updated)
+	if marshalErr != nil {
+		return
+	}
+	sealed, sealErr := a.encrypt(string(payload))
+	if sealErr != nil {
+		return
+	}
+	_, _ = a.db.ExecContext(ctx, `UPDATE providers SET credential=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status='ready',auth_has_refresh=?,updated_at=? WHERE id=?`, sealed, updated.AccountID, updated.Email, nullableString(updated.ExpiresAt), nullableString(updated.LastRefresh), boolInt(updated.RefreshToken != ""), now(), id)
+}
+
+func (a *App) ensureCodexAccessToken(ctx context.Context, id int64, credential ProviderCredential) (ProviderCredential, error) {
+	if strings.TrimSpace(credential.AccessToken) != "" {
+		return credential, nil
+	}
+	if strings.TrimSpace(credential.RefreshToken) == "" {
+		return credential, errors.New("access token not found")
+	}
+	refreshed, err := a.refreshOAuthCredential(ctx, credential)
+	if err != nil || strings.TrimSpace(refreshed.AccessToken) == "" {
+		if err != nil {
+			return credential, err
+		}
+		return credential, errors.New("access token not found")
+	}
+	a.persistOAuthCredential(ctx, id, refreshed)
+	return refreshed, nil
+}
+
+func (a *App) withCodexCredential(ctx context.Context, id int64, fn func(ProviderCredential) (any, error)) (any, error) {
+	credential, err := a.loadCodexOAuthCredential(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	credential, err = a.ensureCodexAccessToken(ctx, id, credential)
+	if err != nil {
+		return nil, err
+	}
+	result, err := fn(credential)
+	if err != nil && strings.TrimSpace(credential.RefreshToken) != "" {
+		refreshed, refreshErr := a.refreshOAuthCredential(ctx, credential)
+		if refreshErr == nil && strings.TrimSpace(refreshed.AccessToken) != "" {
+			a.persistOAuthCredential(ctx, id, refreshed)
+			return fn(refreshed)
+		}
+	}
+	return result, err
+}
+
+var (
+	errProviderNotFound         = errors.New("provider not found")
+	errUnsupportedQuotaProvider = errors.New("only Codex OAuth providers support quota operations")
+)
+
+func (a *App) redeemCodexResetCard(ctx context.Context, accessToken, accountID, creditID string) (map[string]any, error) {
+	if strings.TrimSpace(creditID) == "" {
+		// Auto-pick the soonest-expiring available card.
+		inventory, err := a.doCodexQuotaGET(ctx, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", accessToken, accountID)
+		if err != nil {
+			return nil, err
+		}
+		_, cards := parseCodexResetCards(inventory)
+		var chosen *codexResetCard
+		for i := range cards {
+			card := cards[i]
+			if strings.ToLower(card.Status) != "" && strings.ToLower(card.Status) != "available" {
+				continue
+			}
+			if card.ID == "" {
+				continue
+			}
+			if chosen == nil {
+				chosen = &card
+				continue
+			}
+			if card.ExpiresAt != "" && (chosen.ExpiresAt == "" || card.ExpiresAt < chosen.ExpiresAt) {
+				tmp := card
+				chosen = &tmp
+			}
+		}
+		if chosen == nil {
+			return nil, errors.New("no available reset card")
+		}
+		creditID = chosen.ID
+	}
+
+	redeemID := fmt.Sprintf("%s-%d", strings.ReplaceAll(creditID, "RateLimitResetCredit_", "fg"), time.Now().UnixNano())
+	if len(redeemID) > 80 {
+		redeemID = fmt.Sprintf("fg-%d", time.Now().UnixNano())
+	}
+	payload := map[string]any{
+		"credit_id":         creditID,
+		"redeem_request_id": redeemID,
+	}
+	result, _, err := a.doCodexQuotaRequest(ctx, http.MethodPost, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", accessToken, accountID, payload)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+	result["credit_id"] = creditID
+	return result, nil
+}
+
+func (a *App) authQuota(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/auth/quota/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		fail(w, http.StatusBadRequest, "invalid_provider_id", "valid provider ID required")
+		return
+	}
+	id, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || id <= 0 {
+		fail(w, http.StatusBadRequest, "invalid_provider_id", "valid provider ID required")
+		return
+	}
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	switch {
+	case action == "" && r.Method == http.MethodGet:
+		result, err := a.withCodexCredential(r.Context(), id, func(credential ProviderCredential) (any, error) {
+			return a.fetchCodexAccountQuota(r.Context(), credential.AccessToken, credential.AccountID)
+		})
+		if err != nil {
+			a.writeQuotaError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	case (action == "reset" || action == "redeem") && r.Method == http.MethodPost:
+		var in struct {
+			CreditID string `json:"credit_id"`
+		}
+		if r.Body != nil {
+			_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in)
+		}
+		result, err := a.withCodexCredential(r.Context(), id, func(credential ProviderCredential) (any, error) {
+			redeemed, redeemErr := a.redeemCodexResetCard(r.Context(), credential.AccessToken, credential.AccountID, strings.TrimSpace(in.CreditID))
+			if redeemErr != nil {
+				return nil, redeemErr
+			}
+			quota, quotaErr := a.fetchCodexAccountQuota(r.Context(), credential.AccessToken, credential.AccountID)
+			if quotaErr != nil {
+				return map[string]any{"redeemed": redeemed, "quota": nil, "warning": quotaErr.Error()}, nil
+			}
+			return map[string]any{"ok": true, "redeemed": redeemed, "quota": quota}, nil
+		})
+		if err != nil {
+			a.writeQuotaError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET /api/admin/auth/quota/{id} or POST /api/admin/auth/quota/{id}/reset required")
+	}
+}
+
+func (a *App) writeQuotaError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errProviderNotFound):
+		fail(w, http.StatusNotFound, "provider_not_found", "provider not found")
+	case errors.Is(err, errUnsupportedQuotaProvider):
+		fail(w, http.StatusBadRequest, "unsupported_provider", err.Error())
+	case err != nil && strings.Contains(err.Error(), "access token not found"):
+		fail(w, http.StatusBadRequest, "missing_token", "access token not found")
+	case err != nil && strings.Contains(err.Error(), "no available reset card"):
+		fail(w, http.StatusBadRequest, "no_reset_card", "当前没有可用的重置卡")
+	default:
+		a.log.Warn("quota operation failed", "error", err)
+		fail(w, http.StatusBadGateway, "quota_operation_failed", err.Error())
+	}
 }
