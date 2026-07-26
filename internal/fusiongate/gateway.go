@@ -793,16 +793,24 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
-		if z.Provider.Type == "anthropic" || z.Provider.Type == "claude_oauth" {
+		switch z.Provider.Type {
+		case "anthropic", "claude_oauth":
 			compatible = append(compatible, z)
+		case "openai", "openrouter", "openai_compatible", "grok_oauth":
+			if z.Provider.PassthroughMode != "transparent" {
+				compatible = append(compatible, z)
+			}
 		}
 	}
 	if len(compatible) == 0 {
-		fail(w, http.StatusNotImplemented, "protocol_not_supported", "no Anthropic route is configured")
+		fail(w, http.StatusNotImplemented, "protocol_not_supported", "no Anthropic or OpenAI-compatible route is configured")
 		return
 	}
 	stream, _ := body["stream"].(bool)
 	a.runRoutes(w, r, key, compatible, "anthropic_messages", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		if z.Provider.Type == "openai" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "grok_oauth" {
+			return a.anthropicMessagesOpenAI(w, r, body, z, rid, stream, onFirstByte)
+		}
 		transparent := z.Provider.PassthroughMode == "transparent"
 		encoded := raw
 		if !transparent {
@@ -811,9 +819,10 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 				copyBody[key] = value
 			}
 			copyBody["model"] = z.Route.UpstreamModel
-			encoded, err = json.Marshal(copyBody)
-			if err != nil {
-				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+			var encodeErr error
+			encoded, encodeErr = json.Marshal(copyBody)
+			if encodeErr != nil {
+				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: encodeErr}
 			}
 		}
 		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, UsageFormat: "anthropic", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte})

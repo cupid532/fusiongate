@@ -21,7 +21,7 @@
   - OpenAI Compatible：Chat、Responses、Images；Chat / Responses 支持安全流式转发。
   - Codex OAuth Plus 生图兼容：发现到 `gpt-5.5` 时自动提供 `gpt-image-1` 与 `gpt-image-2` 图像别名；标准 `POST /v1/images/generations` 会转换成 Codex Responses 的 `image_generation` 内置工具调用，并把 SSE 中的真实图片结果转换回 OpenAI `b64_json` 响应。Codex OAuth 路径每次只支持 `n=1`（ChatGPT 账号侧工具一次只出一张，且并发 fan-out 易被限流/拖垮）；需要多图时请对 OpenAI Compatible 生图渠道传 `n`，或对 Codex 路径发起多次请求。支持上游接受的 `size`、`output_format`、`output_compression`、`background`、`moderation` 与 `partial_images` 参数；不伪造 URL 或透明背景能力。Codex 生图默认至少 180s 超时下限。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
-  - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 原生代理。
+  - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 支持原生代理，也可安全转换到 OpenAI / OpenRouter / OpenAI Compatible / Grok Chat，覆盖文本、图片、工具调用、工具结果以及 Anthropic SSE 流。
 - API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限与安全再次复制；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。
 - 请求账本实时显示进行中请求、动态运行时间、每次故障转移尝试及上游首字节耗时。
 - 独立 Token 用量中心：支持近 7/30/90 天和近一年范围，按日期、下游 Key、渠道、公开模型与实际上游模型统计请求数、尝试次数、输入、输出、缓存、推理和总 Token，包含趋势图、排行、筛选、分页与 usage 采集覆盖率。请求和 Token 明细自动保留一年。
@@ -144,4 +144,4 @@ sudo bash install.sh
 
 ## 已知范围和后续工作
 
-本 MVP 故意不包含支付、充值、用户注册、兑换码或商业计费模块。Gemini CLI OAuth、图像编辑、复杂工具调用/结构化输出、原生协议的完整流式转换、PostgreSQL、定时模型同步和备份 UI 仍需后续阶段实现。不要将订阅账号的等价 API 价值误称为实际上游扣费。
+本 MVP 故意不包含支付、充值、用户注册、兑换码或商业计费模块。Gemini CLI OAuth、图像编辑、跨协议结构化输出的完整等价转换、PostgreSQL、定时模型同步和备份 UI 仍需后续阶段实现。不要将订阅账号的等价 API 价值误称为实际上游扣费。
