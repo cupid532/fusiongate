@@ -654,7 +654,7 @@ func (a *App) deletePublicModels(ctx context.Context, models []string) (int64, i
 	stamp := now()
 	for _, name := range models {
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at)
-SELECT provider_id,public_name,MIN(upstream_model),? FROM model_routes WHERE public_name=? GROUP BY provider_id,public_name`, stamp, name); err != nil {
+SELECT provider_id,LOWER(upstream_model),LOWER(upstream_model),? FROM model_routes WHERE public_name=?`, stamp, name); err != nil {
 			return 0, 0, err
 		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM model_routes WHERE public_name=?`, name)
@@ -674,5 +674,10 @@ SELECT provider_id,public_name,MIN(upstream_model),? FROM model_routes WHERE pub
 	if err := tx.Commit(); err != nil {
 		return 0, 0, err
 	}
+	a.routeMu.Lock()
+	for _, name := range models {
+		delete(a.roundRobinCursor, name)
+	}
+	a.routeMu.Unlock()
 	return deletedModels, deletedRoutes, nil
 }

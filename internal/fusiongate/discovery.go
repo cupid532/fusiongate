@@ -42,6 +42,7 @@ type discoveredModel struct {
 	UpstreamID              string   `json:"-"`
 	DisplayName             string   `json:"display_name,omitempty"`
 	Capabilities            string   `json:"capabilities"`
+	PublicNames             []string `json:"public_names,omitempty"`
 	Existing                bool     `json:"existing,omitempty"`
 	Excluded                bool     `json:"excluded,omitempty"`
 	Unavailable             bool     `json:"unavailable,omitempty"`
@@ -395,6 +396,47 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 	return nil, lastErr
 }
 
+func normalizedModelID(value string) string {
+	return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(value, "models/")))
+}
+
+type providerModelRoute struct {
+	ID            int64
+	PublicName    string
+	UpstreamModel string
+	Capabilities  string
+}
+
+func routeDiscoveryModelID(route providerModelRoute, discovered map[string]discoveredModel) string {
+	upstream := normalizedModelID(route.UpstreamModel)
+	publicName := normalizedModelID(route.PublicName)
+	// A synthetic compatibility model can deliberately expose a public ID that
+	// differs from the upstream host model. Match that exact pair first so one
+	// route does not make both the host and alias appear selected.
+	if publicName != upstream {
+		if model, ok := discovered[publicName]; ok && normalizedModelID(model.UpstreamID) == upstream {
+			return publicName
+		}
+	}
+	if _, ok := discovered[upstream]; ok {
+		return upstream
+	}
+	return upstream
+}
+
+func appendUniqueModelName(values []string, value string) []string {
+	value = normalizedModelID(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
 func (a *App) discoverProviderModels(parent context.Context, providerID int64) (modelDiscoveryResult, error) {
 	p, err := a.loadDiscoveryProvider(parent, providerID)
 	if err != nil {
@@ -422,78 +464,101 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 		return modelDiscoveryResult{}, err
 	}
 
-	type existingRoute struct {
-		UpstreamModel string
-		Capabilities  string
+	discovered := make(map[string]discoveredModel, len(allModels))
+	for _, model := range allModels {
+		model.ID = normalizedModelID(model.ID)
+		if model.ID == "" || model.Capabilities == "unsupported" {
+			continue
+		}
+		discovered[model.ID] = model
 	}
-	existing := map[string]existingRoute{}
-	rows, err := a.db.QueryContext(parent, `SELECT public_name,upstream_model,capabilities FROM model_routes WHERE provider_id=?`, providerID)
+
+	routes := make([]providerModelRoute, 0)
+	rows, err := a.db.QueryContext(parent, `SELECT id,public_name,upstream_model,capabilities FROM model_routes WHERE provider_id=?`, providerID)
 	if err != nil {
 		return modelDiscoveryResult{}, err
 	}
 	for rows.Next() {
-		var name, upstreamModel, capabilities string
-		if err := rows.Scan(&name, &upstreamModel, &capabilities); err != nil {
+		var route providerModelRoute
+		if err := rows.Scan(&route.ID, &route.PublicName, &route.UpstreamModel, &route.Capabilities); err != nil {
 			_ = rows.Close()
 			return modelDiscoveryResult{}, err
 		}
-		name = strings.ToLower(strings.TrimSpace(name))
-		if name != "" {
-			existing[name] = existingRoute{UpstreamModel: strings.ToLower(strings.TrimSpace(upstreamModel)), Capabilities: capabilities}
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return modelDiscoveryResult{}, err
-	}
-	excluded := map[string]bool{}
-	rows, err = a.db.QueryContext(parent, `SELECT public_name FROM model_route_exclusions WHERE provider_id=?`, providerID)
-	if err != nil {
-		return modelDiscoveryResult{}, err
-	}
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			_ = rows.Close()
-			return modelDiscoveryResult{}, err
-		}
-		excluded[strings.ToLower(strings.TrimSpace(name))] = true
+		routes = append(routes, route)
 	}
 	if err := rows.Close(); err != nil {
 		return modelDiscoveryResult{}, err
 	}
 
-	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels)+len(existing))}
-	seen := make(map[string]bool, len(allModels))
+	excluded := map[string]bool{}
+	rows, err = a.db.QueryContext(parent, `SELECT public_name,upstream_model FROM model_route_exclusions WHERE provider_id=?`, providerID)
+	if err != nil {
+		return modelDiscoveryResult{}, err
+	}
+	for rows.Next() {
+		var publicName, upstreamModel string
+		if err := rows.Scan(&publicName, &upstreamModel); err != nil {
+			_ = rows.Close()
+			return modelDiscoveryResult{}, err
+		}
+		if name := normalizedModelID(upstreamModel); name != "" {
+			excluded[name] = true
+		}
+		if name := normalizedModelID(publicName); name != "" {
+			excluded[name] = true
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return modelDiscoveryResult{}, err
+	}
+
+	matchedRoutes := make(map[int64]bool, len(routes))
+	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels)+len(routes))}
 	for _, model := range allModels {
 		if model.Capabilities == "unsupported" {
 			result.Skipped++
 			continue
 		}
-		model.ID = strings.ToLower(strings.TrimSpace(model.ID))
+		model.ID = normalizedModelID(model.ID)
 		if model.ID == "" {
 			continue
 		}
-		_, model.Existing = existing[model.ID]
-		model.Excluded = !model.Existing && excluded[model.ID]
-		seen[model.ID] = true
+		upstreamID := normalizedModelID(model.UpstreamID)
+		for _, route := range routes {
+			if routeDiscoveryModelID(route, discovered) == model.ID {
+				matchedRoutes[route.ID] = true
+				model.Existing = true
+				model.PublicNames = appendUniqueModelName(model.PublicNames, route.PublicName)
+			}
+		}
+		sort.Strings(model.PublicNames)
+		model.Excluded = !model.Existing && (excluded[model.ID] || excluded[upstreamID])
 		result.Models = append(result.Models, model)
 		result.Discovered++
 	}
-	// Keep configured routes visible even when an upstream temporarily omits
-	// them from discovery. They remain selected by default and can still be
-	// deliberately stopped by the administrator instead of being removed by
-	// an incomplete upstream response.
-	for name, route := range existing {
-		if seen[name] {
+
+	// Keep configured upstream models visible even when an upstream temporarily
+	// omits them. The picker identity remains the real upstream model so changing
+	// a public alias never makes the same route look like a new model.
+	unavailable := map[string]*discoveredModel{}
+	for _, route := range routes {
+		if matchedRoutes[route.ID] {
 			continue
 		}
-		result.Models = append(result.Models, discoveredModel{
-			ID:           name,
-			UpstreamID:   route.UpstreamModel,
-			Capabilities: route.Capabilities,
-			Existing:     true,
-			Unavailable:  true,
-		})
+		id := normalizedModelID(route.UpstreamModel)
+		if id == "" {
+			id = normalizedModelID(route.PublicName)
+		}
+		model := unavailable[id]
+		if model == nil {
+			model = &discoveredModel{ID: id, UpstreamID: route.UpstreamModel, Capabilities: route.Capabilities, Existing: true, Unavailable: true}
+			unavailable[id] = model
+		}
+		model.PublicNames = appendUniqueModelName(model.PublicNames, route.PublicName)
+	}
+	for _, model := range unavailable {
+		sort.Strings(model.PublicNames)
+		result.Models = append(result.Models, *model)
 	}
 	sort.Slice(result.Models, func(i, j int) bool { return result.Models[i].ID < result.Models[j].ID })
 	return result, nil
@@ -608,65 +673,67 @@ func (a *App) applySelectedModels(parent context.Context, providerID int64, sele
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	type currentRoute struct {
-		UpstreamModel string
-	}
-	current := map[string]currentRoute{}
-	rows, err := tx.QueryContext(parent, `SELECT public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID)
+	current := make([]providerModelRoute, 0)
+	rows, err := tx.QueryContext(parent, `SELECT id,public_name,upstream_model,capabilities FROM model_routes WHERE provider_id=?`, providerID)
 	if err != nil {
 		return modelSelectionResult{}, err
 	}
 	for rows.Next() {
-		var publicName, upstreamModel string
-		if err := rows.Scan(&publicName, &upstreamModel); err != nil {
+		var route providerModelRoute
+		if err := rows.Scan(&route.ID, &route.PublicName, &route.UpstreamModel, &route.Capabilities); err != nil {
 			_ = rows.Close()
 			return modelSelectionResult{}, err
 		}
-		publicName = strings.ToLower(strings.TrimSpace(publicName))
-		if publicName != "" {
-			current[publicName] = currentRoute{UpstreamModel: strings.ToLower(strings.TrimSpace(upstreamModel))}
-		}
+		current = append(current, route)
 	}
 	if err := rows.Close(); err != nil {
 		return modelSelectionResult{}, err
 	}
 
 	stamp := now()
-	for publicName, route := range current {
-		if selectedSet[publicName] {
+	currentModels := map[string]bool{}
+	removedModels := map[string]bool{}
+	oldPublicNames := map[string]bool{}
+	for _, route := range current {
+		modelID := routeDiscoveryModelID(route, available)
+		if selectedSet[modelID] {
+			currentModels[modelID] = true
 			continue
 		}
-		if _, err := tx.ExecContext(parent, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, publicName, route.UpstreamModel, stamp); err != nil {
+		upstream := normalizedModelID(route.UpstreamModel)
+		if upstream == "" {
+			upstream = modelID
+		}
+		if _, err := tx.ExecContext(parent, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, upstream, upstream, stamp); err != nil {
 			return modelSelectionResult{}, err
 		}
-		res, err := tx.ExecContext(parent, `DELETE FROM model_routes WHERE provider_id=? AND LOWER(public_name)=?`, providerID, publicName)
-		if err != nil {
+		if _, err := tx.ExecContext(parent, `DELETE FROM model_routes WHERE id=?`, route.ID); err != nil {
 			return modelSelectionResult{}, err
 		}
-		removed, _ := res.RowsAffected()
-		if removed > 0 {
-			result.Removed++
-		}
+		removedModels[modelID] = true
+		oldPublicNames[normalizedModelID(route.PublicName)] = true
+	}
+	for publicName := range oldPublicNames {
 		if _, err := tx.ExecContext(parent, `DELETE FROM route_policies WHERE LOWER(public_name)=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE LOWER(public_name)=?)`, publicName, publicName); err != nil {
 			return modelSelectionResult{}, err
 		}
 	}
 
 	for _, id := range normalized {
-		if _, err := tx.ExecContext(parent, `DELETE FROM model_route_exclusions WHERE provider_id=? AND LOWER(public_name)=?`, providerID, id); err != nil {
+		model := available[id]
+		upstream := normalizedModelID(model.UpstreamID)
+		if upstream == "" {
+			upstream = id
+		}
+		if _, err := tx.ExecContext(parent, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name) IN (?,?) OR LOWER(upstream_model) IN (?,?))`, providerID, id, upstream, id, upstream); err != nil {
 			return modelSelectionResult{}, err
 		}
-		if _, ok := current[id]; ok {
+		if currentModels[id] {
 			result.Existing++
 			continue
 		}
-		model := available[id]
-		model.UpstreamID = strings.ToLower(strings.TrimSpace(model.UpstreamID))
-		if model.UpstreamID == "" {
-			model.UpstreamID = id
-		}
 		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
-SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?`, id, providerID, model.UpstreamID, model.Capabilities, 1, 0, id, 0, 0, stamp, stamp)
+SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?`, id, providerID, upstream, model.Capabilities, 1, 0, id, 0, 0, stamp, stamp)
 		if err != nil {
 			return modelSelectionResult{}, err
 		}
@@ -676,6 +743,7 @@ SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHER
 			return modelSelectionResult{}, err
 		}
 	}
+	result.Removed = len(removedModels)
 	if err := tx.Commit(); err != nil {
 		return modelSelectionResult{}, err
 	}
@@ -709,50 +777,64 @@ func (a *App) importDiscoveredModels(parent context.Context, providerID int64, m
 	defer func() { _ = tx.Rollback() }()
 	stamp := now()
 	excluded := map[string]bool{}
-	rows, err := tx.QueryContext(parent, `SELECT public_name FROM model_route_exclusions WHERE provider_id=?`, providerID)
+	rows, err := tx.QueryContext(parent, `SELECT public_name,upstream_model FROM model_route_exclusions WHERE provider_id=?`, providerID)
 	if err != nil {
 		return modelImportResult{}, err
 	}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var publicName, upstreamModel string
+		if err := rows.Scan(&publicName, &upstreamModel); err != nil {
 			_ = rows.Close()
 			return modelImportResult{}, err
 		}
-		excluded[strings.ToLower(strings.TrimSpace(name))] = true
+		excluded[normalizedModelID(publicName)] = true
+		excluded[normalizedModelID(upstreamModel)] = true
 	}
 	if err := rows.Close(); err != nil {
 		return modelImportResult{}, err
 	}
 	for _, model := range models {
-		model.ID = strings.ToLower(strings.TrimSpace(model.ID))
-		model.UpstreamID = strings.ToLower(strings.TrimSpace(model.UpstreamID))
+		model.ID = normalizedModelID(model.ID)
+		model.UpstreamID = normalizedModelID(model.UpstreamID)
 		if model.ID == "" || model.UpstreamID == "" {
 			continue
 		}
-		if excluded[model.ID] {
+		if excluded[model.ID] || excluded[model.UpstreamID] {
 			if !restoreExcluded {
 				result.Excluded++
 				continue
 			}
-			if _, err := tx.ExecContext(parent, `DELETE FROM model_route_exclusions WHERE provider_id=? AND public_name=?`, providerID, model.ID); err != nil {
+			if _, err := tx.ExecContext(parent, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name) IN (?,?) OR LOWER(upstream_model) IN (?,?))`, providerID, model.ID, model.UpstreamID, model.ID, model.UpstreamID); err != nil {
 				return modelImportResult{}, err
 			}
 		}
-		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
+		var res sql.Result
+		if model.ID == model.UpstreamID {
+			res, err = tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
 SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?
-WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(public_name)=?)`, model.ID, providerID, strings.ToLower(model.UpstreamID), model.Capabilities, 1, 0, model.ID, 0, 0, stamp, stamp, providerID, model.ID)
+WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(upstream_model)=?)`, model.ID, providerID, model.UpstreamID, model.Capabilities, 1, 0, model.ID, 0, 0, stamp, stamp, providerID, model.UpstreamID)
+		} else {
+			// Synthetic compatibility aliases (for example image aliases hosted by
+			// another upstream model) must remain independently selectable.
+			res, err = tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
+SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?
+WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(public_name)=? AND LOWER(upstream_model)=?)`, model.ID, providerID, model.UpstreamID, model.Capabilities, 1, 0, model.ID, 0, 0, stamp, stamp, providerID, model.ID, model.UpstreamID)
+		}
 		if err != nil {
 			return modelImportResult{}, err
 		}
 		rows, _ := res.RowsAffected()
+		policyNames := append([]string(nil), model.PublicNames...)
 		if rows == 1 {
 			result.Added++
+			policyNames = appendUniqueModelName(policyNames, model.ID)
 		} else {
 			result.Existing++
 		}
-		if _, err := tx.ExecContext(parent, `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, model.ID, StrategyPriorityFailover, stamp); err != nil {
-			return modelImportResult{}, err
+		for _, publicName := range policyNames {
+			if _, err := tx.ExecContext(parent, `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, publicName, StrategyPriorityFailover, stamp); err != nil {
+				return modelImportResult{}, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

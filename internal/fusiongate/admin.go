@@ -848,7 +848,7 @@ ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 			fail(w, http.StatusConflict, "route_conflict", err.Error())
 			return
 		}
-		if _, err := tx.Exec(`DELETE FROM model_route_exclusions WHERE provider_id=? AND public_name=?`, in.ProviderID, in.PublicName); err != nil {
+		if _, err := tx.Exec(`DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name) IN (?,?) OR LOWER(upstream_model) IN (?,?))`, in.ProviderID, in.PublicName, in.UpstreamModel, in.PublicName, in.UpstreamModel); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -876,22 +876,71 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodPatch:
 		var in struct {
-			Enabled  *bool `json:"enabled"`
-			Priority *int  `json:"priority"`
+			Enabled    *bool   `json:"enabled"`
+			Priority   *int    `json:"priority"`
+			PublicName *string `json:"public_name"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if in.Enabled == nil && in.Priority == nil {
-			fail(w, http.StatusBadRequest, "invalid_request", "enabled or priority is required")
+		if in.Enabled == nil && in.Priority == nil && in.PublicName == nil {
+			fail(w, http.StatusBadRequest, "invalid_request", "enabled, priority, or public_name is required")
 			return
 		}
 		if in.Priority != nil && *in.Priority < 0 {
 			fail(w, http.StatusBadRequest, "invalid_priority", "priority must be zero or greater")
 			return
 		}
-		res, err := a.db.Exec(`UPDATE model_routes SET enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),updated_at=? WHERE id=?`, maybeBool(in.Enabled), in.Priority, now(), id)
+		newPublicName := ""
+		if in.PublicName != nil {
+			newPublicName = strings.ToLower(strings.TrimSpace(*in.PublicName))
+			if newPublicName == "" {
+				fail(w, http.StatusBadRequest, "invalid_public_name", "public_name is required")
+				return
+			}
+		}
+
+		tx, err := a.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		defer tx.Rollback()
+		var oldPublicName, upstreamModel string
+		var providerID int64
+		if err := tx.QueryRowContext(r.Context(), `SELECT public_name,provider_id,upstream_model FROM model_routes WHERE id=?`, id).Scan(&oldPublicName, &providerID, &upstreamModel); err != nil {
+			if err == sql.ErrNoRows {
+				fail(w, http.StatusNotFound, "not_found", "route not found")
+			} else {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			}
+			return
+		}
+		oldPublicName = strings.ToLower(strings.TrimSpace(oldPublicName))
+		if in.PublicName == nil {
+			newPublicName = oldPublicName
+		}
+		if newPublicName != oldPublicName {
+			var duplicate int
+			if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM model_routes WHERE id<>? AND public_name=? AND provider_id=? AND upstream_model=?)`, id, newPublicName, providerID, upstreamModel).Scan(&duplicate); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			if duplicate != 0 {
+				fail(w, http.StatusConflict, "route_conflict", "this channel and upstream model are already in the target failover group")
+				return
+			}
+		}
+		sortOrderExpr := `sort_order`
+		args := []any{maybeBool(in.Enabled), in.Priority, newPublicName}
+		if newPublicName != oldPublicName {
+			sortOrderExpr = `(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?)`
+			args = append(args, newPublicName)
+		}
+		args = append(args, now(), id)
+		query := `UPDATE model_routes SET enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),public_name=?,sort_order=` + sortOrderExpr + `,updated_at=? WHERE id=?`
+		res, err := tx.ExecContext(r.Context(), query, args...)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -901,7 +950,33 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusNotFound, "not_found", "route not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		if _, err := tx.ExecContext(r.Context(), `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, newPublicName, StrategyPriorityFailover, now()); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(), `DELETE FROM route_policies WHERE public_name=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, oldPublicName, oldPublicName); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		upstreamKey := strings.ToLower(strings.TrimSpace(upstreamModel))
+		if _, err := tx.ExecContext(r.Context(), `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?)`, providerID, upstreamKey, upstreamKey); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		var groupRoutes int
+		if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM model_routes WHERE public_name=?`, newPublicName).Scan(&groupRoutes); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		a.routeMu.Lock()
+		delete(a.roundRobinCursor, oldPublicName)
+		delete(a.roundRobinCursor, newPublicName)
+		a.routeMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "public_name": newPublicName, "group_routes": groupRoutes})
 	case http.MethodDelete:
 		tx, err := a.db.BeginTx(r.Context(), nil)
 		if err != nil {
@@ -919,7 +994,8 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			}
 			return
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, publicName, upstreamModel, now()); err != nil {
+		upstreamKey := strings.ToLower(strings.TrimSpace(upstreamModel))
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, upstreamKey, upstreamKey, now()); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -932,6 +1008,9 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
+		a.routeMu.Lock()
+		delete(a.roundRobinCursor, strings.ToLower(strings.TrimSpace(publicName)))
+		a.routeMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")

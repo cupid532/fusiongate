@@ -665,12 +665,12 @@ func TestDiscoverProviderModelsKeepsConfiguredModelsMissingUpstream(t *testing.T
 	}
 	var configured *discoveredModel
 	for i := range discovery.Models {
-		if discovery.Models[i].ID == "configured-model" {
+		if discovery.Models[i].ID == "configured-upstream" {
 			configured = &discovery.Models[i]
 			break
 		}
 	}
-	if configured == nil || !configured.Existing || !configured.Unavailable || configured.UpstreamID != "configured-upstream" {
+	if configured == nil || !configured.Existing || !configured.Unavailable || configured.UpstreamID != "configured-upstream" || strings.Join(configured.PublicNames, ",") != "configured-model" {
 		t.Fatalf("configured model = %#v", configured)
 	}
 }
@@ -850,5 +850,104 @@ func TestProviderModelsEndpointAcceptsEmptySelection(t *testing.T) {
 	}
 	if result.Removed != 1 || result.Selected != 0 {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestDiscoveredModelSelectionPreservesUnifiedPublicAlias(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+			map[string]any{"id": "grok-4.2-mult-xhigh"},
+			map[string]any{"id": "grok-4.2-fast"},
+		}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "mapped", "openai_compatible", upstream.URL+"/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	stamp := now()
+	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "grok-4.2", providerID, "grok-4.2-mult-xhigh", "chat,stream", stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mapped *discoveredModel
+	for i := range discovery.Models {
+		if discovery.Models[i].ID == "grok-4.2-mult-xhigh" {
+			mapped = &discovery.Models[i]
+		}
+		if discovery.Models[i].ID == "grok-4.2" {
+			t.Fatalf("public alias must not appear as a fake unavailable upstream model: %#v", discovery.Models[i])
+		}
+	}
+	if mapped == nil || !mapped.Existing || mapped.Unavailable || strings.Join(mapped.PublicNames, ",") != "grok-4.2" {
+		t.Fatalf("mapped discovery = %#v", mapped)
+	}
+
+	kept, err := a.applySelectedModels(context.Background(), providerID, []string{"grok-4.2-mult-xhigh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Existing != 1 || kept.Added != 0 || kept.Removed != 0 {
+		t.Fatalf("kept = %#v", kept)
+	}
+	var publicName, upstreamModel string
+	if err := a.db.QueryRow(`SELECT public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID).Scan(&publicName, &upstreamModel); err != nil {
+		t.Fatal(err)
+	}
+	if publicName != "grok-4.2" || upstreamModel != "grok-4.2-mult-xhigh" {
+		t.Fatalf("route changed while kept: %q -> %q", publicName, upstreamModel)
+	}
+
+	stopped, err := a.applySelectedModels(context.Background(), providerID, []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Removed != 1 {
+		t.Fatalf("stopped = %#v", stopped)
+	}
+	if err := a.db.QueryRow(`SELECT public_name,upstream_model FROM model_route_exclusions WHERE provider_id=?`, providerID).Scan(&publicName, &upstreamModel); err != nil {
+		t.Fatal(err)
+	}
+	if publicName != "grok-4.2-mult-xhigh" || upstreamModel != "grok-4.2-mult-xhigh" {
+		t.Fatalf("exclusion must use real upstream model, got %q/%q", publicName, upstreamModel)
+	}
+
+	afterStop, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stoppedModel discoveredModel
+	for _, model := range afterStop.Models {
+		if model.ID == "grok-4.2-mult-xhigh" {
+			stoppedModel = model
+		}
+	}
+	if !stoppedModel.Excluded || stoppedModel.Existing {
+		t.Fatalf("stopped model discovery = %#v", stoppedModel)
+	}
+	imported, err := a.importDiscoveredModels(context.Background(), providerID, afterStop.Models, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if imported.Excluded != 1 {
+		t.Fatalf("automatic import restored excluded alias route: %#v", imported)
+	}
+}
+
+func TestRouteDiscoveryModelIDPrefersSyntheticAliasOverHost(t *testing.T) {
+	discovered := map[string]discoveredModel{
+		"gpt-5.5":     {ID: "gpt-5.5", UpstreamID: "gpt-5.5"},
+		"gpt-image-1": {ID: "gpt-image-1", UpstreamID: "gpt-5.5"},
+	}
+	route := providerModelRoute{PublicName: "gpt-image-1", UpstreamModel: "gpt-5.5"}
+	if got := routeDiscoveryModelID(route, discovered); got != "gpt-image-1" {
+		t.Fatalf("route identity = %q, want synthetic alias", got)
 	}
 }

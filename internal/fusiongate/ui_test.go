@@ -35,3 +35,39 @@ func TestModelPickerUsesExistingModelsAsEditableSelection(t *testing.T) {
 		t.Fatal("existing models must remain editable so unchecking can stop them")
 	}
 }
+
+func TestRoutesPageUsesProviderDiscoveryAndUnifiedMapping(t *testing.T) {
+	html := string(adminHTML)
+	for _, obsolete := range []string{"model-add-card", "routeForm", "discoverModelsFromRoutePage", "modelDiscoveryProvider"} {
+		if strings.Contains(html, obsolete) {
+			t.Fatalf("routes page still contains obsolete model creation UI %q", obsolete)
+		}
+	}
+	for _, required := range []string{
+		"function focusUnpricedModels()",
+		"onclick=\"focusUnpricedModels()\"",
+		"data-public-model=",
+		"function openRouteMapping(id)",
+		"function saveRouteMapping()",
+		"设置统一映射",
+		"保存并合并故障转移组",
+		"public_name:name",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("routes page is missing %q", required)
+		}
+	}
+}
+
+func TestModelPickerShowsExistingUnifiedAliases(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		"(model.public_names||[])",
+		"映射为 ",
+		"x.model.public_names||[]",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("model picker alias visibility is missing %q", required)
+		}
+	}
+}

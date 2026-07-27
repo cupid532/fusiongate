@@ -179,7 +179,7 @@ func TestDeletePublicModelRemovesAllMappings(t *testing.T) {
 	var routes, policies, exclusions int
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM model_routes WHERE public_name='shared'`).Scan(&routes)
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM route_policies WHERE public_name='shared'`).Scan(&policies)
-	_ = a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE public_name='shared'`).Scan(&exclusions)
+	_ = a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE public_name IN ('model-one','model-two') AND public_name=upstream_model`).Scan(&exclusions)
 	if routes != 0 || policies != 0 || exclusions != 2 {
 		t.Fatalf("routes=%d policies=%d exclusions=%d, expected complete deletion with two exclusions", routes, policies, exclusions)
 	}
@@ -212,7 +212,7 @@ func TestDeleteRouteCreatesModelExclusion(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT public_name,upstream_model FROM model_route_exclusions WHERE provider_id=?`, providerID).Scan(&publicName, &upstreamModel); err != nil {
 		t.Fatal(err)
 	}
-	if routeID != 1 || publicName != "removed" || upstreamModel != "removed-upstream" {
+	if routeID != 1 || publicName != "removed-upstream" || upstreamModel != "removed-upstream" {
 		t.Fatalf("routeID=%d exclusion=%q/%q", routeID, publicName, upstreamModel)
 	}
 }
