@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -120,11 +121,79 @@ func TestDeletePublicModelRemovesAllMappings(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	var routes, policies int
+	var routes, policies, exclusions int
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM model_routes WHERE public_name='shared'`).Scan(&routes)
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM route_policies WHERE public_name='shared'`).Scan(&policies)
-	if routes != 0 || policies != 0 {
-		t.Fatalf("routes=%d policies=%d, expected complete deletion", routes, policies)
+	_ = a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE public_name='shared'`).Scan(&exclusions)
+	if routes != 0 || policies != 0 || exclusions != 2 {
+		t.Fatalf("routes=%d policies=%d exclusions=%d, expected complete deletion with two exclusions", routes, policies, exclusions)
+	}
+}
+
+func TestDeleteRouteCreatesModelExclusion(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	stamp := now()
+	res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "single", "openai", "https://api.example", []byte{1}, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerID, _ := res.LastInsertId()
+	res, err = a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,created_at,updated_at) VALUES(?,?,?,?,?)`, "removed", providerID, "removed-upstream", stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeID, _ := res.LastInsertId()
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/routes/1", nil)
+	rec := httptest.NewRecorder()
+	a.routeByID(rec, req, adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var publicName, upstreamModel string
+	if err := a.db.QueryRow(`SELECT public_name,upstream_model FROM model_route_exclusions WHERE provider_id=?`, providerID).Scan(&publicName, &upstreamModel); err != nil {
+		t.Fatal(err)
+	}
+	if routeID != 1 || publicName != "removed" || upstreamModel != "removed-upstream" {
+		t.Fatalf("routeID=%d exclusion=%q/%q", routeID, publicName, upstreamModel)
+	}
+}
+
+func TestBatchDeletePublicModels(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	stamp := now()
+	res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "batch", "openai", "https://api.example", []byte{1}, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerID, _ := res.LastInsertId()
+	for _, model := range []string{"alpha", "beta", "keep"} {
+		if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,created_at,updated_at) VALUES(?,?,?,?,?)`, model, providerID, model, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/models", strings.NewReader(`{"models":["BETA","alpha","alpha"]}`))
+	rec := httptest.NewRecorder()
+	a.adminModels(rec, req, adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var remaining, exclusions int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_routes`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions`).Scan(&exclusions); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 1 || exclusions != 2 {
+		t.Fatalf("remaining=%d exclusions=%d, want 1 and 2", remaining, exclusions)
 	}
 }
 

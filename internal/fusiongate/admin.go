@@ -824,6 +824,10 @@ ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 			fail(w, http.StatusConflict, "route_conflict", err.Error())
 			return
 		}
+		if _, err := tx.Exec(`DELETE FROM model_route_exclusions WHERE provider_id=? AND public_name=?`, in.ProviderID, in.PublicName); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
 		if _, err := tx.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, in.PublicName, StrategyPriorityFailover, now()); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -875,8 +879,15 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case http.MethodDelete:
-		var publicName string
-		if err := a.db.QueryRow(`SELECT public_name FROM model_routes WHERE id=?`, id).Scan(&publicName); err != nil {
+		tx, err := a.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		defer tx.Rollback()
+		var publicName, upstreamModel string
+		var providerID int64
+		if err := tx.QueryRow(`SELECT public_name,provider_id,upstream_model FROM model_routes WHERE id=?`, id).Scan(&publicName, &providerID, &upstreamModel); err != nil {
 			if err == sql.ErrNoRows {
 				fail(w, http.StatusNotFound, "not_found", "route not found")
 			} else {
@@ -884,11 +895,19 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			}
 			return
 		}
-		if _, err := a.db.Exec(`DELETE FROM model_routes WHERE id=?`, id); err != nil {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, publicName, upstreamModel, now()); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		_, _ = a.db.Exec(`DELETE FROM route_policies WHERE public_name=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, publicName, publicName)
+		if _, err := tx.Exec(`DELETE FROM model_routes WHERE id=?`, id); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		_, _ = tx.Exec(`DELETE FROM route_policies WHERE public_name=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, publicName, publicName)
+		if err := tx.Commit(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")

@@ -293,6 +293,10 @@ func (a *App) migrate(ctx context.Context) error {
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(public_name,provider_id,upstream_model));
   CREATE TABLE IF NOT EXISTS route_policies (
     public_name TEXT PRIMARY KEY, strategy TEXT NOT NULL DEFAULT 'priority_failover', updated_at TEXT NOT NULL);
+	CREATE TABLE IF NOT EXISTS model_route_exclusions (
+	  provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+	  public_name TEXT NOT NULL, upstream_model TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+	  PRIMARY KEY(provider_id,public_name));
 	  CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
     allow_all INTEGER NOT NULL DEFAULT 1, allow_models TEXT NOT NULL DEFAULT '', deny_models TEXT NOT NULL DEFAULT '',
@@ -310,6 +314,7 @@ func (a *App) migrate(ctx context.Context) error {
     api_key_name TEXT NOT NULL DEFAULT '', api_key_prefix TEXT NOT NULL DEFAULT '', provider_name TEXT NOT NULL DEFAULT '');
   CREATE INDEX IF NOT EXISTS idx_ledger_created ON request_ledger(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
+	CREATE INDEX IF NOT EXISTS idx_model_route_exclusions_public ON model_route_exclusions(public_name);
   `)
 	if err != nil {
 		return err
@@ -568,6 +573,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/provider-groups/", a.admin(a.providerGroupByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))
+	mux.HandleFunc("/api/admin/models", a.admin(a.adminModels))
 	mux.HandleFunc("/api/admin/models/", a.admin(a.modelByName))
 	mux.HandleFunc("/api/admin/pricing", a.admin(a.pricing))
 	mux.HandleFunc("/api/admin/keys", a.admin(a.keys))

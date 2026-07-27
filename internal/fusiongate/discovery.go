@@ -43,6 +43,7 @@ type discoveredModel struct {
 	DisplayName             string   `json:"display_name,omitempty"`
 	Capabilities            string   `json:"capabilities"`
 	Existing                bool     `json:"existing,omitempty"`
+	Excluded                bool     `json:"excluded,omitempty"`
 	SupportedGenerationAPIs []string `json:"-"`
 }
 
@@ -56,6 +57,7 @@ type modelImportResult struct {
 	Selected int `json:"selected"`
 	Added    int `json:"added"`
 	Existing int `json:"existing"`
+	Excluded int `json:"excluded,omitempty"`
 	Missing  int `json:"missing"`
 }
 
@@ -427,6 +429,22 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 	if err := rows.Close(); err != nil {
 		return modelDiscoveryResult{}, err
 	}
+	excluded := map[string]bool{}
+	rows, err = a.db.QueryContext(parent, `SELECT public_name FROM model_route_exclusions WHERE provider_id=?`, providerID)
+	if err != nil {
+		return modelDiscoveryResult{}, err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return modelDiscoveryResult{}, err
+		}
+		excluded[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	if err := rows.Close(); err != nil {
+		return modelDiscoveryResult{}, err
+	}
 
 	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels))}
 	for _, model := range allModels {
@@ -435,6 +453,7 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 			continue
 		}
 		model.Existing = existing[model.ID]
+		model.Excluded = !model.Existing && excluded[model.ID]
 		result.Models = append(result.Models, model)
 	}
 	result.Discovered = len(result.Models)
@@ -492,7 +511,7 @@ func (a *App) importSelectedModels(parent context.Context, providerID int64, sel
 	for _, id := range normalized {
 		models = append(models, available[id])
 	}
-	return a.importDiscoveredModels(parent, providerID, models)
+	return a.importDiscoveredModels(parent, providerID, models, true)
 }
 
 // discoverAndImportAllModels performs one upstream discovery request and imports
@@ -503,11 +522,11 @@ func (a *App) discoverAndImportAllModels(parent context.Context, providerID int6
 	if err != nil {
 		return modelDiscoveryResult{}, modelImportResult{}, err
 	}
-	result, err := a.importDiscoveredModels(parent, providerID, discovery.Models)
+	result, err := a.importDiscoveredModels(parent, providerID, discovery.Models, false)
 	return discovery, result, err
 }
 
-func (a *App) importDiscoveredModels(parent context.Context, providerID int64, models []discoveredModel) (modelImportResult, error) {
+func (a *App) importDiscoveredModels(parent context.Context, providerID int64, models []discoveredModel, restoreExcluded bool) (modelImportResult, error) {
 	if len(models) == 0 {
 		return modelImportResult{}, errors.New("upstream returned no supported models")
 	}
@@ -521,11 +540,36 @@ func (a *App) importDiscoveredModels(parent context.Context, providerID int64, m
 	}
 	defer func() { _ = tx.Rollback() }()
 	stamp := now()
+	excluded := map[string]bool{}
+	rows, err := tx.QueryContext(parent, `SELECT public_name FROM model_route_exclusions WHERE provider_id=?`, providerID)
+	if err != nil {
+		return modelImportResult{}, err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return modelImportResult{}, err
+		}
+		excluded[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	if err := rows.Close(); err != nil {
+		return modelImportResult{}, err
+	}
 	for _, model := range models {
 		model.ID = strings.ToLower(strings.TrimSpace(model.ID))
 		model.UpstreamID = strings.ToLower(strings.TrimSpace(model.UpstreamID))
 		if model.ID == "" || model.UpstreamID == "" {
 			continue
+		}
+		if excluded[model.ID] {
+			if !restoreExcluded {
+				result.Excluded++
+				continue
+			}
+			if _, err := tx.ExecContext(parent, `DELETE FROM model_route_exclusions WHERE provider_id=? AND public_name=?`, providerID, model.ID); err != nil {
+				return modelImportResult{}, err
+			}
 		}
 		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
 SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?

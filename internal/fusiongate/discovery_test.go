@@ -141,6 +141,48 @@ func TestImportSelectedModelsIsSelectiveAndLowercasesAllModelIDs(t *testing.T) {
 	}
 }
 
+func TestAutomaticImportSkipsRemovedModelsAndManualImportRestoresThem(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "excluded", "openai_compatible", "https://example.com/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	stamp := now()
+	if _, err := a.db.Exec(`INSERT INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, "model-a", "model-a", stamp); err != nil {
+		t.Fatal(err)
+	}
+	models := []discoveredModel{{ID: "model-a", UpstreamID: "model-a", Capabilities: "chat,stream"}}
+	automatic, err := a.importDiscoveredModels(context.Background(), providerID, models, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if automatic.Added != 0 || automatic.Excluded != 1 {
+		t.Fatalf("automatic import = %#v", automatic)
+	}
+	var routes int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_routes WHERE provider_id=?`, providerID).Scan(&routes); err != nil {
+		t.Fatal(err)
+	}
+	if routes != 0 {
+		t.Fatalf("automatic sync restored %d removed routes", routes)
+	}
+	manual, err := a.importDiscoveredModels(context.Background(), providerID, models, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manual.Added != 1 || manual.Excluded != 0 {
+		t.Fatalf("manual import = %#v", manual)
+	}
+	var exclusions int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE provider_id=? AND public_name='model-a'`, providerID).Scan(&exclusions); err != nil {
+		t.Fatal(err)
+	}
+	if exclusions != 0 {
+		t.Fatalf("manual restore left %d exclusions", exclusions)
+	}
+}
+
 func TestImportSelectedModelsRejectsModelsNotReturnedByUpstream(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "allowed-model"}}})

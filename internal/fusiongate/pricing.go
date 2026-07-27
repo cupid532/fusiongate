@@ -381,26 +381,95 @@ func (a *App) modelByName(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 	name = strings.ToLower(strings.TrimSpace(name))
-	tx, err := a.db.BeginTx(r.Context(), nil)
+	deletedModels, deletedRoutes, err := a.deletePublicModels(r.Context(), []string{name})
 	if err != nil {
-		fail(w, 500, "database_error", err.Error())
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
+	}
+	if deletedModels == 0 {
+		fail(w, http.StatusNotFound, "not_found", "model not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_models": deletedModels, "deleted_routes": deletedRoutes, "model": name})
+}
+
+func (a *App) adminModels(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodDelete {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "DELETE required")
+		return
+	}
+	var in struct {
+		Models []string `json:"models"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	models := normalizePublicModelNames(in.Models)
+	if len(models) == 0 {
+		fail(w, http.StatusBadRequest, "invalid_request", "select at least one model")
+		return
+	}
+	if len(models) > 500 {
+		fail(w, http.StatusBadRequest, "invalid_request", "too many models; maximum is 500")
+		return
+	}
+	deletedModels, deletedRoutes, err := a.deletePublicModels(r.Context(), models)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_models": deletedModels, "deleted_routes": deletedRoutes})
+}
+
+func normalizePublicModelNames(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (a *App) deletePublicModels(ctx context.Context, models []string) (int64, int64, error) {
+	models = normalizePublicModelNames(models)
+	if len(models) == 0 {
+		return 0, 0, nil
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`DELETE FROM model_routes WHERE public_name=?`, name)
-	if err != nil {
-		fail(w, 500, "database_error", err.Error())
-		return
+	var deletedModels, deletedRoutes int64
+	stamp := now()
+	for _, name := range models {
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at)
+SELECT provider_id,public_name,MIN(upstream_model),? FROM model_routes WHERE public_name=? GROUP BY provider_id,public_name`, stamp, name); err != nil {
+			return 0, 0, err
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM model_routes WHERE public_name=?`, name)
+		if err != nil {
+			return 0, 0, err
+		}
+		deleted, _ := res.RowsAffected()
+		if deleted == 0 {
+			continue
+		}
+		deletedModels++
+		deletedRoutes += deleted
+		if _, err := tx.ExecContext(ctx, `DELETE FROM route_policies WHERE public_name=?`, name); err != nil {
+			return 0, 0, err
+		}
 	}
-	deleted, _ := res.RowsAffected()
-	if deleted == 0 {
-		fail(w, 404, "not_found", "model not found")
-		return
-	}
-	_, _ = tx.Exec(`DELETE FROM route_policies WHERE public_name=?`, name)
 	if err := tx.Commit(); err != nil {
-		fail(w, 500, "database_error", err.Error())
-		return
+		return 0, 0, err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_routes": deleted, "model": name})
+	return deletedModels, deletedRoutes, nil
 }
