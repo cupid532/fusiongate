@@ -496,6 +496,30 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, result)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "models" {
+		if r.Method != http.MethodPut {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PUT required")
+			return
+		}
+		var in struct {
+			Models *[]string `json:"models"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if in.Models == nil {
+			fail(w, http.StatusBadRequest, "invalid_request", "models is required")
+			return
+		}
+		result, err := a.applySelectedModels(r.Context(), id, *in.Models)
+		if err != nil {
+			fail(w, modelImportErrorStatus(err), "model_selection_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "import-models" {
 		if r.Method != http.MethodPost {
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")

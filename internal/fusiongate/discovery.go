@@ -44,6 +44,7 @@ type discoveredModel struct {
 	Capabilities            string   `json:"capabilities"`
 	Existing                bool     `json:"existing,omitempty"`
 	Excluded                bool     `json:"excluded,omitempty"`
+	Unavailable             bool     `json:"unavailable,omitempty"`
 	SupportedGenerationAPIs []string `json:"-"`
 }
 
@@ -59,6 +60,14 @@ type modelImportResult struct {
 	Existing int `json:"existing"`
 	Excluded int `json:"excluded,omitempty"`
 	Missing  int `json:"missing"`
+}
+
+type modelSelectionResult struct {
+	Selected int `json:"selected"`
+	Added    int `json:"added"`
+	Existing int `json:"existing"`
+	Removed  int `json:"removed"`
+	Missing  int `json:"missing,omitempty"`
 }
 
 type discoveryProvider struct {
@@ -413,18 +422,25 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 		return modelDiscoveryResult{}, err
 	}
 
-	existing := map[string]bool{}
-	rows, err := a.db.QueryContext(parent, `SELECT public_name FROM model_routes WHERE provider_id=?`, providerID)
+	type existingRoute struct {
+		UpstreamModel string
+		Capabilities  string
+	}
+	existing := map[string]existingRoute{}
+	rows, err := a.db.QueryContext(parent, `SELECT public_name,upstream_model,capabilities FROM model_routes WHERE provider_id=?`, providerID)
 	if err != nil {
 		return modelDiscoveryResult{}, err
 	}
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, upstreamModel, capabilities string
+		if err := rows.Scan(&name, &upstreamModel, &capabilities); err != nil {
 			_ = rows.Close()
 			return modelDiscoveryResult{}, err
 		}
-		existing[strings.ToLower(strings.TrimSpace(name))] = true
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "" {
+			existing[name] = existingRoute{UpstreamModel: strings.ToLower(strings.TrimSpace(upstreamModel)), Capabilities: capabilities}
+		}
 	}
 	if err := rows.Close(); err != nil {
 		return modelDiscoveryResult{}, err
@@ -446,17 +462,40 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 		return modelDiscoveryResult{}, err
 	}
 
-	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels))}
+	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels)+len(existing))}
+	seen := make(map[string]bool, len(allModels))
 	for _, model := range allModels {
 		if model.Capabilities == "unsupported" {
 			result.Skipped++
 			continue
 		}
-		model.Existing = existing[model.ID]
+		model.ID = strings.ToLower(strings.TrimSpace(model.ID))
+		if model.ID == "" {
+			continue
+		}
+		_, model.Existing = existing[model.ID]
 		model.Excluded = !model.Existing && excluded[model.ID]
+		seen[model.ID] = true
 		result.Models = append(result.Models, model)
+		result.Discovered++
 	}
-	result.Discovered = len(result.Models)
+	// Keep configured routes visible even when an upstream temporarily omits
+	// them from discovery. They remain selected by default and can still be
+	// deliberately stopped by the administrator instead of being removed by
+	// an incomplete upstream response.
+	for name, route := range existing {
+		if seen[name] {
+			continue
+		}
+		result.Models = append(result.Models, discoveredModel{
+			ID:           name,
+			UpstreamID:   route.UpstreamModel,
+			Capabilities: route.Capabilities,
+			Existing:     true,
+			Unavailable:  true,
+		})
+	}
+	sort.Slice(result.Models, func(i, j int) bool { return result.Models[i].ID < result.Models[j].ID })
 	return result, nil
 }
 
@@ -512,6 +551,135 @@ func (a *App) importSelectedModels(parent context.Context, providerID int64, sel
 		models = append(models, available[id])
 	}
 	return a.importDiscoveredModels(parent, providerID, models, true)
+}
+
+func normalizeModelSelection(selected []string) ([]string, error) {
+	if len(selected) > maxModelImportSelection {
+		return nil, fmt.Errorf("too many selected models; maximum is %d", maxModelImportSelection)
+	}
+	out := make([]string, 0, len(selected))
+	seen := map[string]bool{}
+	for _, value := range selected {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// applySelectedModels treats selected as the provider's complete desired model
+// set. One transaction restores newly checked models and excludes/removes models
+// that were unchecked, so the picker behaves like a simple on/off control.
+func (a *App) applySelectedModels(parent context.Context, providerID int64, selected []string) (modelSelectionResult, error) {
+	normalized, err := normalizeModelSelection(selected)
+	if err != nil {
+		return modelSelectionResult{}, err
+	}
+	discovery, err := a.discoverProviderModels(parent, providerID)
+	if err != nil {
+		return modelSelectionResult{}, err
+	}
+	available := make(map[string]discoveredModel, len(discovery.Models))
+	for _, model := range discovery.Models {
+		available[model.ID] = model
+	}
+	missing := make([]string, 0)
+	for _, id := range normalized {
+		if _, ok := available[id]; !ok {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return modelSelectionResult{Selected: len(normalized), Missing: len(missing)}, fmt.Errorf("%w: %s", errSelectedModelsUnavailable, strings.Join(missing, ", "))
+	}
+
+	selectedSet := make(map[string]bool, len(normalized))
+	for _, id := range normalized {
+		selectedSet[id] = true
+	}
+	result := modelSelectionResult{Selected: len(normalized)}
+	tx, err := a.db.BeginTx(parent, nil)
+	if err != nil {
+		return modelSelectionResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	type currentRoute struct {
+		UpstreamModel string
+	}
+	current := map[string]currentRoute{}
+	rows, err := tx.QueryContext(parent, `SELECT public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID)
+	if err != nil {
+		return modelSelectionResult{}, err
+	}
+	for rows.Next() {
+		var publicName, upstreamModel string
+		if err := rows.Scan(&publicName, &upstreamModel); err != nil {
+			_ = rows.Close()
+			return modelSelectionResult{}, err
+		}
+		publicName = strings.ToLower(strings.TrimSpace(publicName))
+		if publicName != "" {
+			current[publicName] = currentRoute{UpstreamModel: strings.ToLower(strings.TrimSpace(upstreamModel))}
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return modelSelectionResult{}, err
+	}
+
+	stamp := now()
+	for publicName, route := range current {
+		if selectedSet[publicName] {
+			continue
+		}
+		if _, err := tx.ExecContext(parent, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, publicName, route.UpstreamModel, stamp); err != nil {
+			return modelSelectionResult{}, err
+		}
+		res, err := tx.ExecContext(parent, `DELETE FROM model_routes WHERE provider_id=? AND LOWER(public_name)=?`, providerID, publicName)
+		if err != nil {
+			return modelSelectionResult{}, err
+		}
+		removed, _ := res.RowsAffected()
+		if removed > 0 {
+			result.Removed++
+		}
+		if _, err := tx.ExecContext(parent, `DELETE FROM route_policies WHERE LOWER(public_name)=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE LOWER(public_name)=?)`, publicName, publicName); err != nil {
+			return modelSelectionResult{}, err
+		}
+	}
+
+	for _, id := range normalized {
+		if _, err := tx.ExecContext(parent, `DELETE FROM model_route_exclusions WHERE provider_id=? AND LOWER(public_name)=?`, providerID, id); err != nil {
+			return modelSelectionResult{}, err
+		}
+		if _, ok := current[id]; ok {
+			result.Existing++
+			continue
+		}
+		model := available[id]
+		model.UpstreamID = strings.ToLower(strings.TrimSpace(model.UpstreamID))
+		if model.UpstreamID == "" {
+			model.UpstreamID = id
+		}
+		res, err := tx.ExecContext(parent, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
+SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?`, id, providerID, model.UpstreamID, model.Capabilities, 1, 0, id, 0, 0, stamp, stamp)
+		if err != nil {
+			return modelSelectionResult{}, err
+		}
+		added, _ := res.RowsAffected()
+		result.Added += int(added)
+		if _, err := tx.ExecContext(parent, `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, id, StrategyPriorityFailover, stamp); err != nil {
+			return modelSelectionResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return modelSelectionResult{}, err
+	}
+	return result, nil
 }
 
 // discoverAndImportAllModels performs one upstream discovery request and imports

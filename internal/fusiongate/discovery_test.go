@@ -638,3 +638,217 @@ func TestAddCodexImageModelRequiresSupportedHost(t *testing.T) {
 		t.Fatalf("models=%#v", got)
 	}
 }
+
+func TestDiscoverProviderModelsKeepsConfiguredModelsMissingUpstream(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "available-model"}}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "missing-upstream", "openai_compatible", upstream.URL+"/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	stamp := now()
+	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, "configured-model", providerID, "configured-upstream", "chat,stream", 1, 0, 0, 0, 0, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+
+	discovery, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if discovery.Discovered != 1 || len(discovery.Models) != 2 {
+		t.Fatalf("discovery = %#v", discovery)
+	}
+	var configured *discoveredModel
+	for i := range discovery.Models {
+		if discovery.Models[i].ID == "configured-model" {
+			configured = &discovery.Models[i]
+			break
+		}
+	}
+	if configured == nil || !configured.Existing || !configured.Unavailable || configured.UpstreamID != "configured-upstream" {
+		t.Fatalf("configured model = %#v", configured)
+	}
+}
+
+func TestApplySelectedModelsAddsKeepsAndStopsInOneTransaction(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+			map[string]any{"id": "alpha-model"},
+			map[string]any{"id": "beta-model"},
+			map[string]any{"id": "gamma-model"},
+		}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "selection", "openai_compatible", upstream.URL+"/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.importSelectedModels(context.Background(), providerID, []string{"alpha-model", "beta-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, "gamma-model", "gamma-model", now()); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := a.applySelectedModels(context.Background(), providerID, []string{"beta-model", "gamma-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Selected != 2 || result.Added != 1 || result.Existing != 1 || result.Removed != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	rows, err := a.db.Query(`SELECT public_name FROM model_routes WHERE provider_id=? ORDER BY public_name`, providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var routes []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatal(err)
+		}
+		routes = append(routes, name)
+	}
+	if strings.Join(routes, ",") != "beta-model,gamma-model" {
+		t.Fatalf("routes = %#v", routes)
+	}
+	var alphaExclusions, gammaExclusions int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE provider_id=? AND public_name='alpha-model'`, providerID).Scan(&alphaExclusions); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE provider_id=? AND public_name='gamma-model'`, providerID).Scan(&gammaExclusions); err != nil {
+		t.Fatal(err)
+	}
+	if alphaExclusions != 1 || gammaExclusions != 0 {
+		t.Fatalf("alpha exclusions=%d gamma exclusions=%d", alphaExclusions, gammaExclusions)
+	}
+}
+
+func TestApplySelectedModelsAllowsStoppingAllAndRestoringOne(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+			map[string]any{"id": "alpha-model"},
+			map[string]any{"id": "beta-model"},
+		}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "stop-all", "openai_compatible", upstream.URL+"/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.importSelectedModels(context.Background(), providerID, []string{"alpha-model", "beta-model"}); err != nil {
+		t.Fatal(err)
+	}
+
+	stopped, err := a.applySelectedModels(context.Background(), providerID, []string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.Selected != 0 || stopped.Removed != 2 {
+		t.Fatalf("stopped = %#v", stopped)
+	}
+	var routes int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_routes WHERE provider_id=?`, providerID).Scan(&routes); err != nil {
+		t.Fatal(err)
+	}
+	if routes != 0 {
+		t.Fatalf("routes after stop all = %d", routes)
+	}
+
+	restored, err := a.applySelectedModels(context.Background(), providerID, []string{"alpha-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Added != 1 || restored.Removed != 0 {
+		t.Fatalf("restored = %#v", restored)
+	}
+	var exclusions int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE provider_id=? AND public_name='alpha-model'`, providerID).Scan(&exclusions); err != nil {
+		t.Fatal(err)
+	}
+	if exclusions != 0 {
+		t.Fatalf("restored model still has %d exclusions", exclusions)
+	}
+}
+
+func TestApplySelectedModelsRejectsUnknownSelectionAtomically(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{
+			map[string]any{"id": "alpha-model"},
+			map[string]any{"id": "beta-model"},
+		}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "atomic-selection", "openai_compatible", upstream.URL+"/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.importSelectedModels(context.Background(), providerID, []string{"alpha-model"}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := a.applySelectedModels(context.Background(), providerID, []string{"beta-model", "invented-model"})
+	if !errors.Is(err, errSelectedModelsUnavailable) || result.Missing != 1 {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	var route string
+	if err := a.db.QueryRow(`SELECT public_name FROM model_routes WHERE provider_id=?`, providerID).Scan(&route); err != nil {
+		t.Fatal(err)
+	}
+	if route != "alpha-model" {
+		t.Fatalf("route changed after rejected selection: %q", route)
+	}
+	var exclusions int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE provider_id=?`, providerID).Scan(&exclusions); err != nil {
+		t.Fatal(err)
+	}
+	if exclusions != 0 {
+		t.Fatalf("rejected selection created %d exclusions", exclusions)
+	}
+}
+
+func TestProviderModelsEndpointAcceptsEmptySelection(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "alpha-model"}}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "models-endpoint", "openai_compatible", upstream.URL+"/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.importSelectedModels(context.Background(), providerID, []string{"alpha-model"}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/providers/1/models", strings.NewReader(`{"models":[]}`))
+	rec := httptest.NewRecorder()
+	a.providerByID(rec, req, adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var result modelSelectionResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Removed != 1 || result.Selected != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
