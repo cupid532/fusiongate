@@ -113,6 +113,22 @@ func TestLookupOfficialPriceAcceptsDatedClaudeVersions(t *testing.T) {
 	}
 }
 
+func TestOfficialPricingCatalogUsesModelIdentityAcrossCompatibleChannels(t *testing.T) {
+	for _, tc := range []struct {
+		providerType, model, want string
+	}{
+		{"openai", "claude-sonnet-5", "claude"},
+		{"openai_compatible", "anthropic/claude-opus-4-8", "claude"},
+		{"openai", "grok-4.5", "grok"},
+		{"openrouter", "google/gemini-3.5-flash", "gemini"},
+		{"openai", "gpt-5.6-sol", "openai"},
+	} {
+		if got := officialPricingCatalogName(tc.providerType, tc.model); got != tc.want {
+			t.Fatalf("provider=%q model=%q catalog=%q want=%q", tc.providerType, tc.model, got, tc.want)
+		}
+	}
+}
+
 func TestEstimatedCostHandlesCachedAndLongContextTokens(t *testing.T) {
 	z := resolvedRoute{Route: Route{
 		InputPriceMicros:      2_000_000,
@@ -289,7 +305,8 @@ func TestOfficialPricingDoesNotOverwriteManualModelPrice(t *testing.T) {
 	defer a.Close()
 	stamp := now()
 	for i, source := range []string{manualPricingSource, ""} {
-		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "claude-"+string(rune('a'+i)), "anthropic", "https://api.example", []byte{1}, stamp, stamp)
+		providerType := []string{"anthropic", "openai"}[i]
+		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "claude-"+string(rune('a'+i)), providerType, "https://api.example", []byte{1}, stamp, stamp)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -217,17 +217,7 @@ func (a *App) applyOfficialPricing(ctx context.Context, catalogs map[string]map[
 		if target.pricingSource == manualPricingSource {
 			continue
 		}
-		catalogName := ""
-		switch target.providerType {
-		case "openai":
-			catalogName = "openai"
-		case "grok", "grok_oauth":
-			catalogName = "grok"
-		case "gemini", "gemini_cli":
-			catalogName = "gemini"
-		case "anthropic", "claude_oauth":
-			catalogName = "claude"
-		}
+		catalogName := officialPricingCatalogName(target.providerType, target.model)
 		price, ok := lookupOfficialPrice(catalogs[catalogName], target.model)
 		if !ok {
 			continue
@@ -241,6 +231,33 @@ func (a *App) applyOfficialPricing(ctx context.Context, catalogs map[string]map[
 		updated += changed
 	}
 	return updated, applyErrors, nil
+}
+
+func officialPricingCatalogName(providerType, upstreamModel string) string {
+	model := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(upstreamModel, "models/")))
+	if slash := strings.LastIndex(model, "/"); slash >= 0 {
+		model = model[slash+1:]
+	}
+	switch {
+	case strings.HasPrefix(model, "claude-"):
+		return "claude"
+	case strings.HasPrefix(model, "grok-"):
+		return "grok"
+	case strings.HasPrefix(model, "gemini-"):
+		return "gemini"
+	}
+	switch providerType {
+	case "openai":
+		return "openai"
+	case "grok", "grok_oauth":
+		return "grok"
+	case "gemini", "gemini_cli":
+		return "gemini"
+	case "anthropic", "claude_oauth":
+		return "claude"
+	default:
+		return ""
+	}
 }
 
 func (a *App) savePricingSyncStatus(result pricingSyncResult, syncErr error) {
