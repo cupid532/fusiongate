@@ -313,7 +313,7 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 		return "gpt-5.4"
 	case "claude_oauth":
 		return "claude-3-5-haiku-20241022"
-	case "openai", "openai_compatible":
+	case "openai", "grok", "openai_compatible":
 		return "gpt-4o-mini"
 	case "anthropic":
 		return "claude-3-5-haiku-20241022"

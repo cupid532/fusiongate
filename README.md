@@ -9,10 +9,10 @@
 - Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
 - 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
-- Provider 管理：OpenAI、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude / Grok OAuth；普通 API 渠道可随时编辑名称、类型、Base URL、API Key 与调度设置，更换 Key 无需删除渠道或重建模型路由；保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
+- Provider 管理：OpenAI 官方 Key、Grok / xAI 官方 Key（默认 `https://api.x.ai`）、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude / Grok OAuth；官方 API Key 与 OAuth 认证文件是独立渠道类型。普通 API 渠道可随时编辑名称、类型、Base URL、API Key 与调度设置，更换 Key 无需删除渠道或重建模型路由；保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
 - 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE）、Grok 设备授权，以及常见工具导出的 Codex / Claude / Grok OAuth JSON。JSON 可一次选择多个文件，必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。认证文件支持按厂商筛选、批量选择和敏感凭据 JSON 导出。
 - 安全检活：认证文件可自由勾选后一键检活；默认“基础检活”只读取模型列表、不会生成内容，明确选择“真实生成测速”时才发送最多 1 token 的请求并记录首字节/总耗时。任务采用低并发、单项超时、重复探测互斥、可取消和逐项结果展示，不会因一次手动检活自动启停或删除账号。
-- 公共模型 / 别名与多条候选路由；渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级。数字越大越优先，同级按渠道添加顺序自动故障转移；可在渠道页全局选择优先级、逐个轮询、智能轮询或智能选择。
+- 公共模型 / 别名与多条候选路由；既可删除单条渠道映射，也可从模型页一次删除某个公开模型的全部映射。渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级。数字越大越优先，同级按渠道添加顺序自动故障转移；可在渠道页全局选择优先级、逐个轮询、智能轮询或智能选择。
 - 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、单探针半开恢复、指数冷却、`Retry-After`。429 会显示为“限流”并立即进入至少 5 分钟冷却，不会因短耗时错误响应污染自适应延迟统计。
 - 安全故障转移：连接/超时、429、部分路由错误与 5xx 可切换备用；空流或首字节前断流可切换，首字节发出后绝不拼接第二家响应；图片请求在尚未向客户端写出响应前也会自动切换备用渠道（例如 input 超时/5xx 后无缝落到 Codex Plus），不会固定某一家。
 - 健康状态只处罚可归因于上游的失败；下游客户端主动取消不会污染 Provider 健康度。智能选择优先依据成功请求的首字节 EWMA，而不是被输出长度放大的完整响应耗时；请求账本会对 2 万/4 万以上输入 Token 标记“大上下文/超大上下文”。
@@ -22,9 +22,10 @@
   - Codex OAuth Plus 生图兼容：发现到 `gpt-5.5` 时自动提供 `gpt-image-1` 与 `gpt-image-2` 图像别名；标准 `POST /v1/images/generations` 会转换成 Codex Responses 的 `image_generation` 内置工具调用，并把 SSE 中的真实图片结果转换回 OpenAI `b64_json` 响应。Codex OAuth 路径每次只支持 `n=1`（ChatGPT 账号侧工具一次只出一张，且并发 fan-out 易被限流/拖垮）；需要多图时请对 OpenAI Compatible 生图渠道传 `n`，或对 Codex 路径发起多次请求。支持上游接受的 `size`、`output_format`、`output_compression`、`background`、`moderation` 与 `partial_images` 参数；不伪造 URL 或透明背景能力。Codex 生图默认至少 180s 超时下限。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
   - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 支持原生代理，也可安全转换到 OpenAI / OpenRouter / OpenAI Compatible / Grok Chat，覆盖文本、图片、工具调用、工具结果以及 Anthropic SSE 流。
-- API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限与安全再次复制；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。
+- 下游 API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限、到期时间、USD 费用预算与安全再次复制；到期或累计估算费用达到预算后会停止接受新请求。费用在上游返回 usage 后结算，因此最后一个并发或在途请求可能产生少量超额；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。
 - 请求账本实时显示进行中请求、动态运行时间、每次故障转移尝试及上游首字节耗时。
-- 独立 Token 用量中心：支持近 7/30/90 天和近一年范围，按日期、下游 Key、渠道、公开模型与实际上游模型统计请求数、尝试次数、输入、输出、缓存、推理和总 Token，包含趋势图、排行、筛选、分页与 usage 采集覆盖率。请求和 Token 明细自动保留一年。
+- 官方价格同步：默认每 24 小时读取 OpenAI、xAI 与 Gemini 官方定价页面，并按上游模型 ID 更新官方渠道路由价格；管理台可随时手动同步。支持缓存输入价格，以及 xAI 官方表中的长上下文分档。费用是基于上游 usage 的估算值，最终账单仍以上游服务商为准。
+- 独立用量与费用中心：支持近 7/30/90 天和近一年范围，按日期、下游 Key、渠道、公开模型与实际上游模型统计请求数、尝试次数、输入、输出、缓存、推理、总 Token 和估算费用，包含趋势图、排行、筛选、分页、usage 采集覆盖率与官方价格覆盖率。请求、Token 和费用明细自动保留一年。
 - 标准 OpenAI Chat/Responses 与 Anthropic Messages 的非透明响应会被动读取 usage（包含流式末尾事件），Gemini 转换响应同步采集 usage；透明转发保持原样，不读取或修改响应载荷，控制台会明确标记为未采集而不是伪造为 0。
 - 请求尝试账本按 `gateway_request_id` 聚合，记录 attempt、Provider、重试来源、状态、Token 与延迟，不记录 prompt / completion 正文。
 - SSRF 默认保护：只接受 HTTPS 上游；解析并校验全部 DNS 地址，阻止 localhost、私网、链路本地、未指定和组播地址，限制重定向且禁止跨主机携带凭据。
@@ -135,6 +136,7 @@ sudo bash install.sh
 | `FUSIONGATE_ADMIN_PASSWORD_FILE` | 可选，读取管理员密码的文件路径；生产 Compose 使用该方式挂载 secret。 |
 | `FUSIONGATE_ADDR` | 监听地址，默认 `127.0.0.1:8787`。 |
 | `FUSIONGATE_DATA_DIR` | SQLite 数据目录，默认 `./data`。 |
+| `FUSIONGATE_PRICING_SYNC_INTERVAL` | 官方价格同步间隔，默认 `24h`，最低 `1h`；设为 `0`、`off` 或 `false` 可关闭。 |
 | `FUSIONGATE_ALLOW_INSECURE_UPSTREAMS` | 仅可信开发环境可设 `true`，允许 HTTP。 |
 | `FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS` | 仅可信开发环境可设 `true`，允许私有网络上游。 |
 
@@ -144,4 +146,4 @@ sudo bash install.sh
 
 ## 已知范围和后续工作
 
-本 MVP 故意不包含支付、充值、用户注册、兑换码或商业计费模块。Gemini CLI OAuth、图像编辑、跨协议结构化输出的完整等价转换、PostgreSQL、定时模型同步和备份 UI 仍需后续阶段实现。不要将订阅账号的等价 API 价值误称为实际上游扣费。
+FusionGate 的费用统计与密钥预算属于管理侧估算和访问限制，不包含支付、充值、用户注册、兑换码或商业计费模块。Gemini CLI OAuth、图像编辑、跨协议结构化输出的完整等价转换、PostgreSQL、定时模型同步和备份 UI 仍需后续阶段实现。不要将订阅账号的等价 API 价值误称为实际上游扣费，最终费用以上游账单为准。

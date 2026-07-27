@@ -119,7 +119,7 @@ func (a *App) health(w http.ResponseWriter, r *http.Request) {
 
 func validProviderType(t string) bool {
 	switch t {
-	case "openai", "openrouter", "openai_compatible", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "gemini_cli":
+	case "openai", "grok", "openrouter", "openai_compatible", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "gemini_cli":
 		return true
 	}
 	return false
@@ -127,7 +127,7 @@ func validProviderType(t string) bool {
 
 func validEditableProviderType(t string) bool {
 	switch t {
-	case "openai", "openrouter", "openai_compatible", "anthropic", "gemini":
+	case "openai", "grok", "openrouter", "openai_compatible", "anthropic", "gemini":
 		return true
 	}
 	return false
@@ -735,7 +735,9 @@ func (a *App) routes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	case http.MethodGet:
 		rows, err := a.db.Query(`
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
-       r.input_price_micros,r.output_price_micros,p.name,p.type,
+	       r.input_price_micros,r.cached_price_micros,r.output_price_micros,
+	       r.long_context_threshold,r.long_input_price_micros,r.long_cached_price_micros,r.long_output_price_micros,
+	       r.pricing_source,COALESCE(r.pricing_updated_at,''),p.name,p.type,
 	       p.enabled,p.status,p.last_latency_ms,p.last_first_byte_ms,p.consecutive_failures
 FROM model_routes r
 JOIN providers p ON p.id=r.provider_id
@@ -749,7 +751,11 @@ ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 		for rows.Next() {
 			var x Route
 			var en, providerEnabled int
-			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder, &x.InputPriceMicros, &x.OutputPriceMicros, &x.ProviderName, &x.ProviderType, &providerEnabled, &x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFirstByteMS, &x.ProviderFailures); err != nil {
+			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder,
+				&x.InputPriceMicros, &x.CachedPriceMicros, &x.OutputPriceMicros,
+				&x.LongContextThreshold, &x.LongInputPriceMicros, &x.LongCachedPriceMicros, &x.LongOutputPriceMicros,
+				&x.PricingSource, &x.PricingUpdatedAt, &x.ProviderName, &x.ProviderType, &providerEnabled,
+				&x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFirstByteMS, &x.ProviderFailures); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -1019,7 +1025,7 @@ func normalizeModelList(value string) string {
 func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL FROM api_keys ORDER BY id DESC`)
+		rows, err := a.db.Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL,budget_micros,COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0) FROM api_keys ORDER BY id DESC`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1030,7 +1036,7 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			var x APIKey
 			var aa, ai, rv, canReveal int
 			var ex, cr string
-			if err := rows.Scan(&x.ID, &x.Name, &x.Prefix, &aa, &x.AllowModels, &x.DenyModels, &ai, &x.RPMLimit, &rv, &ex, &cr, &canReveal); err != nil {
+			if err := rows.Scan(&x.ID, &x.Name, &x.Prefix, &aa, &x.AllowModels, &x.DenyModels, &ai, &x.RPMLimit, &rv, &ex, &cr, &canReveal, &x.BudgetMicros, &x.SpentMicros); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -1038,6 +1044,12 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			x.AllowImages = strBool(ai)
 			x.Revoked = strBool(rv)
 			x.CanReveal = strBool(canReveal)
+			if x.BudgetMicros > 0 {
+				x.RemainingMicros = x.BudgetMicros - x.SpentMicros
+				if x.RemainingMicros < 0 {
+					x.RemainingMicros = 0
+				}
+			}
 			x.ExpiresAt = parseTime(ex)
 			createdAt := parseTime(cr)
 			if createdAt != nil {
@@ -1048,13 +1060,14 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in struct {
-			Name        string `json:"name"`
-			AllowModels string `json:"allow_models"`
-			DenyModels  string `json:"deny_models"`
-			AllowAll    bool   `json:"allow_all"`
-			AllowImages bool   `json:"allow_images"`
-			RPMLimit    int    `json:"rpm_limit"`
-			ExpiresAt   string `json:"expires_at"`
+			Name         string `json:"name"`
+			AllowModels  string `json:"allow_models"`
+			DenyModels   string `json:"deny_models"`
+			AllowAll     bool   `json:"allow_all"`
+			AllowImages  bool   `json:"allow_images"`
+			RPMLimit     int    `json:"rpm_limit"`
+			ExpiresAt    string `json:"expires_at"`
+			BudgetMicros int64  `json:"budget_micros"`
 		}
 
 		if err := readJSON(r, &in); err != nil {
@@ -1090,7 +1103,11 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			}
 			exp = in.ExpiresAt
 		}
-		res, err := a.db.Exec(`INSERT INTO api_keys(name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,expires_at,created_at,encrypted_key) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, in.Name, prefix, hex.EncodeToString(sum[:]), boolInt(in.AllowAll), in.AllowModels, in.DenyModels, boolInt(in.AllowImages), in.RPMLimit, exp, now(), encrypted)
+		if in.BudgetMicros < 0 {
+			fail(w, http.StatusBadRequest, "invalid_request", "budget_micros must be zero or greater")
+			return
+		}
+		res, err := a.db.Exec(`INSERT INTO api_keys(name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,expires_at,budget_micros,created_at,encrypted_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, in.Name, prefix, hex.EncodeToString(sum[:]), boolInt(in.AllowAll), in.AllowModels, in.DenyModels, boolInt(in.AllowImages), in.RPMLimit, exp, in.BudgetMicros, now(), encrypted)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1170,15 +1187,15 @@ func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var p, m, k, total, today, failures int
-	var input, output, cached, reasoning int64
+	var input, output, cached, reasoning, costMicros int64
 	a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE enabled=1`).Scan(&p)
 	a.db.QueryRow(`SELECT COUNT(DISTINCT r.public_name) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1`).Scan(&m)
-	a.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0`).Scan(&k)
+	a.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0 AND (expires_at IS NULL OR expires_at='' OR expires_at>?) AND (budget_micros=0 OR COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0)<budget_micros)`, now()).Scan(&k)
 	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&total)
-	a.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(reasoning_tokens),0) FROM request_ledger WHERE completed_at IS NOT NULL`).Scan(&input, &output, &cached, &reasoning)
+	a.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(reasoning_tokens),0),COALESCE(SUM(cost_micros),0) FROM request_ledger WHERE completed_at IS NOT NULL`).Scan(&input, &output, &cached, &reasoning, &costMicros)
 	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=?`, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&today)
 	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=? AND completed_at IS NOT NULL AND success=0`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339)).Scan(&failures)
-	writeJSON(w, 200, map[string]any{"providers": p, "models": m, "keys": k, "requests": total, "today_requests": today, "failures_24h": failures, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output})
+	writeJSON(w, 200, map[string]any{"providers": p, "models": m, "keys": k, "requests": total, "today_requests": today, "failures_24h": failures, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": costMicros})
 }
 
 func (a *App) globalRoutingStrategy() RoutingStrategy {

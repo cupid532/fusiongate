@@ -113,42 +113,52 @@ type ProviderGroup struct {
 }
 
 type Route struct {
-	ID                  int64  `json:"id"`
-	ProviderID          int64  `json:"provider_id"`
-	PublicName          string `json:"public_name"`
-	UpstreamModel       string `json:"upstream_model"`
-	Capabilities        string `json:"capabilities"`
-	Enabled             bool   `json:"enabled"`
-	Priority            int    `json:"priority"`
-	InputPriceMicros    int64  `json:"input_price_micros"`
-	OutputPriceMicros   int64  `json:"output_price_micros"`
-	ProviderName        string `json:"provider_name,omitempty"`
-	ProviderType        string `json:"provider_type,omitempty"`
-	ProviderEnabled     bool   `json:"provider_enabled"`
-	SortOrder           int    `json:"sort_order"`
-	Strategy            string `json:"strategy,omitempty"`
-	ProviderStatus      string `json:"provider_status,omitempty"`
-	ProviderLatencyMS   int64  `json:"provider_latency_ms"`
-	ProviderFirstByteMS int64  `json:"provider_first_byte_ms"`
-	ProviderFailures    int    `json:"provider_failures"`
-	ProviderInflight    int    `json:"provider_inflight"`
-	HealthScore         int    `json:"health_score"`
+	ID                    int64  `json:"id"`
+	ProviderID            int64  `json:"provider_id"`
+	PublicName            string `json:"public_name"`
+	UpstreamModel         string `json:"upstream_model"`
+	Capabilities          string `json:"capabilities"`
+	Enabled               bool   `json:"enabled"`
+	Priority              int    `json:"priority"`
+	InputPriceMicros      int64  `json:"input_price_micros"`
+	CachedPriceMicros     int64  `json:"cached_price_micros"`
+	OutputPriceMicros     int64  `json:"output_price_micros"`
+	LongContextThreshold  int64  `json:"long_context_threshold"`
+	LongInputPriceMicros  int64  `json:"long_input_price_micros"`
+	LongCachedPriceMicros int64  `json:"long_cached_price_micros"`
+	LongOutputPriceMicros int64  `json:"long_output_price_micros"`
+	PricingSource         string `json:"pricing_source,omitempty"`
+	PricingUpdatedAt      string `json:"pricing_updated_at,omitempty"`
+	ProviderName          string `json:"provider_name,omitempty"`
+	ProviderType          string `json:"provider_type,omitempty"`
+	ProviderEnabled       bool   `json:"provider_enabled"`
+	SortOrder             int    `json:"sort_order"`
+	Strategy              string `json:"strategy,omitempty"`
+	ProviderStatus        string `json:"provider_status,omitempty"`
+	ProviderLatencyMS     int64  `json:"provider_latency_ms"`
+	ProviderFirstByteMS   int64  `json:"provider_first_byte_ms"`
+	ProviderFailures      int    `json:"provider_failures"`
+	ProviderInflight      int    `json:"provider_inflight"`
+	HealthScore           int    `json:"health_score"`
 }
 
 type APIKey struct {
-	ID          int64      `json:"id"`
-	Name        string     `json:"name"`
-	Prefix      string     `json:"prefix"`
-	AllowModels string     `json:"allow_models"`
-	DenyModels  string     `json:"deny_models"`
-	AllowAll    bool       `json:"allow_all"`
-	AllowImages bool       `json:"allow_images"`
-	Revoked     bool       `json:"revoked"`
-	RPMLimit    int        `json:"rpm_limit"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	CanReveal   bool       `json:"can_reveal"`
-	Raw         string     `json:"key,omitempty"`
+	ID              int64      `json:"id"`
+	Name            string     `json:"name"`
+	Prefix          string     `json:"prefix"`
+	AllowModels     string     `json:"allow_models"`
+	DenyModels      string     `json:"deny_models"`
+	AllowAll        bool       `json:"allow_all"`
+	AllowImages     bool       `json:"allow_images"`
+	Revoked         bool       `json:"revoked"`
+	RPMLimit        int        `json:"rpm_limit"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	CanReveal       bool       `json:"can_reveal"`
+	BudgetMicros    int64      `json:"budget_micros"`
+	SpentMicros     int64      `json:"spent_micros"`
+	RemainingMicros int64      `json:"remaining_micros"`
+	Raw             string     `json:"key,omitempty"`
 }
 
 type Usage struct {
@@ -225,6 +235,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 		a.healthChecker.Start(ctx)
 	}
 	go a.runOAuthRefreshLoop(ctx)
+	go a.runPricingSyncLoop(ctx)
 }
 
 func healthCheckIntervalFromEnv() time.Duration {
@@ -282,11 +293,11 @@ func (a *App) migrate(ctx context.Context) error {
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(public_name,provider_id,upstream_model));
   CREATE TABLE IF NOT EXISTS route_policies (
     public_name TEXT PRIMARY KEY, strategy TEXT NOT NULL DEFAULT 'priority_failover', updated_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS api_keys (
+	  CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
     allow_all INTEGER NOT NULL DEFAULT 1, allow_models TEXT NOT NULL DEFAULT '', deny_models TEXT NOT NULL DEFAULT '',
     allow_images INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 120, revoked INTEGER NOT NULL DEFAULT 0,
-    expires_at TEXT, created_at TEXT NOT NULL, last_used_at TEXT, encrypted_key BLOB);
+	    expires_at TEXT, budget_micros INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, last_used_at TEXT, encrypted_key BLOB);
   CREATE TABLE IF NOT EXISTS request_ledger (
     id INTEGER PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, completed_at TEXT,
     api_key_id INTEGER, provider_id INTEGER, route_id INTEGER, public_model TEXT NOT NULL, upstream_model TEXT NOT NULL,
@@ -342,7 +353,15 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "api_key_prefix", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "provider_name", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "encrypted_key", "BLOB"},
+		{"api_keys", "budget_micros", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_routes", "cached_price_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_routes", "long_context_threshold", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_routes", "long_input_price_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_routes", "long_cached_price_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_routes", "long_output_price_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_routes", "pricing_source", "TEXT NOT NULL DEFAULT ''"},
+		{"model_routes", "pricing_updated_at", "TEXT"},
 	} {
 		if err := ensureColumn(ctx, a.db, column.table, column.name, column.ddl); err != nil {
 			return err
@@ -549,6 +568,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/provider-groups/", a.admin(a.providerGroupByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))
+	mux.HandleFunc("/api/admin/models/", a.admin(a.modelByName))
+	mux.HandleFunc("/api/admin/pricing", a.admin(a.pricing))
 	mux.HandleFunc("/api/admin/keys", a.admin(a.keys))
 	mux.HandleFunc("/api/admin/keys/", a.admin(a.keyByID))
 	mux.HandleFunc("/api/admin/dashboard", a.admin(a.dashboard))

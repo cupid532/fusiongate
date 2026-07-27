@@ -17,17 +17,19 @@ import (
 )
 
 type authKey struct {
-	ID          int64
-	Name        string
-	Prefix      string
-	Hash        string
-	AllowAll    bool
-	AllowModels string
-	DenyModels  string
-	AllowImages bool
-	RPMLimit    int
-	Revoked     bool
-	ExpiresAt   *time.Time
+	ID           int64
+	Name         string
+	Prefix       string
+	Hash         string
+	AllowAll     bool
+	AllowModels  string
+	DenyModels   string
+	AllowImages  bool
+	RPMLimit     int
+	Revoked      bool
+	ExpiresAt    *time.Time
+	BudgetMicros int64
+	SpentMicros  int64
 }
 
 type resolvedRoute struct {
@@ -99,7 +101,7 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	var x authKey
 	var allowAll, allowImages, revoked int
 	var expiresAt, createdAt string
-	err := a.db.QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt)
+	err := a.db.QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,budget_micros,COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0) FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt, &x.BudgetMicros, &x.SpentMicros)
 	if err != nil {
 		return authKey{}, false
 	}
@@ -107,7 +109,7 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	x.AllowImages = strBool(allowImages)
 	x.Revoked = strBool(revoked)
 	x.ExpiresAt = parseTime(expiresAt)
-	if x.Revoked || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) {
+	if x.Revoked || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) || (x.BudgetMicros > 0 && x.SpentMicros >= x.BudgetMicros) {
 		return authKey{}, false
 	}
 	_, _ = a.db.Exec(`UPDATE api_keys SET last_used_at=? WHERE id=?`, now(), x.ID)
@@ -187,7 +189,9 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 
 func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]resolvedRoute, error) {
 	rows, err := a.db.QueryContext(ctx, `
-SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,r.input_price_micros,r.output_price_micros,
+SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
+       r.input_price_micros,r.cached_price_micros,r.output_price_micros,r.long_context_threshold,
+       r.long_input_price_micros,r.long_cached_price_micros,r.long_output_price_micros,
 	       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
 	       p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
@@ -207,7 +211,8 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 		var authKind string
 		if err := rows.Scan(
 			&z.Route.ID, &z.Route.ProviderID, &z.Route.PublicName, &z.Route.UpstreamModel, &z.Route.Capabilities, &routeEnabled,
-			&z.Route.Priority, &z.Route.SortOrder, &z.Route.InputPriceMicros, &z.Route.OutputPriceMicros,
+			&z.Route.Priority, &z.Route.SortOrder, &z.Route.InputPriceMicros, &z.Route.CachedPriceMicros, &z.Route.OutputPriceMicros,
+			&z.Route.LongContextThreshold, &z.Route.LongInputPriceMicros, &z.Route.LongCachedPriceMicros, &z.Route.LongOutputPriceMicros,
 			&z.Provider.ID, &z.Provider.Name, &z.Provider.Type, &z.Provider.BaseURL, &credential, &authKind, &providerEnabled,
 			&z.Provider.Priority, &z.Provider.Weight, &z.Provider.Status, &z.Provider.Notes,
 			&z.Provider.PassthroughMode, &z.Provider.ClientPolicy, &z.Provider.MaxConcurrency, &z.Provider.RequestTimeoutMS,
@@ -289,8 +294,19 @@ func cost(z resolvedRoute, usage *Usage) {
 		usage.CostType = "actual"
 		return
 	}
-	if z.Route.InputPriceMicros > 0 || z.Route.OutputPriceMicros > 0 {
-		usage.CostMicros = (usage.Input*z.Route.InputPriceMicros + usage.Output*z.Route.OutputPriceMicros) / 1_000_000
+	inputPrice, cachedPrice, outputPrice := z.Route.InputPriceMicros, z.Route.CachedPriceMicros, z.Route.OutputPriceMicros
+	if z.Route.LongContextThreshold > 0 && usage.Input >= z.Route.LongContextThreshold && z.Route.LongInputPriceMicros > 0 {
+		inputPrice, cachedPrice, outputPrice = z.Route.LongInputPriceMicros, z.Route.LongCachedPriceMicros, z.Route.LongOutputPriceMicros
+	}
+	if inputPrice > 0 || cachedPrice > 0 || outputPrice > 0 {
+		uncached := usage.Input - usage.Cached
+		if uncached < 0 {
+			uncached = 0
+		}
+		if cachedPrice <= 0 {
+			cachedPrice = inputPrice
+		}
+		usage.CostMicros = (uncached*inputPrice + usage.Cached*cachedPrice + usage.Output*outputPrice) / 1_000_000
 		usage.CostType = "estimated"
 	} else {
 		usage.CostType = "unknown"
@@ -567,7 +583,7 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 	a.runRoutes(w, r, key, routes, "openai_chat", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		switch z.Provider.Type {
-		case "openai", "openrouter", "openai_compatible", "grok_oauth":
+		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
 		case "anthropic", "claude_oauth":
 			if stream || z.Provider.PassthroughMode == "transparent" {
@@ -763,7 +779,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
-		if z.Provider.Type == "openai" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth" {
+		if z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth" {
 			compatible = append(compatible, z)
 		}
 	}
@@ -805,7 +821,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 		switch z.Provider.Type {
 		case "anthropic", "claude_oauth":
 			compatible = append(compatible, z)
-		case "openai", "openrouter", "openai_compatible", "grok_oauth":
+		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
 			if z.Provider.PassthroughMode != "transparent" {
 				compatible = append(compatible, z)
 			}
@@ -817,7 +833,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 	stream, _ := body["stream"].(bool)
 	a.runRoutes(w, r, key, compatible, "anthropic_messages", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
-		if z.Provider.Type == "openai" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "grok_oauth" {
+		if z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "grok_oauth" {
 			return a.anthropicMessagesOpenAI(w, r, body, z, rid, stream, onFirstByte)
 		}
 		transparent := z.Provider.PassthroughMode == "transparent"

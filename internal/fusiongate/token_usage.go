@@ -23,7 +23,10 @@ type tokenUsageMetrics struct {
 	CachedTokens       int64   `json:"cached_tokens"`
 	ReasoningTokens    int64   `json:"reasoning_tokens"`
 	TotalTokens        int64   `json:"total_tokens"`
+	CostMicros         int64   `json:"cost_micros"`
+	PricedAttempts     int64   `json:"priced_attempts"`
 	UsageCoverage      float64 `json:"usage_coverage"`
+	CostCoverage       float64 `json:"cost_coverage"`
 }
 
 type tokenUsageSeriesPoint struct {
@@ -105,7 +108,9 @@ func tokenMetricsSQL(alias string) string {
 		COALESCE(SUM(` + alias + `.output_tokens),0),
 		COALESCE(SUM(` + alias + `.cached_tokens),0),
 		COALESCE(SUM(` + alias + `.reasoning_tokens),0),
-		COALESCE(SUM(` + alias + `.input_tokens+` + alias + `.output_tokens),0)`
+		COALESCE(SUM(` + alias + `.input_tokens+` + alias + `.output_tokens),0),
+		COALESCE(SUM(` + alias + `.cost_micros),0),
+		COALESCE(SUM(CASE WHEN ` + alias + `.cost_type<>'unknown' THEN 1 ELSE 0 END),0)`
 }
 
 func scanTokenMetrics(scanner interface{ Scan(...any) error }, metrics *tokenUsageMetrics, prefix ...any) error {
@@ -119,6 +124,8 @@ func scanTokenMetrics(scanner interface{ Scan(...any) error }, metrics *tokenUsa
 		&metrics.CachedTokens,
 		&metrics.ReasoningTokens,
 		&metrics.TotalTokens,
+		&metrics.CostMicros,
+		&metrics.PricedAttempts,
 	)
 	if err := scanner.Scan(targets...); err != nil {
 		return err
@@ -128,11 +135,12 @@ func scanTokenMetrics(scanner interface{ Scan(...any) error }, metrics *tokenUsa
 }
 
 func (m *tokenUsageMetrics) setCoverage() {
-	if m.SuccessfulRequests <= 0 {
-		m.UsageCoverage = 0
-		return
+	if m.SuccessfulRequests > 0 {
+		m.UsageCoverage = float64(m.ReportedRequests) * 100 / float64(m.SuccessfulRequests)
 	}
-	m.UsageCoverage = float64(m.ReportedRequests) * 100 / float64(m.SuccessfulRequests)
+	if m.Attempts > 0 {
+		m.CostCoverage = float64(m.PricedAttempts) * 100 / float64(m.Attempts)
+	}
 }
 
 func tokenUsageRange(days int) (time.Time, time.Time) {

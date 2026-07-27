@@ -36,6 +36,9 @@ func TestTokenUsageBreaksDownByDateKeyProviderAndModel(t *testing.T) {
 	insertUsageFixture(t, a, "r2", "g2", created, 11, 21, "desktop", "fg_live_a", "primary", "smart", "upstream-smart", 50, 10, 4, 2, true)
 	insertUsageFixture(t, a, "r3", "g3", created, 12, 22, "automation", "fg_live_b", "backup", "fast", "upstream-fast", 40, 30, 0, 8, true)
 	insertUsageFixture(t, a, "r4", "g4", created, 12, 22, "automation", "fg_live_b", "backup", "fast", "upstream-fast", 0, 0, 0, 0, false)
+	if _, err := a.db.Exec(`UPDATE request_ledger SET cost_micros=CASE request_id WHEN 'r1' THEN 300 WHEN 'r2' THEN 150 WHEN 'r3' THEN 250 ELSE 0 END,cost_type=CASE WHEN request_id='r4' THEN 'unknown' ELSE 'estimated' END`); err != nil {
+		t.Fatal(err)
+	}
 
 	recorder := httptest.NewRecorder()
 	a.tokenUsage(recorder, httptest.NewRequest(http.MethodGet, "/api/admin/token-usage?days=30", nil), adminCtx{})
@@ -52,7 +55,7 @@ func TestTokenUsageBreaksDownByDateKeyProviderAndModel(t *testing.T) {
 	if response.Totals.InputTokens != 190 || response.Totals.OutputTokens != 60 || response.Totals.TotalTokens != 250 {
 		t.Fatalf("unexpected token totals: %+v", response.Totals)
 	}
-	if response.Totals.CachedTokens != 14 || response.Totals.ReasoningTokens != 15 || response.Totals.UsageCoverage != 75 {
+	if response.Totals.CachedTokens != 14 || response.Totals.ReasoningTokens != 15 || response.Totals.UsageCoverage != 75 || response.Totals.CostMicros != 700 || response.Totals.CostCoverage != 75 {
 		t.Fatalf("unexpected detailed totals: %+v", response.Totals)
 	}
 	if len(response.Series) != 30 || len(response.ByKeys) != 2 || len(response.ByProviders) != 2 || len(response.ByModels) != 2 || len(response.Details) != 2 {

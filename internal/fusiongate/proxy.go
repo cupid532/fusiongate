@@ -191,7 +191,7 @@ func joinURLQuery(base, endpoint, rawQuery string) (string, error) {
 
 func setProviderAuth(req *http.Request, z resolvedRoute) error {
 	switch z.Provider.Type {
-	case "openai", "openrouter", "openai_compatible", "codex_oauth", "grok_oauth":
+	case "openai", "grok", "openrouter", "openai_compatible", "codex_oauth", "grok_oauth":
 		req.Header.Set("Authorization", "Bearer "+z.Credential)
 		if z.Provider.Type == "codex_oauth" {
 			if z.AuthCredential != nil && z.AuthCredential.AccountID != "" {

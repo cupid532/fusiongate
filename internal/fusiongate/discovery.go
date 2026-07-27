@@ -125,7 +125,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		// /v1/models endpoint. Its CLI endpoint requires the client version
 		// query parameter and returns the list in a top-level models field.
 		paths = []string{basePath + "/models"}
-	case "openai", "openrouter", "openai_compatible", "anthropic", "claude_oauth", "grok_oauth":
+	case "openai", "grok", "openrouter", "openai_compatible", "anthropic", "claude_oauth", "grok_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
 			paths = []string{basePath + "/models"}
 		} else {
@@ -167,7 +167,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 	req.Header.Set("Accept", "application/json")
 	switch p.Type {
-	case "openai", "openrouter", "openai_compatible":
+	case "openai", "grok", "openrouter", "openai_compatible":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
 	case "codex_oauth":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
