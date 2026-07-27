@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	openAIPricingURL = "https://developers.openai.com/api/docs/pricing.md"
-	xAIPricingURL    = "https://docs.x.ai/developers/pricing"
-	geminiPricingURL = "https://ai.google.dev/gemini-api/docs/pricing?hl=en"
+	openAIPricingURL    = "https://developers.openai.com/api/docs/pricing.md"
+	xAIPricingURL       = "https://docs.x.ai/developers/pricing"
+	geminiPricingURL    = "https://ai.google.dev/gemini-api/docs/pricing?hl=en"
+	claudePricingURL    = "https://platform.claude.com/docs/en/about-claude/pricing.md"
+	manualPricingSource = "manual"
 )
 
 type officialModelPrice struct {
@@ -93,7 +95,7 @@ func (a *App) pricing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 				status[key] = value
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": status, "interval": pricingSyncInterval().String(), "sources": []string{openAIPricingURL, xAIPricingURL, geminiPricingURL}})
+		writeJSON(w, http.StatusOK, map[string]any{"status": status, "interval": pricingSyncInterval().String(), "sources": []string{openAIPricingURL, xAIPricingURL, geminiPricingURL, claudePricingURL}})
 	case http.MethodPost:
 		result, err := a.syncOfficialPricing(r.Context())
 		if err != nil && result.Sources == 0 {
@@ -107,6 +109,10 @@ func (a *App) pricing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 }
 
 func (a *App) syncOfficialPricing(ctx context.Context) (pricingSyncResult, error) {
+	return a.syncOfficialPricingTarget(ctx, "")
+}
+
+func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) (pricingSyncResult, error) {
 	result := pricingSyncResult{SyncedAt: now()}
 	type source struct {
 		name  string
@@ -117,6 +123,7 @@ func (a *App) syncOfficialPricing(ctx context.Context) (pricingSyncResult, error
 		{"openai", openAIPricingURL, parseOpenAIPricing},
 		{"grok", xAIPricingURL, parseXAIPricing},
 		{"gemini", geminiPricingURL, parseGeminiPricing},
+		{"claude", claudePricingURL, parseAnthropicPricing},
 	}
 	catalogs := map[string]map[string]officialModelPrice{}
 	client := &http.Client{Timeout: 25 * time.Second}
@@ -163,24 +170,53 @@ func (a *App) syncOfficialPricing(ctx context.Context) (pricingSyncResult, error
 		return result, err
 	}
 
-	rows, err := a.db.QueryContext(ctx, `SELECT r.id,r.upstream_model,p.type FROM model_routes r JOIN providers p ON p.id=r.provider_id`)
+	updated, applyErrors, err := a.applyOfficialPricing(ctx, catalogs, publicName)
 	if err != nil {
 		return result, err
+	}
+	result.UpdatedRoutes += updated
+	result.Errors = append(result.Errors, applyErrors...)
+	var syncErr error
+	if len(result.Errors) > 0 {
+		syncErr = errors.New(strings.Join(result.Errors, "; "))
+	}
+	a.savePricingSyncStatus(result, syncErr)
+	return result, syncErr
+}
+
+func (a *App) applyOfficialPricing(ctx context.Context, catalogs map[string]map[string]officialModelPrice, publicName string) (int64, []string, error) {
+	query := `SELECT r.id,r.upstream_model,p.type,r.pricing_source FROM model_routes r JOIN providers p ON p.id=r.provider_id`
+	args := []any{}
+	if strings.TrimSpace(publicName) != "" {
+		query += ` WHERE r.public_name=?`
+		args = append(args, strings.ToLower(strings.TrimSpace(publicName)))
+	}
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, nil, err
 	}
 	type routeTarget struct {
 		id                  int64
 		model, providerType string
+		pricingSource       string
 	}
 	targets := []routeTarget{}
 	for rows.Next() {
 		var target routeTarget
-		if rows.Scan(&target.id, &target.model, &target.providerType) == nil {
+		if rows.Scan(&target.id, &target.model, &target.providerType, &target.pricingSource) == nil {
 			targets = append(targets, target)
 		}
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		return 0, nil, err
+	}
 	stamp := now()
+	var updated int64
+	applyErrors := []string{}
 	for _, target := range targets {
+		if target.pricingSource == manualPricingSource {
+			continue
+		}
 		catalogName := ""
 		switch target.providerType {
 		case "openai":
@@ -189,26 +225,22 @@ func (a *App) syncOfficialPricing(ctx context.Context) (pricingSyncResult, error
 			catalogName = "grok"
 		case "gemini", "gemini_cli":
 			catalogName = "gemini"
+		case "anthropic", "claude_oauth":
+			catalogName = "claude"
 		}
-		catalog := catalogs[catalogName]
-		price, ok := lookupOfficialPrice(catalog, target.model)
+		price, ok := lookupOfficialPrice(catalogs[catalogName], target.model)
 		if !ok {
 			continue
 		}
-		res, updateErr := a.db.ExecContext(ctx, `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE id=?`, price.InputMicros, price.CachedMicros, price.OutputMicros, price.LongContextThreshold, price.LongInputMicros, price.LongCachedMicros, price.LongOutputMicros, price.Source, stamp, stamp, target.id)
+		res, updateErr := a.db.ExecContext(ctx, `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE id=? AND pricing_source<>?`, price.InputMicros, price.CachedMicros, price.OutputMicros, price.LongContextThreshold, price.LongInputMicros, price.LongCachedMicros, price.LongOutputMicros, price.Source, stamp, stamp, target.id, manualPricingSource)
 		if updateErr != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("route %d: %v", target.id, updateErr))
+			applyErrors = append(applyErrors, fmt.Sprintf("route %d: %v", target.id, updateErr))
 			continue
 		}
 		changed, _ := res.RowsAffected()
-		result.UpdatedRoutes += changed
+		updated += changed
 	}
-	var syncErr error
-	if len(result.Errors) > 0 {
-		syncErr = errors.New(strings.Join(result.Errors, "; "))
-	}
-	a.savePricingSyncStatus(result, syncErr)
-	return result, syncErr
+	return updated, applyErrors, nil
 }
 
 func (a *App) savePricingSyncStatus(result pricingSyncResult, syncErr error) {
@@ -346,6 +378,64 @@ func parseGeminiPricing(body []byte) (map[string]officialModelPrice, error) {
 	return out, nil
 }
 
+var (
+	claudeModelLabel = regexp.MustCompile(`(?i)Claude\s+(Opus|Sonnet|Haiku|Fable|Mythos)\s+([0-9]+(?:\.[0-9]+)?)`)
+	claudePriceCell  = regexp.MustCompile(`\$([0-9.]+)\s*/\s*MTok`)
+)
+
+func parseAnthropicPricing(body []byte) (map[string]officialModelPrice, error) {
+	return parseAnthropicPricingAt(body, time.Now().UTC())
+}
+
+func parseAnthropicPricingAt(body []byte, current time.Time) (map[string]officialModelPrice, error) {
+	out := map[string]officialModelPrice{}
+	scanner := bufio.NewScanner(strings.NewReader(string(body)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "|") || !strings.Contains(strings.ToLower(line), "claude") {
+			continue
+		}
+		modelMatch := claudeModelLabel.FindStringSubmatch(line)
+		prices := claudePriceCell.FindAllStringSubmatch(line, -1)
+		if len(modelMatch) != 3 || len(prices) < 5 || !anthropicPriceRowActive(line, current) {
+			continue
+		}
+		family := strings.ToLower(modelMatch[1])
+		version := strings.ReplaceAll(modelMatch[2], ".", "-")
+		model := "claude-" + family + "-" + version
+		if strings.HasPrefix(version, "3") {
+			model = "claude-" + version + "-" + family
+		}
+		if _, exists := out[model]; exists {
+			continue
+		}
+		out[model] = officialModelPrice{
+			Model:        model,
+			InputMicros:  dollarsPerMillionMicros(prices[0][1]),
+			CachedMicros: dollarsPerMillionMicros(prices[3][1]),
+			OutputMicros: dollarsPerMillionMicros(prices[4][1]),
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, errors.New("official Anthropic pricing table was not recognized")
+	}
+	return out, nil
+}
+
+func anthropicPriceRowActive(line string, current time.Time) bool {
+	lower := strings.ToLower(line)
+	if strings.Contains(lower, "through august 31, 2026") {
+		return current.Before(time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC))
+	}
+	if strings.Contains(lower, "starting september 1, 2026") {
+		return !current.Before(time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC))
+	}
+	return true
+}
+
 func lookupOfficialPrice(catalog map[string]officialModelPrice, upstream string) (officialModelPrice, bool) {
 	if len(catalog) == 0 {
 		return officialModelPrice{}, false
@@ -370,17 +460,41 @@ func lookupOfficialPrice(catalog map[string]officialModelPrice, upstream string)
 }
 
 func (a *App) modelByName(w http.ResponseWriter, r *http.Request, _ adminCtx) {
-	if r.Method != http.MethodDelete {
-		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "DELETE /api/admin/models/{name} required")
-		return
-	}
 	encoded := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/models/"), "/")
+	action := ""
+	for _, suffix := range []string{"/pricing/official", "/pricing"} {
+		if strings.HasSuffix(encoded, suffix) {
+			action = strings.TrimPrefix(suffix, "/")
+			encoded = strings.TrimSuffix(encoded, suffix)
+			break
+		}
+	}
 	name, err := url.PathUnescape(encoded)
 	if err != nil || strings.TrimSpace(name) == "" {
 		fail(w, http.StatusBadRequest, "invalid_request", "model name is required")
 		return
 	}
 	name = strings.ToLower(strings.TrimSpace(name))
+	if action == "pricing" {
+		if r.Method != http.MethodPatch {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH /api/admin/models/{name}/pricing required")
+			return
+		}
+		a.updateModelPricing(w, r, name)
+		return
+	}
+	if action == "pricing/official" {
+		if r.Method != http.MethodPost {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST /api/admin/models/{name}/pricing/official required")
+			return
+		}
+		a.restoreModelOfficialPricing(w, r, name)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "DELETE /api/admin/models/{name} required")
+		return
+	}
 	deletedModels, deletedRoutes, err := a.deletePublicModels(r.Context(), []string{name})
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -391,6 +505,78 @@ func (a *App) modelByName(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted_models": deletedModels, "deleted_routes": deletedRoutes, "model": name})
+}
+
+type modelPricingInput struct {
+	InputPriceMicros      int64 `json:"input_price_micros"`
+	CachedPriceMicros     int64 `json:"cached_price_micros"`
+	OutputPriceMicros     int64 `json:"output_price_micros"`
+	LongContextThreshold  int64 `json:"long_context_threshold"`
+	LongInputPriceMicros  int64 `json:"long_input_price_micros"`
+	LongCachedPriceMicros int64 `json:"long_cached_price_micros"`
+	LongOutputPriceMicros int64 `json:"long_output_price_micros"`
+}
+
+func (in modelPricingInput) validate() error {
+	const maxPriceMicros = int64(1_000_000_000_000)
+	prices := []int64{in.InputPriceMicros, in.CachedPriceMicros, in.OutputPriceMicros, in.LongInputPriceMicros, in.LongCachedPriceMicros, in.LongOutputPriceMicros}
+	for _, price := range prices {
+		if price < 0 {
+			return errors.New("prices cannot be negative")
+		}
+		if price > maxPriceMicros {
+			return errors.New("price is too large")
+		}
+	}
+	if in.LongContextThreshold < 0 || in.LongContextThreshold > 100_000_000 {
+		return errors.New("long context threshold must be between 0 and 100000000")
+	}
+	return nil
+}
+
+func (a *App) updateModelPricing(w http.ResponseWriter, r *http.Request, name string) {
+	var in modelPricingInput
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if err := in.validate(); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	stamp := now()
+	res, err := a.db.ExecContext(r.Context(), `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE public_name=?`, in.InputPriceMicros, in.CachedPriceMicros, in.OutputPriceMicros, in.LongContextThreshold, in.LongInputPriceMicros, in.LongCachedPriceMicros, in.LongOutputPriceMicros, manualPricingSource, stamp, stamp, name)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	updated, _ := res.RowsAffected()
+	if updated == 0 {
+		fail(w, http.StatusNotFound, "not_found", "model not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": name, "updated_routes": updated, "pricing_source": manualPricingSource})
+}
+
+func (a *App) restoreModelOfficialPricing(w http.ResponseWriter, r *http.Request, name string) {
+	res, err := a.db.ExecContext(r.Context(), `UPDATE model_routes SET pricing_source='',pricing_updated_at='',updated_at=? WHERE public_name=?`, now(), name)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	updated, _ := res.RowsAffected()
+	if updated == 0 {
+		fail(w, http.StatusNotFound, "not_found", "model not found")
+		return
+	}
+	result, syncErr := a.syncOfficialPricingTarget(r.Context(), name)
+	var matched int64
+	_ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM model_routes WHERE public_name=? AND pricing_source<>'' AND pricing_source<>?`, name, manualPricingSource).Scan(&matched)
+	if matched == 0 && syncErr != nil {
+		fail(w, http.StatusBadGateway, "pricing_sync_failed", syncErr.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": name, "updated_routes": matched, "sync": result})
 }
 
 func (a *App) adminModels(w http.ResponseWriter, r *http.Request, _ adminCtx) {

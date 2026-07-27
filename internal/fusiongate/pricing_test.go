@@ -65,11 +65,50 @@ func TestParseGeminiPricingReadsStandardTier(t *testing.T) {
 	}
 }
 
+func TestParseAnthropicPricingReadsOfficialModelTable(t *testing.T) {
+	body := []byte(`
+| Model | Base Input Tokens | 5m Cache Writes | 1h Cache Writes | Cache Hits & Refreshes | Output Tokens |
+| Claude Sonnet 5<br/>Introductory pricing through August 31, 2026 | $2 / MTok | $2.50 / MTok | $4 / MTok | $0.20 / MTok | $10 / MTok |
+| Claude Sonnet 5<br/>Pricing starting September 1, 2026 | $3 / MTok | $3.75 / MTok | $6 / MTok | $0.30 / MTok | $15 / MTok |
+| Claude Opus 4.8 | $5 / MTok | $6.25 / MTok | $10 / MTok | $0.50 / MTok | $25 / MTok |
+| Claude Haiku 3.5 | $0.80 / MTok | $1 / MTok | $1.60 / MTok | $0.08 / MTok | $4 / MTok |
+`)
+	catalog, err := parseAnthropicPricingAt(body, time.Date(2026, time.July, 27, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := catalog["claude-sonnet-5"]; got.InputMicros != 2_000_000 || got.CachedMicros != 200_000 || got.OutputMicros != 10_000_000 {
+		t.Fatalf("unexpected introductory Claude price: %+v", got)
+	}
+	if got := catalog["claude-opus-4-8"]; got.InputMicros != 5_000_000 || got.CachedMicros != 500_000 || got.OutputMicros != 25_000_000 {
+		t.Fatalf("unexpected Claude Opus price: %+v", got)
+	}
+	if got := catalog["claude-3-5-haiku"]; got.InputMicros != 800_000 || got.OutputMicros != 4_000_000 {
+		t.Fatalf("unexpected legacy Claude model key or price: %+v", got)
+	}
+	future, err := parseAnthropicPricingAt(body, time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := future["claude-sonnet-5"]; got.InputMicros != 3_000_000 || got.OutputMicros != 15_000_000 {
+		t.Fatalf("unexpected post-introductory Claude price: %+v", got)
+	}
+}
+
 func TestLookupOfficialPriceAcceptsLatestAndDatedVersions(t *testing.T) {
 	catalog := map[string]officialModelPrice{"gpt-5": {Model: "gpt-5", InputMicros: 1}}
 	for _, model := range []string{"gpt-5", "gpt-5-latest", "gpt-5-2026-07-01", "models/gpt-5"} {
 		if _, ok := lookupOfficialPrice(catalog, model); !ok {
 			t.Fatalf("expected price match for %q", model)
+		}
+	}
+}
+
+func TestLookupOfficialPriceAcceptsDatedClaudeVersions(t *testing.T) {
+	catalog := map[string]officialModelPrice{"claude-sonnet-4-5": {Model: "claude-sonnet-4-5", InputMicros: 1}}
+	for _, model := range []string{"claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "models/claude-sonnet-4-5-latest"} {
+		if _, ok := lookupOfficialPrice(catalog, model); !ok {
+			t.Fatalf("expected Claude price match for %q", model)
 		}
 	}
 }
@@ -197,6 +236,110 @@ func TestBatchDeletePublicModels(t *testing.T) {
 	}
 }
 
+func TestModelPricingPatchUpdatesEveryChannelOnce(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	stamp := now()
+	for i, providerType := range []string{"anthropic", "claude_oauth"} {
+		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "claude-channel-"+string(rune('a'+i)), providerType, "https://api.example", []byte{1}, stamp, stamp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		providerID, _ := res.LastInsertId()
+		if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,input_price_micros,output_price_micros,pricing_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, "claude-sonnet-4-5", providerID, "claude-sonnet-4-5-20250929", 1, 2, claudePricingURL, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body := `{"input_price_micros":3000000,"cached_price_micros":300000,"output_price_micros":15000000,"long_context_threshold":200000,"long_input_price_micros":6000000,"long_cached_price_micros":600000,"long_output_price_micros":22500000}`
+	rec := httptest.NewRecorder()
+	a.modelByName(rec, httptest.NewRequest(http.MethodPatch, "/api/admin/models/claude-sonnet-4-5/pricing", strings.NewReader(body)), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	rows, err := a.db.Query(`SELECT input_price_micros,cached_price_micros,output_price_micros,long_context_threshold,long_output_price_micros,pricing_source FROM model_routes WHERE public_name='claude-sonnet-4-5'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var input, cached, output, threshold, longOutput int64
+		var source string
+		if err := rows.Scan(&input, &cached, &output, &threshold, &longOutput, &source); err != nil {
+			t.Fatal(err)
+		}
+		if input != 3_000_000 || cached != 300_000 || output != 15_000_000 || threshold != 200_000 || longOutput != 22_500_000 || source != manualPricingSource {
+			t.Fatalf("unexpected unified price: %d %d %d %d %d %q", input, cached, output, threshold, longOutput, source)
+		}
+		count++
+	}
+	if count != 2 {
+		t.Fatalf("updated %d routes, want 2", count)
+	}
+}
+
+func TestOfficialPricingDoesNotOverwriteManualModelPrice(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	stamp := now()
+	for i, source := range []string{manualPricingSource, ""} {
+		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "claude-"+string(rune('a'+i)), "anthropic", "https://api.example", []byte{1}, stamp, stamp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		providerID, _ := res.LastInsertId()
+		if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,input_price_micros,output_price_micros,pricing_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, "claude-sonnet-4-5", providerID, "claude-sonnet-4-5-20250929", 9, 19, source, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catalogs := map[string]map[string]officialModelPrice{"claude": {"claude-sonnet-4-5": {Model: "claude-sonnet-4-5", InputMicros: 3_000_000, CachedMicros: 300_000, OutputMicros: 15_000_000, Source: claudePricingURL}}}
+	updated, applyErrors, err := a.applyOfficialPricing(t.Context(), catalogs, "claude-sonnet-4-5")
+	if err != nil || len(applyErrors) != 0 {
+		t.Fatalf("apply err=%v errors=%v", err, applyErrors)
+	}
+	if updated != 1 {
+		t.Fatalf("updated=%d, want 1", updated)
+	}
+	var manualInput, automaticInput int64
+	if err := a.db.QueryRow(`SELECT input_price_micros FROM model_routes WHERE pricing_source=?`, manualPricingSource).Scan(&manualInput); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT input_price_micros FROM model_routes WHERE pricing_source=?`, claudePricingURL).Scan(&automaticInput); err != nil {
+		t.Fatal(err)
+	}
+	if manualInput != 9 || automaticInput != 3_000_000 {
+		t.Fatalf("manual=%d automatic=%d", manualInput, automaticInput)
+	}
+}
+
+func TestModelPricingPatchRejectsInvalidPriceAndMissingModel(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	for _, tc := range []struct {
+		path, body string
+		status     int
+	}{
+		{"/api/admin/models/missing/pricing", `{"input_price_micros":1}`, http.StatusNotFound},
+		{"/api/admin/models/missing/pricing", `{"input_price_micros":-1}`, http.StatusBadRequest},
+		{"/api/admin/models/missing/pricing", `{"input_price_micros":1000000000001}`, http.StatusBadRequest},
+	} {
+		rec := httptest.NewRecorder()
+		a.modelByName(rec, httptest.NewRequest(http.MethodPatch, tc.path, strings.NewReader(tc.body)), adminCtx{})
+		if rec.Code != tc.status {
+			t.Fatalf("body=%s status=%d want=%d response=%s", tc.body, rec.Code, tc.status, rec.Body.String())
+		}
+	}
+}
+
 func TestAPIKeyBudgetAndExpiryStopAuthentication(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
@@ -243,7 +386,7 @@ func TestLiveOfficialPricingSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("live pricing sync: %v (result=%+v)", err, result)
 	}
-	if result.Sources != 3 || result.Models < 3 {
+	if result.Sources != 4 || result.Models < 4 {
 		t.Fatalf("unexpected live pricing result: %+v", result)
 	}
 }
