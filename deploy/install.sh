@@ -106,6 +106,7 @@ fetch_source() {
 
 install_docker
 command -v openssl >/dev/null 2>&1 || { apt-get update && apt-get install -y openssl; }
+command -v sqlite3 >/dev/null 2>&1 || { apt-get update && apt-get install -y sqlite3; }
 read_domain
 
 if ! $UPDATE_ONLY; then
@@ -116,6 +117,14 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 log "Downloading $REPOSITORY@$REF"
 fetch_source "$work"
+
+if $UPDATE_ONLY; then
+  log "Creating a verified pre-update backup"
+  /usr/local/bin/fusiongatectl backup >/dev/null
+
+  log "Validating the candidate source before replacing the active release"
+  docker build -t fusiongate:update-candidate "$work/source"
+fi
 
 install -d -m 0755 "$FUSIONGATE_HOME/app" "$FUSIONGATE_HOME/config"
 install -d -m 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/caddy-data" "$FUSIONGATE_HOME/caddy-config"
@@ -182,6 +191,6 @@ done
 if $healthy; then
   log "FusionGate is online: https://$FUSIONGATE_DOMAIN"
 else
-  log "Containers started, but HTTPS is not ready yet. Check DNS, ports 80/443, and: fusiongatectl logs"
+  die "Deployment failed readiness checks. Inspect: fusiongatectl logs"
 fi
 log "Useful commands: fusiongatectl status | logs | health | update | backup"

@@ -11,7 +11,25 @@ permissions:
   packages: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Format
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test exact release source
+        run: go test -race -shuffle=on -count=1 -timeout=10m ./...
+      - name: Modules are tidy
+        run: test -z "$(go mod tidy -diff)"
+
   publish:
+    needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

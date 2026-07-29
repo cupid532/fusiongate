@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
 
 permissions:
@@ -22,7 +23,10 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test -race ./...
+        run: go test -race -shuffle=on -count=1 -timeout=10m ./...
+
+      - name: Modules are tidy
+        run: test -z "$(go mod tidy -diff)"
       - name: Build
         run: go build ./...
 

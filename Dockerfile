@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine AS build
+FROM golang:1.25.12-alpine AS build
 RUN apk add --no-cache build-base
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -19,5 +19,5 @@ ENV FUSIONGATE_ADDR=0.0.0.0:8787 FUSIONGATE_DATA_DIR=/data
 VOLUME ["/data"]
 EXPOSE 8787
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=5 \
-  CMD wget -qO- http://127.0.0.1:8787/healthz || exit 1
+  CMD wget -qO- http://127.0.0.1:8787/readyz || exit 1
 ENTRYPOINT ["/usr/local/bin/fusiongate"]

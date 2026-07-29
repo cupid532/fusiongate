@@ -25,11 +25,15 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 2.0
+    pids_limit: 256
     secrets:
       - fusiongate_master_key
       - fusiongate_admin_password
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/readyz"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -59,6 +63,9 @@ services:
       - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 1.0
+    pids_limit: 128
     networks:
       - internal
 

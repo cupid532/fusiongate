@@ -11,6 +11,15 @@ compose() {
   docker compose --project-directory "$APP_DIR" --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" "$@"
 }
 
+verify_database() {
+  local database="$1" result
+  result="$(sqlite3 "$database" 'PRAGMA quick_check; PRAGMA foreign_key_check;')"
+  [[ "$result" == "ok" ]] || {
+    echo "Database integrity check failed: $result" >&2
+    return 1
+  }
+}
+
 require_install() {
   [[ -f "$FUSIONGATE_HOME/.fusiongate-install" && -f "$COMPOSE_FILE" ]] || {
     echo "FusionGate is not installed at $FUSIONGATE_HOME" >&2
@@ -60,11 +69,55 @@ case "$cmd" in
     archive="$BACKUP_DIR/fusiongate-$stamp.tar.gz"
     compose stop fusiongate
     trap 'compose start fusiongate >/dev/null 2>&1 || true' EXIT
-    tar -C "$FUSIONGATE_HOME" -czf "$archive" data config
+    verify_database "$FUSIONGATE_HOME/data/fusiongate.db"
+    tar -C "$FUSIONGATE_HOME" -czf "$archive" data config .fusiongate-install
     chmod 0600 "$archive"
+    sha256sum "$archive" > "$archive.sha256"
+    chmod 0600 "$archive.sha256"
     compose start fusiongate
     trap - EXIT
     echo "$archive"
+    ;;
+  restore)
+    require_root "$cmd"
+    require_install
+    archive="${1:-}"
+    [[ -f "$archive" ]] || { echo "Backup archive not found: $archive" >&2; exit 1; }
+    [[ -f "$archive.sha256" ]] || { echo "Missing checksum: $archive.sha256" >&2; exit 1; }
+    sha256sum -c "$archive.sha256"
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    tar -tzf "$archive" | grep -qx 'data/fusiongate.db'
+    tar -xzf "$archive" -C "$work"
+    verify_database "$work/data/fusiongate.db"
+    safety="$BACKUP_DIR/pre-restore-$(date -u +%Y%m%dT%H%M%SZ)"
+    install -d -m 0700 "$safety"
+    compose stop fusiongate
+    trap 'compose start fusiongate >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
+    mv "$FUSIONGATE_HOME/data" "$safety/data"
+    mv "$FUSIONGATE_HOME/config" "$safety/config"
+    mv "$work/data" "$FUSIONGATE_HOME/data"
+    mv "$work/config" "$FUSIONGATE_HOME/config"
+    chown -R 10001:10001 "$FUSIONGATE_HOME/data"
+    chmod 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/config"
+    compose start fusiongate
+    for _ in $(seq 1 30); do
+      if compose exec -T fusiongate wget -qO- http://127.0.0.1:8787/readyz >/dev/null 2>&1; then
+        trap - EXIT
+        rm -rf "$work"
+        echo "Restored $archive; previous data preserved at $safety"
+        exit 0
+      fi
+      sleep 2
+    done
+    compose stop fusiongate >/dev/null 2>&1 || true
+    mv "$FUSIONGATE_HOME/data" "$safety/failed-data"
+    mv "$FUSIONGATE_HOME/config" "$safety/failed-config"
+    mv "$safety/data" "$FUSIONGATE_HOME/data"
+    mv "$safety/config" "$FUSIONGATE_HOME/config"
+    compose start fusiongate
+    echo "Restore did not become ready; the previous installation was restored. Failed restore is at $safety" >&2
+    exit 1
     ;;
   help|*)
     cat <<'USAGE'
@@ -77,7 +130,8 @@ Commands:
   start|stop      Start or stop services
   restart         Restart services
   update          Download the configured GitHub ref and rebuild
-  backup          Create a protected backup under /var/backups/fusiongate
+  backup          Create and checksum a protected backup
+  restore FILE    Verify and restore a backup, preserving current data
 USAGE
     ;;
 esac
