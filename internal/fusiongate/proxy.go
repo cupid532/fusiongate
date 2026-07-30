@@ -17,6 +17,7 @@ import (
 
 const maxBufferedUpstreamBody = 32 << 20
 const maxPendingStreamOutput = 1 << 20
+const defaultFailoverStartTimeout = 12 * time.Second
 
 type proxyOptions struct {
 	Endpoint           string
@@ -621,7 +622,16 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	}
 	ctx, cancel := providerContext(incoming.Context(), z.Provider)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, incoming.Method, upstreamURL, bytes.NewReader(options.RawBody))
+	attemptCtx, cancelAttempt := context.WithCancel(ctx)
+	defer cancelAttempt()
+	startTimeout := options.OutputStartTimeout
+	if startTimeout <= 0 {
+		startTimeout = defaultFailoverStartTimeout
+	}
+	started := time.Now()
+	startTimer := time.AfterFunc(startTimeout, cancelAttempt)
+	defer startTimer.Stop()
+	req, err := http.NewRequestWithContext(attemptCtx, incoming.Method, upstreamURL, bytes.NewReader(options.RawBody))
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
@@ -650,6 +660,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		if downstreamCanceled(incoming) {
 			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}
 		}
+		if attemptCtx.Err() != nil && ctx.Err() == nil {
+			return attemptResult{Status: http.StatusGatewayTimeout, Retryable: options.SafeTransportRetry, Reason: "upstream_timeout", Err: context.DeadlineExceeded}
+		}
 		reason := retryReason(0, err)
 		return attemptResult{Status: http.StatusBadGateway, Retryable: options.SafeTransportRetry, Reason: reason, Err: err}
 	}
@@ -658,9 +671,11 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 
 	if retryableStatus(resp.StatusCode) {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
+		startTimer.Stop()
 		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
 	if resp.StatusCode >= 400 {
+		startTimer.Stop()
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
 		w.WriteHeader(resp.StatusCode)
@@ -673,13 +688,43 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	}
 
 	if options.BufferResponsesSSE {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBufferedUpstreamBody+1))
+		var buffered bytes.Buffer
+		var readErr error
+		outputDeadline := started.Add(startTimeout)
+		for !hasSemanticStreamOutput(buffered.Bytes(), "openai") {
+			remaining := time.Until(outputDeadline)
+			if remaining <= 0 {
+				return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: context.DeadlineExceeded}
+			}
+			chunk, err := readStreamChunk(resp.Body, 32<<10, remaining)
+			if len(chunk) > 0 {
+				_, _ = buffered.Write(chunk)
+			}
+			readErr = err
+			if readErr != nil {
+				break
+			}
+		}
+		startTimer.Stop()
+		if errors.Is(readErr, io.EOF) {
+			readErr = nil
+		}
 		if readErr != nil {
+			if downstreamCanceled(incoming) {
+				return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
+			}
+			if attemptCtx.Err() != nil && ctx.Err() == nil {
+				return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: context.DeadlineExceeded}
+			}
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_stream_interrupted", Err: readErr}
+		}
+		if _, readErr = io.Copy(&buffered, io.LimitReader(resp.Body, maxBufferedUpstreamBody+1-int64(buffered.Len()))); readErr != nil {
 			if downstreamCanceled(incoming) {
 				return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
 			}
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_stream_interrupted", Err: readErr}
 		}
+		body := buffered.Bytes()
 		if len(body) > maxBufferedUpstreamBody {
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_response_too_large", Err: fmt.Errorf("buffered Responses stream exceeded %d bytes", maxBufferedUpstreamBody)}
 		}
@@ -710,11 +755,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	if options.Stream {
 		var pending bytes.Buffer
 		var readErr error
-		outputStartTimeout := options.OutputStartTimeout
-		if outputStartTimeout <= 0 {
-			outputStartTimeout = 30 * time.Second
-		}
-		outputDeadline := time.Now().Add(outputStartTimeout)
+		outputDeadline := started.Add(startTimeout)
 		for !options.Transparent && !hasSemanticStreamOutput(pending.Bytes(), options.UsageFormat) {
 			remaining := time.Until(outputDeadline)
 			if remaining <= 0 {
@@ -733,7 +774,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 					return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
 				}
 				if !hasSemanticStreamOutput(pending.Bytes(), options.UsageFormat) {
-					if errors.Is(readErr, context.DeadlineExceeded) {
+					if errors.Is(readErr, context.DeadlineExceeded) || (attemptCtx.Err() != nil && ctx.Err() == nil) {
 						return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: readErr}
 					}
 					reason := "upstream_no_output"
@@ -755,6 +796,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 				return attemptResult{Status: http.StatusBadGateway, Retryable: options.SafeTransportRetry, Reason: "upstream_empty_stream", Err: readErr}
 			}
 		}
+		startTimer.Stop()
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
 		w.WriteHeader(resp.StatusCode)
@@ -789,9 +831,13 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	}
 
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBufferedUpstreamBody+1))
+	startTimer.Stop()
 	if readErr != nil {
 		if downstreamCanceled(incoming) {
 			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
+		}
+		if attemptCtx.Err() != nil && ctx.Err() == nil {
+			return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: context.DeadlineExceeded}
 		}
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, readErr), Err: readErr}
 	}

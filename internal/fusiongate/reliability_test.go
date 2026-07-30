@@ -667,6 +667,72 @@ func TestDownstreamCancellationDoesNotDegradeProvider(t *testing.T) {
 	}
 }
 
+func TestFailoverStartTimeoutCoversResponseHeaders(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	z := resolvedRoute{
+		Route:      Route{ID: 1, PublicName: "model", UpstreamModel: "model"},
+		Provider:   Provider{ID: 1, Type: "openai_compatible", BaseURL: upstream.URL, RequestTimeoutMS: 5000},
+		Credential: "secret",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model"}`))
+	result := a.proxyUpstream(httptest.NewRecorder(), req, z, proxyOptions{
+		Endpoint:           "/v1/chat/completions",
+		RawBody:            []byte(`{"model":"model"}`),
+		SafeTransportRetry: true,
+		OutputStartTimeout: 40 * time.Millisecond,
+	})
+	if result.Status != http.StatusGatewayTimeout || !result.Retryable || result.Reason != "upstream_timeout" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestFailoverStartTimeoutCoversResponseBody(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-release
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	z := resolvedRoute{
+		Route:      Route{ID: 1, PublicName: "model", UpstreamModel: "model"},
+		Provider:   Provider{ID: 1, Type: "openai_compatible", BaseURL: upstream.URL, RequestTimeoutMS: 5000},
+		Credential: "secret",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model"}`))
+	result := a.proxyUpstream(httptest.NewRecorder(), req, z, proxyOptions{
+		Endpoint:           "/v1/chat/completions",
+		RawBody:            []byte(`{"model":"model"}`),
+		UsageFormat:        "openai",
+		SafeTransportRetry: true,
+		OutputStartTimeout: 40 * time.Millisecond,
+	})
+	if result.Status != http.StatusGatewayTimeout || !result.Retryable || result.Reason != "upstream_output_timeout" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestProviderAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
