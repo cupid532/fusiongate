@@ -141,6 +141,70 @@ func TestImportSelectedModelsIsSelectiveAndLowercasesAllModelIDs(t *testing.T) {
 	}
 }
 
+func TestDiscoveryURLsAutomaticallyTryCompatiblePathVariants(t *testing.T) {
+	urls, err := discoveryURLs(discoveryProvider{Type: "openai_compatible", BaseURL: "https://gateway.example/api/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"https://gateway.example/api/v1/models",
+		"https://gateway.example/api/models",
+		"https://gateway.example/v1/models",
+		"https://gateway.example/models",
+	}
+	if len(urls) != len(want) {
+		t.Fatalf("urls=%#v", urls)
+	}
+	for i := range want {
+		if urls[i] != want[i] {
+			t.Fatalf("urls[%d]=%q, want %q", i, urls[i], want[i])
+		}
+	}
+}
+
+func TestDiscoveryFallsBackAfterForbiddenAndInvalidJSON(t *testing.T) {
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/models":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"wrong endpoint"}`))
+		case "/models":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte(`<html>dashboard</html>`))
+		case "/api/v1/models":
+			writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "MODEL-Compatible"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	p := discoveryProvider{Type: "openai_compatible", BaseURL: upstream.URL + "/v1", Credential: "secret"}
+	models, err := a.fetchDiscoveredModels(context.Background(), p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].ID != "model-compatible" {
+		t.Fatalf("models=%#v", models)
+	}
+	wantPaths := []string{"/v1/models", "/models", "/api/v1/models"}
+	if len(paths) != len(wantPaths) {
+		t.Fatalf("paths=%#v", paths)
+	}
+	for i := range wantPaths {
+		if paths[i] != wantPaths[i] {
+			t.Fatalf("paths[%d]=%q, want %q", i, paths[i], wantPaths[i])
+		}
+	}
+}
+
 func TestAutomaticImportSkipsRemovedModelsAndManualImportRestoresThem(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

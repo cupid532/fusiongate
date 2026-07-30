@@ -9,7 +9,7 @@ import (
 // The ChatGPT Codex backend validates CLI compatibility metadata separately
 // from the OAuth bearer token. Keep the version configurable so deployments
 // can follow an upstream minimum-version change without rebuilding FusionGate.
-const defaultCodexCLIVersion = "0.129.0"
+const defaultCodexCLIVersion = "0.145.0"
 
 func codexCLIVersion() string {
 	if value := strings.TrimSpace(os.Getenv("FUSIONGATE_CODEX_CLI_VERSION")); value != "" {

@@ -47,6 +47,27 @@ func TestParseOpenAIPricingUsesLastColumnAsOutput(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIPricingSupportsCurrentMarkdownTable(t *testing.T) {
+	catalog, err := parseOpenAIPricing([]byte(`
+### Standard pricing data
+| Model | Short context input | Short context cached input | Short context cache writes | Short context output | Long context input | Long context cached input | Long context cache writes | Long context output |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| gpt-5.6-sol | $5.00 | $0.50 | $6.25 | $30.00 | $10.00 | $1.00 | $12.50 | $45.00 |
+### Batch pricing data
+| gpt-5.6-sol | $2.50 | $0.25 | $3.125 | $15.00 | $5.00 | $0.50 | $6.25 | $22.50 |
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := catalog["gpt-5.6-sol"]
+	if got.InputMicros != 5_000_000 || got.CachedMicros != 500_000 || got.OutputMicros != 30_000_000 {
+		t.Fatalf("unexpected standard Markdown price: %+v", got)
+	}
+	if got.LongContextThreshold != 272_000 || got.LongInputMicros != 10_000_000 || got.LongCachedMicros != 1_000_000 || got.LongOutputMicros != 45_000_000 {
+		t.Fatalf("unexpected long-context Markdown price: %+v", got)
+	}
+}
+
 func TestParseGeminiPricingReadsStandardTier(t *testing.T) {
 	catalog, err := parseGeminiPricing([]byte(`
 <div class="models-section"><h2><code>gemini-3.5-flash</code></h2>

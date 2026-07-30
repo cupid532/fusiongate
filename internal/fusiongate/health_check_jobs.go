@@ -12,17 +12,16 @@ import (
 )
 
 const (
-	manualHealthCheckMaxItems    = 100
-	manualHealthCheckConcurrency = 3
-	manualConnectivityTimeout    = 12 * time.Second
-	manualGenerationTimeout      = 35 * time.Second
-	manualHealthCheckRetention   = 30 * time.Minute
+	manualHealthCheckMaxProviders = 100
+	manualHealthCheckMaxItems     = 1000
+	manualHealthCheckConcurrency  = 3
+	manualGenerationTimeout       = 35 * time.Second
+	manualHealthCheckRetention    = 30 * time.Minute
 )
 
 var (
 	errHealthCheckAlreadyRunning = errors.New("a health check is already running")
 	errHealthCheckJobNotFound    = errors.New("health check job not found")
-	errHealthProbeAlreadyRunning = errors.New("provider health check already in progress")
 )
 
 type healthCheckJobManager struct {
@@ -37,8 +36,12 @@ type healthCheckJobManager struct {
 }
 
 type healthCheckTarget struct {
-	ProviderID   int64
-	ProviderName string
+	ProviderID    int64
+	ProviderName  string
+	RouteID       int64
+	PublicName    string
+	UpstreamModel string
+	Capabilities  string
 }
 
 type healthCheckJob struct {
@@ -62,6 +65,8 @@ type healthCheckJob struct {
 type healthCheckItemResult struct {
 	ProviderID   int64  `json:"provider_id"`
 	ProviderName string `json:"provider_name"`
+	RouteID      int64  `json:"route_id,omitempty"`
+	PublicName   string `json:"public_name,omitempty"`
 	Status       string `json:"status"`
 	LatencyMS    int64  `json:"latency_ms"`
 	FirstByteMS  int64  `json:"first_byte_ms"`
@@ -98,15 +103,16 @@ func (m *healthCheckJobManager) Close() {
 	m.wg.Wait()
 }
 
-func (m *healthCheckJobManager) Start(ctx context.Context, providerIDs []int64) (healthCheckJob, error) {
-	return m.StartMode(ctx, providerIDs, healthCheckModeGeneration)
-}
-
-func (m *healthCheckJobManager) StartMode(ctx context.Context, providerIDs []int64, mode string) (healthCheckJob, error) {
-	if !validHealthCheckMode(mode) {
-		return healthCheckJob{}, errors.New("health check mode must be connectivity or generation")
+func (m *healthCheckJobManager) StartModels(ctx context.Context, providerIDs, routeIDs []int64, modelScope string) (healthCheckJob, error) {
+	mode := healthCheckModeGeneration
+	providerTargets, err := m.loadTargets(ctx, providerIDs)
+	if err != nil {
+		return healthCheckJob{}, err
 	}
-	targets, err := m.loadTargets(ctx, providerIDs)
+	if modelScope == "" {
+		modelScope = "all"
+	}
+	targets, err := m.loadModelTargets(ctx, providerTargets, routeIDs, modelScope)
 	if err != nil {
 		return healthCheckJob{}, err
 	}
@@ -134,6 +140,9 @@ func (m *healthCheckJobManager) StartMode(ctx context.Context, providerIDs []int
 		job.Results[i] = healthCheckItemResult{
 			ProviderID:   target.ProviderID,
 			ProviderName: target.ProviderName,
+			RouteID:      target.RouteID,
+			PublicName:   target.PublicName,
+			Model:        target.UpstreamModel,
 			Mode:         mode,
 			Status:       "queued",
 		}
@@ -186,8 +195,8 @@ func (m *healthCheckJobManager) Cancel(jobID string) (healthCheckJob, error) {
 }
 
 func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []int64) ([]healthCheckTarget, error) {
-	if len(providerIDs) == 0 || len(providerIDs) > manualHealthCheckMaxItems {
-		return nil, fmt.Errorf("select between 1 and %d authentication files", manualHealthCheckMaxItems)
+	if len(providerIDs) == 0 || len(providerIDs) > manualHealthCheckMaxProviders {
+		return nil, fmt.Errorf("select between 1 and %d providers", manualHealthCheckMaxProviders)
 	}
 	ids := make([]int64, 0, len(providerIDs))
 	seen := make(map[int64]struct{}, len(providerIDs))
@@ -202,7 +211,7 @@ func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []i
 		ids = append(ids, id)
 	}
 	if len(ids) == 0 {
-		return nil, errors.New("select at least one authentication file")
+		return nil, errors.New("select at least one provider")
 	}
 
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(ids)), ",")
@@ -210,7 +219,7 @@ func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []i
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := m.app.db.QueryContext(ctx, `SELECT id,name,auth_kind FROM providers WHERE id IN (`+placeholders+`)`, args...)
+	rows, err := m.app.db.QueryContext(ctx, `SELECT id,name,type FROM providers WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -218,12 +227,12 @@ func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []i
 	found := make(map[int64]healthCheckTarget, len(ids))
 	for rows.Next() {
 		var target healthCheckTarget
-		var authKind string
-		if err := rows.Scan(&target.ProviderID, &target.ProviderName, &authKind); err != nil {
+		var providerType string
+		if err := rows.Scan(&target.ProviderID, &target.ProviderName, &providerType); err != nil {
 			return nil, err
 		}
-		if authKind != "oauth" {
-			return nil, errors.New("health checks only support OAuth authentication files")
+		if !validProviderType(providerType) {
+			return nil, errors.New("one or more providers do not support health checks")
 		}
 		found[target.ProviderID] = target
 	}
@@ -231,11 +240,78 @@ func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []i
 		return nil, err
 	}
 	if len(found) != len(ids) {
-		return nil, errors.New("one or more authentication files no longer exist")
+		return nil, errors.New("one or more providers no longer exist")
 	}
 	targets := make([]healthCheckTarget, 0, len(ids))
 	for _, id := range ids {
 		targets = append(targets, found[id])
+	}
+	return targets, nil
+}
+
+func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers []healthCheckTarget, routeIDs []int64, scope string) ([]healthCheckTarget, error) {
+	if scope != "all" && scope != "selected" {
+		return nil, errors.New("model_scope must be all or selected")
+	}
+	providerNames := make(map[int64]string, len(providers))
+	providerIDs := make([]int64, 0, len(providers))
+	for _, provider := range providers {
+		providerNames[provider.ProviderID] = provider.ProviderName
+		providerIDs = append(providerIDs, provider.ProviderID)
+	}
+	args := make([]any, 0, len(providerIDs)+len(routeIDs))
+	providerPlaceholders := strings.TrimRight(strings.Repeat("?,", len(providerIDs)), ",")
+	for _, id := range providerIDs {
+		args = append(args, id)
+	}
+	query := `SELECT id,provider_id,public_name,upstream_model,capabilities FROM model_routes WHERE enabled=1 AND capabilities LIKE '%chat%' AND provider_id IN (` + providerPlaceholders + `)`
+	if scope == "selected" {
+		if len(routeIDs) == 0 || len(routeIDs) > manualHealthCheckMaxItems {
+			return nil, fmt.Errorf("select between 1 and %d models", manualHealthCheckMaxItems)
+		}
+		seen := make(map[int64]bool, len(routeIDs))
+		unique := routeIDs[:0]
+		for _, id := range routeIDs {
+			if id < 1 {
+				return nil, errors.New("route_ids must contain positive integers")
+			}
+			if !seen[id] {
+				seen[id] = true
+				unique = append(unique, id)
+			}
+		}
+		routeIDs = unique
+		query += ` AND id IN (` + strings.TrimRight(strings.Repeat("?,", len(routeIDs)), ",") + `)`
+		for _, id := range routeIDs {
+			args = append(args, id)
+		}
+	}
+	query += ` ORDER BY provider_id,sort_order,id`
+	rows, err := m.app.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	targets := make([]healthCheckTarget, 0)
+	for rows.Next() {
+		var target healthCheckTarget
+		if err := rows.Scan(&target.RouteID, &target.ProviderID, &target.PublicName, &target.UpstreamModel, &target.Capabilities); err != nil {
+			return nil, err
+		}
+		target.ProviderName = providerNames[target.ProviderID]
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if scope == "selected" && len(targets) != len(routeIDs) {
+		return nil, errors.New("one or more selected models are disabled, missing, or do not belong to the selected providers")
+	}
+	if len(targets) == 0 {
+		return nil, errors.New("the selected providers have no enabled models")
+	}
+	if len(targets) > manualHealthCheckMaxItems {
+		return nil, fmt.Errorf("health check expands to more than %d models", manualHealthCheckMaxItems)
 	}
 	return targets, nil
 }
@@ -332,21 +408,28 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 		}
 		m.finishItem(jobID, index, healthCheckItemResult{
 			ProviderID: item.ProviderID, ProviderName: item.ProviderName, Mode: mode,
+			RouteID: item.RouteID, PublicName: item.PublicName, Model: item.Model,
 			Status: "cancelled", Error: "health check cancelled",
 		})
 		return
 	case <-timer.C:
 	}
 
-	timeout := manualConnectivityTimeout
-	if mode == healthCheckModeGeneration {
-		timeout = manualGenerationTimeout
+	probeCtx, cancel := context.WithTimeout(ctx, manualGenerationTimeout)
+	var result healthCheckResult
+	var err error
+	target := healthCheckTarget{ProviderID: item.ProviderID, ProviderName: item.ProviderName, RouteID: item.RouteID, PublicName: item.PublicName, UpstreamModel: item.Model}
+	if loadErr := m.app.db.QueryRowContext(probeCtx, `SELECT capabilities FROM model_routes WHERE id=? AND provider_id=?`, item.RouteID, item.ProviderID).Scan(&target.Capabilities); loadErr != nil {
+		err = errors.New("model route no longer exists")
+	} else {
+		checker := NewHealthChecker(m.app, 15*time.Minute, 1)
+		result = checker.probeRoute(probeCtx, target)
+		checker.updateRouteHealthStatus(item.RouteID, result)
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	result, err := m.app.CheckProviderNowMode(probeCtx, item.ProviderID, mode)
 	cancel()
 	finished := healthCheckItemResult{
 		ProviderID: item.ProviderID, ProviderName: item.ProviderName,
+		RouteID: item.RouteID, PublicName: item.PublicName,
 		Status: result.Status, Mode: mode, LatencyMS: result.LatencyMS,
 		FirstByteMS: result.FirstByteMS, Model: result.Model,
 		ModelCount: result.ModelCount, Error: result.Error,
@@ -355,14 +438,8 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 		finished.Status = "cancelled"
 		finished.Error = "health check cancelled"
 	} else if err != nil {
-		switch {
-		case errors.Is(err, errHealthProbeAlreadyRunning):
-			finished.Status = "skipped"
-			finished.Error = "another health check is already running for this authentication file"
-		default:
-			finished.Status = "config_error"
-			finished.Error = sanitizeError(err.Error())
-		}
+		finished.Status = "config_error"
+		finished.Error = sanitizeError(err.Error())
 	}
 	m.finishItem(jobID, index, finished)
 }

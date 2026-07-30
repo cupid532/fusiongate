@@ -527,7 +527,7 @@ func TestOAuthProviderHeadersAndCodexPath(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path, auth, account = r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("ChatGPT-Account-ID")
 			originator, userAgent = r.Header.Get("Originator"), r.Header.Get("User-Agent")
-			writeJSON(w, http.StatusOK, map[string]any{"id": "resp", "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}})
+			writeJSON(w, http.StatusOK, map[string]any{"id": "resp", "output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": "ok"}}}}, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}})
 		}))
 		defer upstream.Close()
 		a, err := New(testConfig(t))
@@ -549,7 +549,7 @@ func TestOAuthProviderHeadersAndCodexPath(t *testing.T) {
 		var auth, beta, version, app string
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			auth, beta, version, app = r.Header.Get("Authorization"), r.Header.Get("Anthropic-Beta"), r.Header.Get("Anthropic-Version"), r.Header.Get("X-App")
-			writeJSON(w, http.StatusOK, map[string]any{"content": []any{}, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}})
+			writeJSON(w, http.StatusOK, map[string]any{"content": []any{map[string]any{"type": "text", "text": "ok"}}, "usage": map[string]any{"input_tokens": 1, "output_tokens": 1}})
 		}))
 		defer upstream.Close()
 		a, err := New(testConfig(t))

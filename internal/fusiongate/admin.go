@@ -18,6 +18,11 @@ import (
 
 type adminCtx struct{ CSRF string }
 
+type adminSession struct {
+	CSRF      string
+	ExpiresAt time.Time
+}
+
 func (a *App) sign(v string) string {
 	h := hmac.New(sha256.New, []byte(a.cfg.MasterKey))
 	h.Write([]byte(v))
@@ -26,32 +31,37 @@ func (a *App) sign(v string) string {
 func (a *App) setAdminCookies(w http.ResponseWriter, r *http.Request) string {
 	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	exp := time.Now().Add(12 * time.Hour)
-	payload := strconv.FormatInt(exp.Unix(), 10)
-	http.SetCookie(w, &http.Cookie{Name: "fg_admin", Value: payload + "." + a.sign(payload), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, Expires: exp})
+	token := base64.RawURLEncoding.EncodeToString(randomBytes(32))
 	csrf := hex.EncodeToString(randomBytes(24))
+	a.sessionMu.Lock()
+	for id, session := range a.adminSessions {
+		if time.Now().After(session.ExpiresAt) {
+			delete(a.adminSessions, id)
+		}
+	}
+	a.adminSessions[a.sign(token)] = adminSession{CSRF: csrf, ExpiresAt: exp}
+	a.sessionMu.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: "fg_admin", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: secure, Expires: exp})
 	http.SetCookie(w, &http.Cookie{Name: "fg_csrf", Value: csrf, Path: "/", HttpOnly: false, SameSite: http.SameSiteStrictMode, Secure: secure, Expires: exp})
 	return csrf
 }
 func (a *App) adminAuth(r *http.Request) (adminCtx, bool) {
-	c, e := r.Cookie("fg_admin")
-	if e != nil {
+	cookie, err := r.Cookie("fg_admin")
+	if err != nil || cookie.Value == "" {
 		return adminCtx{}, false
 	}
-	p := strings.Split(c.Value, ".")
-	if len(p) != 2 || !hmac.Equal([]byte(a.sign(p[0])), []byte(p[1])) {
+	id := a.sign(cookie.Value)
+	a.sessionMu.Lock()
+	session, ok := a.adminSessions[id]
+	if ok && time.Now().After(session.ExpiresAt) {
+		delete(a.adminSessions, id)
+		ok = false
+	}
+	a.sessionMu.Unlock()
+	if !ok {
 		return adminCtx{}, false
 	}
-	u, e := strconv.ParseInt(p[0], 10, 64)
-	if e != nil || time.Now().After(time.Unix(u, 0)) {
-		return adminCtx{}, false
-	}
-	csrf, _ := r.Cookie("fg_csrf")
-	return adminCtx{CSRF: func() string {
-		if csrf == nil {
-			return ""
-		}
-		return csrf.Value
-	}()}, true
+	return adminCtx{CSRF: session.CSRF}, true
 }
 func (a *App) admin(fn func(http.ResponseWriter, *http.Request, adminCtx)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -81,18 +91,83 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid_request", "invalid JSON")
 		return
 	}
+	clientID := loginClientID(r)
+	if !a.allowAdminLogin(clientID) {
+		w.Header().Set("Retry-After", "60")
+		fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "too many sign-in attempts")
+		return
+	}
+	select {
+	case a.loginVerifiers <- struct{}{}:
+		defer func() { <-a.loginVerifiers }()
+	default:
+		w.Header().Set("Retry-After", "2")
+		fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "too many sign-in attempts")
+		return
+	}
 	var h string
 	if err := a.db.QueryRow(`SELECT value FROM settings WHERE key='admin_password_hash'`).Scan(&h); err != nil || !checkPassword(in.Password, h) {
-		time.Sleep(400 * time.Millisecond)
 		fail(w, 401, "invalid_credentials", "invalid credentials")
 		return
 	}
+	a.loginMu.Lock()
+	delete(a.loginAttempts, clientID)
+	a.loginMu.Unlock()
 	writeJSON(w, 200, map[string]any{"ok": true, "csrf_token": a.setAdminCookies(w, r)})
+}
+
+func loginClientID(r *http.Request) string {
+	host := r.RemoteAddr
+	if parsed, err := netip.ParseAddrPort(host); err == nil {
+		host = parsed.Addr().String()
+	}
+	if addr, err := netip.ParseAddr(host); err == nil && addr.IsLoopback() {
+		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+			if parsed, err := netip.ParseAddr(forwarded); err == nil {
+				host = parsed.String()
+			}
+		}
+	}
+	return host
+}
+
+func (a *App) allowAdminLogin(clientID string) bool {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	current := time.Now()
+	for id, window := range a.loginAttempts {
+		if current.Sub(window.At) >= time.Minute {
+			delete(a.loginAttempts, id)
+		}
+	}
+	for _, key := range []struct {
+		id    string
+		limit int
+	}{{"global", 30}, {"client:" + clientID, 5}} {
+		window := a.loginAttempts[key.id]
+		if window != nil && window.Count >= key.limit {
+			return false
+		}
+	}
+	for _, id := range []string{"global", "client:" + clientID} {
+		window := a.loginAttempts[id]
+		if window == nil {
+			a.loginAttempts[id] = &rateWindow{At: current, Count: 1}
+		} else {
+			window.Count++
+		}
+	}
+	return true
 }
 func (a *App) logout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		fail(w, 405, "method_not_allowed", "POST required")
 		return
+	}
+	if cookie, err := r.Cookie("fg_admin"); err == nil {
+		a.sessionMu.Lock()
+		delete(a.adminSessions, a.sign(cookie.Value))
+		a.sessionMu.Unlock()
 	}
 	http.SetCookie(w, &http.Cookie{Name: "fg_admin", Value: "", Path: "/", MaxAge: -1, HttpOnly: true})
 	http.SetCookie(w, &http.Cookie{Name: "fg_csrf", Value: "", Path: "/", MaxAge: -1})
@@ -105,9 +180,21 @@ func (a *App) session(w http.ResponseWriter, r *http.Request, c adminCtx) {
 	}
 	writeJSON(w, 200, map[string]any{"authenticated": true, "csrf_token": c.CSRF})
 }
-func (a *App) health(w http.ResponseWriter, r *http.Request) {
+func (a *App) live(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		fail(w, 405, "method_not_allowed", "GET required")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": "ok", "service": "fusiongate", "time": now()})
+}
+
+func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		fail(w, 405, "method_not_allowed", "GET required")
+		return
+	}
+	if !a.ready.Load() {
+		fail(w, http.StatusServiceUnavailable, "service_not_ready", "service is not ready")
 		return
 	}
 	if err := a.db.PingContext(r.Context()); err != nil {
@@ -135,7 +222,7 @@ func validEditableProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count FROM providers p ORDER BY p.priority DESC,p.id`)
+		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.priority,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other FROM providers p ORDER BY p.priority DESC,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -146,7 +233,8 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			var p Provider
 			var enabled, hasRefresh int
 			var groupID sql.NullInt64
-			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastFirstByteMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS, &p.HealthCheckMode, &p.HealthCheckFirstByteMS, &p.HealthCheckModel, &p.HealthCheckModelCount); err != nil {
+			var manualBalance sql.NullInt64
+			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &p.Priority, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastFirstByteMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS, &p.HealthCheckMode, &p.HealthCheckFirstByteMS, &p.HealthCheckModel, &p.HealthCheckModelCount, &manualBalance, &p.BalanceBaselineAt, &p.BalanceMultiplierOpenAI, &p.BalanceMultiplierClaude, &p.BalanceMultiplierGrok, &p.BalanceMultiplierGemini, &p.BalanceMultiplierOther); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -164,6 +252,10 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			}
 			p.Inflight = a.providerInflight(p.ID)
 			p.HealthScore = calculateHealthScore(p)
+			if manualBalance.Valid {
+				value := manualBalance.Int64
+				p.ManualBalanceMicros = &value
+			}
 			out = append(out, p)
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -395,16 +487,14 @@ func (a *App) healthChecks(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	case http.MethodPost:
 		var in struct {
 			ProviderIDs []int64 `json:"provider_ids"`
-			Mode        string  `json:"mode"`
+			RouteIDs    []int64 `json:"route_ids"`
+			ModelScope  string  `json:"model_scope"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if in.Mode == "" {
-			in.Mode = healthCheckModeConnectivity
-		}
-		job, err := a.healthCheckJobs.StartMode(r.Context(), in.ProviderIDs, in.Mode)
+		job, err := a.healthCheckJobs.StartModels(r.Context(), in.ProviderIDs, in.RouteIDs, in.ModelScope)
 		if errors.Is(err, errHealthCheckAlreadyRunning) {
 			fail(w, http.StatusConflict, "health_check_running", "another health check is already running; wait for it to finish or cancel it")
 			return
@@ -462,25 +552,8 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 	id, _ := strconv.ParseInt(idText, 10, 64)
-	if len(parts) == 2 && parts[1] == "check-health" {
-		if r.Method != http.MethodPost {
-			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
-			return
-		}
-		result, err := a.CheckProviderNow(r.Context(), id)
-		if errors.Is(err, errHealthProbeAlreadyRunning) {
-			fail(w, http.StatusConflict, "health_check_running", err.Error())
-			return
-		}
-		if err != nil {
-			fail(w, http.StatusBadRequest, "health_check_failed", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":     result.Status,
-			"latency_ms": result.LatencyMS,
-			"error":      result.Error,
-		})
+	if len(parts) == 2 && parts[1] == "balance" {
+		a.providerBalanceHandler(w, r, id)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "discover-models" {
@@ -560,24 +633,31 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	case http.MethodPatch:
 		var in struct {
-			Name             *string `json:"name"`
-			Type             *string `json:"type"`
-			BaseURL          *string `json:"baseURL"`
-			Credential       *string `json:"credential"`
-			Enabled          *bool   `json:"enabled"`
-			Priority         *int    `json:"priority"`
-			Weight           *int    `json:"weight"`
-			Notes            *string `json:"notes"`
-			PassthroughMode  *string `json:"passthrough_mode"`
-			ClientPolicy     *string `json:"client_policy"`
-			MaxConcurrency   *int    `json:"max_concurrency"`
-			RequestTimeoutMS *int    `json:"request_timeout_ms"`
-			FailureThreshold *int    `json:"failure_threshold"`
-			CooldownSeconds  *int    `json:"cooldown_seconds"`
-			ResetHealth      bool    `json:"reset_health"`
-			GroupID          *int64  `json:"group_id"`
-			ClearGroup       bool    `json:"clear_group"`
-			GroupSortOrder   *int    `json:"group_sort_order"`
+			Name                    *string  `json:"name"`
+			Type                    *string  `json:"type"`
+			BaseURL                 *string  `json:"baseURL"`
+			Credential              *string  `json:"credential"`
+			Enabled                 *bool    `json:"enabled"`
+			Priority                *int     `json:"priority"`
+			Weight                  *int     `json:"weight"`
+			Notes                   *string  `json:"notes"`
+			PassthroughMode         *string  `json:"passthrough_mode"`
+			ClientPolicy            *string  `json:"client_policy"`
+			MaxConcurrency          *int     `json:"max_concurrency"`
+			RequestTimeoutMS        *int     `json:"request_timeout_ms"`
+			FailureThreshold        *int     `json:"failure_threshold"`
+			CooldownSeconds         *int     `json:"cooldown_seconds"`
+			ResetHealth             bool     `json:"reset_health"`
+			GroupID                 *int64   `json:"group_id"`
+			ClearGroup              bool     `json:"clear_group"`
+			GroupSortOrder          *int     `json:"group_sort_order"`
+			ManualBalanceUSD        *float64 `json:"manual_balance_usd"`
+			ClearManualBalance      bool     `json:"clear_manual_balance"`
+			BalanceMultiplierOpenAI *float64 `json:"balance_multiplier_openai"`
+			BalanceMultiplierClaude *float64 `json:"balance_multiplier_claude"`
+			BalanceMultiplierGrok   *float64 `json:"balance_multiplier_grok"`
+			BalanceMultiplierGemini *float64 `json:"balance_multiplier_gemini"`
+			BalanceMultiplierOther  *float64 `json:"balance_multiplier_other"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -643,6 +723,16 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "invalid_request", "invalid provider scheduling or forwarding configuration")
 			return
 		}
+		if in.ManualBalanceUSD != nil && (*in.ManualBalanceUSD < 0 || *in.ManualBalanceUSD > 1_000_000) {
+			fail(w, http.StatusBadRequest, "invalid_request", "manual balance must be between 0 and 1000000 USD")
+			return
+		}
+		for _, multiplier := range []*float64{in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther} {
+			if multiplier != nil && (*multiplier < 0 || *multiplier > 1000) {
+				fail(w, http.StatusBadRequest, "invalid_request", "balance multipliers must be between 0 and 1000")
+				return
+			}
+		}
 		// Re-enabling a channel or changing its connection details starts a
 		// fresh health window so an old circuit state does not hide a new key.
 		resetOnEnable := in.Enabled != nil && *in.Enabled && !strBool(currentEnabled)
@@ -662,6 +752,22 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if n == 0 {
 			fail(w, http.StatusNotFound, "not_found", "provider not found")
 			return
+		}
+		if in.ManualBalanceUSD != nil || in.ClearManualBalance || in.BalanceMultiplierOpenAI != nil || in.BalanceMultiplierClaude != nil || in.BalanceMultiplierGrok != nil || in.BalanceMultiplierGemini != nil || in.BalanceMultiplierOther != nil {
+			var balance any
+			var baseline any
+			if in.ManualBalanceUSD != nil {
+				balance = int64(*in.ManualBalanceUSD*1_000_000 + 0.5)
+				baseline = now()
+			} else if in.ClearManualBalance {
+				balance = nil
+				baseline = nil
+			}
+			_, err = a.db.Exec(`UPDATE providers SET manual_balance_micros=CASE WHEN ? THEN ? ELSE manual_balance_micros END,balance_baseline_at=CASE WHEN ? THEN ? ELSE balance_baseline_at END,balance_multiplier_openai=COALESCE(?,balance_multiplier_openai),balance_multiplier_claude=COALESCE(?,balance_multiplier_claude),balance_multiplier_grok=COALESCE(?,balance_multiplier_grok),balance_multiplier_gemini=COALESCE(?,balance_multiplier_gemini),balance_multiplier_other=COALESCE(?,balance_multiplier_other),updated_at=? WHERE id=?`, in.ManualBalanceUSD != nil || in.ClearManualBalance, balance, in.ManualBalanceUSD != nil || in.ClearManualBalance, baseline, in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther, now(), id)
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
 		}
 		if in.ResetHealth || resetOnEnable || connectionChanged {
 			_, err = a.db.Exec(`UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)
@@ -762,7 +868,9 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
 	       r.input_price_micros,r.cached_price_micros,r.output_price_micros,
 	       r.long_context_threshold,r.long_input_price_micros,r.long_cached_price_micros,r.long_output_price_micros,
 	       r.pricing_source,COALESCE(r.pricing_updated_at,''),p.name,p.type,
-	       p.enabled,p.status,p.last_latency_ms,p.last_first_byte_ms,p.consecutive_failures
+	       p.enabled,p.status,p.last_latency_ms,p.last_first_byte_ms,p.consecutive_failures,
+	       COALESCE(r.last_health_check_at,''),r.health_check_status,r.health_check_error,
+	       r.health_check_latency_ms,r.health_check_first_byte_ms
 FROM model_routes r
 JOIN providers p ON p.id=r.provider_id
 ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
@@ -779,7 +887,9 @@ ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 				&x.InputPriceMicros, &x.CachedPriceMicros, &x.OutputPriceMicros,
 				&x.LongContextThreshold, &x.LongInputPriceMicros, &x.LongCachedPriceMicros, &x.LongOutputPriceMicros,
 				&x.PricingSource, &x.PricingUpdatedAt, &x.ProviderName, &x.ProviderType, &providerEnabled,
-				&x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFirstByteMS, &x.ProviderFailures); err != nil {
+				&x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFirstByteMS, &x.ProviderFailures,
+				&x.LastHealthCheckAt, &x.HealthCheckStatus, &x.HealthCheckError,
+				&x.HealthCheckLatencyMS, &x.HealthCheckFirstByteMS); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}

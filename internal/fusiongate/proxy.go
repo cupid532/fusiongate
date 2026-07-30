@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,8 @@ import (
 	"time"
 )
 
-const maxBufferedUpstreamBody = 128 << 20
+const maxBufferedUpstreamBody = 32 << 20
+const maxPendingStreamOutput = 1 << 20
 
 type proxyOptions struct {
 	Endpoint           string
@@ -27,6 +29,34 @@ type proxyOptions struct {
 	OnFirstByte        func()
 	UpstreamSSE        bool
 	BufferResponsesSSE bool
+	ResponsesTransform func([]byte) ([]byte, string, error)
+	OutputStartTimeout time.Duration
+}
+
+type streamReadResult struct {
+	data []byte
+	err  error
+}
+
+func readStreamChunk(body io.Reader, size int, timeout time.Duration) ([]byte, error) {
+	buffer := make([]byte, size)
+	result := make(chan streamReadResult, 1)
+	go func() {
+		n, err := body.Read(buffer)
+		result <- streamReadResult{data: buffer[:n], err: err}
+	}()
+	if timeout <= 0 {
+		value := <-result
+		return value.data, value.err
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case value := <-result:
+		return value.data, value.err
+	case <-timer.C:
+		return nil, context.DeadlineExceeded
+	}
 }
 
 type firstByteReadCloser struct {
@@ -114,6 +144,119 @@ func (o *sseUsageObserver) observeEvent(event []byte) {
 	if usage.Reported {
 		mergeUsage(&o.usage, usage)
 	}
+}
+
+func sseEventPayloads(body []byte) []string {
+	normalized := bytes.ReplaceAll(body, []byte("\r"), nil)
+	events := bytes.Split(normalized, []byte("\n\n"))
+	if !bytes.HasSuffix(normalized, []byte("\n\n")) {
+		events = events[:len(events)-1]
+	}
+	payloads := make([]string, 0, len(events))
+	for _, event := range events {
+		var data []string
+		for _, line := range strings.Split(strings.TrimSpace(string(event)), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		if payload := strings.Join(data, "\n"); payload != "" && payload != "[DONE]" {
+			payloads = append(payloads, payload)
+		}
+	}
+	return payloads
+}
+
+func hasVisibleModelText(value map[string]any) bool {
+	for _, key := range []string{"content", "delta", "text", "reasoning", "reasoning_content", "refusal", "partial_json"} {
+		if textContent(value[key]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSemanticStreamOutput(body []byte, format string) bool {
+	for _, payload := range sseEventPayloads(body) {
+		var event map[string]any
+		if json.Unmarshal([]byte(payload), &event) != nil {
+			continue
+		}
+		if format == "anthropic" {
+			if delta, _ := event["delta"].(map[string]any); hasVisibleModelText(delta) {
+				return true
+			}
+			if block, _ := event["content_block"].(map[string]any); block["type"] == "tool_use" || hasVisibleModelText(block) {
+				return true
+			}
+			continue
+		}
+		choices := anySlice(event["choices"])
+		for _, value := range choices {
+			choice, _ := value.(map[string]any)
+			delta, _ := choice["delta"].(map[string]any)
+			if hasVisibleModelText(delta) || len(anySlice(delta["tool_calls"])) > 0 || delta["function_call"] != nil || delta["audio"] != nil {
+				return true
+			}
+			message, _ := choice["message"].(map[string]any)
+			if hasVisibleModelText(message) || len(anySlice(message["tool_calls"])) > 0 || message["function_call"] != nil || message["audio"] != nil {
+				return true
+			}
+		}
+		eventType, _ := event["type"].(string)
+		if (strings.Contains(eventType, "output_text") || strings.Contains(eventType, "refusal")) && hasVisibleModelText(event) {
+			return true
+		}
+		if item, _ := event["item"].(map[string]any); item != nil {
+			if item["type"] == "function_call" || item["type"] == "custom_tool_call" || item["type"] == "image_generation_call" {
+				return true
+			}
+			for _, partValue := range anySlice(item["content"]) {
+				part, _ := partValue.(map[string]any)
+				if textContent(part["text"]) != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func hasSemanticJSONOutput(body []byte, format string) bool {
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	if format == "anthropic" {
+		for _, value := range anySlice(payload["content"]) {
+			part, _ := value.(map[string]any)
+			if part["type"] == "tool_use" || hasVisibleModelText(part) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, value := range anySlice(payload["choices"]) {
+		choice, _ := value.(map[string]any)
+		message, _ := choice["message"].(map[string]any)
+		if hasVisibleModelText(message) || len(anySlice(message["tool_calls"])) > 0 || message["function_call"] != nil || message["audio"] != nil {
+			return true
+		}
+	}
+	for _, value := range anySlice(payload["output"]) {
+		item, _ := value.(map[string]any)
+		if item["type"] == "function_call" || item["type"] == "custom_tool_call" || item["type"] == "image_generation_call" {
+			return true
+		}
+		for _, partValue := range anySlice(item["content"]) {
+			part, _ := partValue.(map[string]any)
+			if hasVisibleModelText(part) {
+				return true
+			}
+		}
+	}
+	return len(anySlice(payload["data"])) > 0
 }
 
 var hopByHopHeaders = map[string]bool{
@@ -276,6 +419,116 @@ func normalizedCodexResponsesBody(raw []byte, upstreamModel string) ([]byte, err
 	return json.Marshal(body)
 }
 
+func codexResponsesBodyFromChat(raw []byte, upstreamModel string) ([]byte, error) {
+	var chat map[string]any
+	if err := json.Unmarshal(raw, &chat); err != nil {
+		return nil, err
+	}
+	input := make([]any, 0)
+	for _, value := range anySlice(chat["messages"]) {
+		message, _ := value.(map[string]any)
+		role, _ := message["role"].(string)
+		if role == "tool" {
+			callID, _ := message["tool_call_id"].(string)
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": callID, "output": textContent(message["content"])})
+			continue
+		}
+		if role != "assistant" && role != "system" && role != "developer" {
+			role = "user"
+		}
+		partType := "input_text"
+		if role == "assistant" {
+			partType = "output_text"
+		}
+		content := make([]any, 0)
+		switch source := message["content"].(type) {
+		case string:
+			if source != "" {
+				content = append(content, map[string]any{"type": partType, "text": source})
+			}
+		case []any:
+			for _, partValue := range source {
+				part, _ := partValue.(map[string]any)
+				text := textContent(part)
+				if text != "" {
+					content = append(content, map[string]any{"type": partType, "text": text})
+				}
+			}
+		}
+		if len(content) > 0 {
+			input = append(input, map[string]any{"role": role, "content": content})
+		}
+		for _, callValue := range anySlice(message["tool_calls"]) {
+			call, _ := callValue.(map[string]any)
+			function, _ := call["function"].(map[string]any)
+			input = append(input, map[string]any{"type": "function_call", "call_id": call["id"], "name": function["name"], "arguments": function["arguments"]})
+		}
+	}
+	body := map[string]any{"model": upstreamModel, "input": input, "store": false, "stream": true}
+	if tools := anySlice(chat["tools"]); len(tools) > 0 {
+		converted := make([]any, 0, len(tools))
+		for _, value := range tools {
+			tool, _ := value.(map[string]any)
+			function, _ := tool["function"].(map[string]any)
+			if tool["type"] == "function" && function != nil {
+				converted = append(converted, map[string]any{"type": "function", "name": function["name"], "description": function["description"], "parameters": function["parameters"]})
+			}
+		}
+		if len(converted) > 0 {
+			body["tools"] = converted
+		}
+	}
+	return json.Marshal(body)
+}
+
+func codexChatResponse(completed []byte, stream bool, publicModel string) ([]byte, string, error) {
+	var response map[string]any
+	if err := json.Unmarshal(completed, &response); err != nil {
+		return nil, "", err
+	}
+	content := ""
+	toolCalls := make([]any, 0)
+	for _, value := range anySlice(response["output"]) {
+		item, _ := value.(map[string]any)
+		switch item["type"] {
+		case "message":
+			for _, partValue := range anySlice(item["content"]) {
+				part, _ := partValue.(map[string]any)
+				content += textContent(part["text"])
+			}
+		case "function_call", "custom_tool_call":
+			toolCalls = append(toolCalls, map[string]any{"id": firstNonEmpty(asString(item["call_id"]), asString(item["id"])), "type": "function", "function": map[string]any{"name": item["name"], "arguments": item["arguments"]}})
+		}
+	}
+	finishReason := "stop"
+	if len(toolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+	usage := asMap(response["usage"])
+	promptTokens := asInt64(usage["input_tokens"])
+	completionTokens := asInt64(usage["output_tokens"])
+	message := map[string]any{"role": "assistant", "content": content}
+	if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
+	}
+	id := firstNonEmpty(asString(response["id"]), "chatcmpl-codex")
+	created := time.Now().Unix()
+	if !stream {
+		encoded, err := json.Marshal(map[string]any{"id": id, "object": "chat.completion", "created": created, "model": publicModel, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finishReason}}, "usage": map[string]any{"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "total_tokens": promptTokens + completionTokens}})
+		return encoded, "application/json", err
+	}
+	delta := map[string]any{"role": "assistant", "content": content}
+	if len(toolCalls) > 0 {
+		delta["tool_calls"] = toolCalls
+	}
+	chunk := map[string]any{"id": id, "object": "chat.completion.chunk", "created": created, "model": publicModel, "choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": finishReason}}, "usage": map[string]any{"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "total_tokens": promptTokens + completionTokens}}
+	encoded, err := json.Marshal(chunk)
+	if err != nil {
+		return nil, "", err
+	}
+	return []byte("data: " + string(encoded) + "\n\ndata: [DONE]\n\n"), "text/event-stream", nil
+}
+
 func completedResponseFromSSE(body []byte) ([]byte, Usage, error) {
 	normalized := bytes.ReplaceAll(body, []byte("\r"), nil)
 	output := map[int]any{}
@@ -435,8 +688,15 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_stream", Err: parseErr}
 		}
 		cost(z, &usage)
+		contentType := "application/json"
+		if options.ResponsesTransform != nil {
+			completed, contentType, parseErr = options.ResponsesTransform(completed)
+			if parseErr != nil {
+				return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: parseErr}
+			}
+		}
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
-		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(completed)))
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
 		w.WriteHeader(resp.StatusCode)
@@ -448,16 +708,52 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: resp.StatusCode, Handled: true, Usage: usage, Reason: reason, Err: writeErr}
 	}
 	if options.Stream {
-		first := make([]byte, 32<<10)
-		n, readErr := resp.Body.Read(first)
-		if n == 0 && readErr != nil && readErr != io.EOF {
-			if downstreamCanceled(incoming) {
-				return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
-			}
-			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, readErr), Err: readErr}
+		var pending bytes.Buffer
+		var readErr error
+		outputStartTimeout := options.OutputStartTimeout
+		if outputStartTimeout <= 0 {
+			outputStartTimeout = 30 * time.Second
 		}
-		if n == 0 && readErr == io.EOF {
-			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_empty_stream", Err: io.ErrUnexpectedEOF}
+		outputDeadline := time.Now().Add(outputStartTimeout)
+		for !options.Transparent && !hasSemanticStreamOutput(pending.Bytes(), options.UsageFormat) {
+			remaining := time.Until(outputDeadline)
+			if remaining <= 0 {
+				return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: context.DeadlineExceeded}
+			}
+			var chunk []byte
+			chunk, readErr = readStreamChunk(resp.Body, 32<<10, remaining)
+			if len(chunk) > 0 {
+				_, _ = pending.Write(chunk)
+				if pending.Len() > maxPendingStreamOutput {
+					return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_no_output", Err: fmt.Errorf("upstream sent more than %d bytes without model output", maxPendingStreamOutput)}
+				}
+			}
+			if readErr != nil {
+				if downstreamCanceled(incoming) {
+					return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
+				}
+				if !hasSemanticStreamOutput(pending.Bytes(), options.UsageFormat) {
+					if errors.Is(readErr, context.DeadlineExceeded) {
+						return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: readErr}
+					}
+					reason := "upstream_no_output"
+					if pending.Len() == 0 {
+						reason = "upstream_empty_stream"
+					}
+					return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: reason, Err: readErr}
+				}
+				break
+			}
+		}
+		if options.Transparent {
+			chunk, err := readStreamChunk(resp.Body, 32<<10, 0)
+			if len(chunk) > 0 {
+				_, _ = pending.Write(chunk)
+			}
+			readErr = err
+			if len(chunk) == 0 && readErr != nil {
+				return attemptResult{Status: http.StatusBadGateway, Retryable: options.SafeTransportRetry, Reason: "upstream_empty_stream", Err: readErr}
+			}
 		}
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
@@ -468,8 +764,8 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			usageObserver = &sseUsageObserver{usage: Usage{CostType: "unknown"}, usageFormat: options.UsageFormat}
 			out = io.MultiWriter(w, usageObserver)
 		}
-		if n > 0 {
-			if _, err := out.Write(first[:n]); err != nil {
+		if pending.Len() > 0 {
+			if _, err := out.Write(pending.Bytes()); err != nil {
 				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: err}
 			}
 			if flusher, ok := w.(http.Flusher); ok {
@@ -509,6 +805,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			_, writeErr = io.Copy(w, resp.Body)
 		}
 		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: "large_response_streamed", Err: writeErr, Usage: Usage{CostType: "unknown"}}
+	}
+	if !options.Transparent && options.UsageFormat != "" && !hasSemanticJSONOutput(body, options.UsageFormat) {
+		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_no_output", Err: errors.New("upstream response contained no model output")}
 	}
 	usage := Usage{CostType: "unknown"}
 	if options.UsageFormat != "" && !options.Transparent {

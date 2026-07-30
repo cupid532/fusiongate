@@ -137,11 +137,13 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		// /v1/models endpoint. Its CLI endpoint requires the client version
 		// query parameter and returns the list in a top-level models field.
 		paths = []string{basePath + "/models"}
-	case "openai", "grok", "openrouter", "openai_compatible", "anthropic", "claude_oauth", "grok_oauth":
+	case "openai", "grok", "openrouter", "openai_compatible", "anthropic":
+		paths = compatibleDiscoveryPaths(basePath)
+	case "claude_oauth", "grok_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
 			paths = []string{basePath + "/models"}
 		} else {
-			paths = []string{basePath + "/v1/models", basePath + "/models"}
+			paths = []string{basePath + "/v1/models"}
 		}
 	case "gemini":
 		if strings.HasSuffix(basePath, "/v1beta") {
@@ -174,6 +176,42 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+func compatibleDiscoveryPaths(basePath string) []string {
+	basePath = strings.TrimRight(basePath, "/")
+	paths := make([]string, 0, 5)
+	add := func(value string) {
+		if value == "" {
+			value = "/models"
+		}
+		if !strings.HasPrefix(value, "/") {
+			value = "/" + value
+		}
+		for _, existing := range paths {
+			if existing == value {
+				return
+			}
+		}
+		paths = append(paths, value)
+	}
+	if strings.HasSuffix(basePath, "/models") {
+		add(basePath)
+	} else {
+		add(basePath + "/models")
+	}
+	trimmed := basePath
+	for _, version := range []string{"/v1", "/v1beta", "/api/v1"} {
+		if strings.HasSuffix(trimmed, version) {
+			trimmed = strings.TrimSuffix(trimmed, version)
+			break
+		}
+	}
+	add(trimmed + "/models")
+	add("/v1/models")
+	add("/api/v1/models")
+	add("/models")
+	return paths
 }
 
 func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
@@ -369,10 +407,13 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			lastErr = &discoveryHTTPError{Status: resp.StatusCode}
-			if resp.StatusCode == http.StatusNotFound && i+1 < len(urls) {
+			if p.AuthCredential != nil && isDiscoveryAuthenticationError(lastErr) {
+				return nil, lastErr
+			}
+			if i+1 < len(urls) {
 				continue
 			}
-			return nil, lastErr
+			break
 		}
 		models, _, err := parseDiscoveryModels(body, p.Type)
 		if err != nil {
@@ -383,7 +424,11 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 			return nil, err
 		}
 		if len(models) == 0 {
-			return nil, errors.New("upstream returned no models")
+			lastErr = errors.New("upstream returned no models")
+			if i+1 < len(urls) {
+				continue
+			}
+			break
 		}
 		if p.Type == "codex_oauth" {
 			models = addCodexImageModel(models)

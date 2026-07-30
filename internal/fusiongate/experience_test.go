@@ -120,7 +120,7 @@ func TestLiveRequestLedgerAndFirstByteTiming(t *testing.T) {
 		close(upstreamStarted)
 		<-releaseFirstByte
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}

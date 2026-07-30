@@ -9,6 +9,8 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,11 @@ type healthCheckResult struct {
 	Model       string
 	ModelCount  int
 	Error       string
+}
+
+type generationProbe struct {
+	Prompt string
+	Answer string
 }
 
 const (
@@ -296,6 +303,210 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 	return healthCheckResult{Status: status, Mode: mode, Model: probeModel, LatencyMS: latency, FirstByteMS: firstByte, Error: errMsg}
 }
 
+func newGenerationProbe() generationProbe {
+	a := 120 + rand.Intn(780)
+	b := 20 + rand.Intn(79)
+	return generationProbe{
+		Prompt: fmt.Sprintf("I am reconciling a small spreadsheet. What is %d + %d? Reply with only the number.", a, b),
+		Answer: strconv.Itoa(a + b),
+	}
+}
+
+func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget) healthCheckResult {
+	start := time.Now()
+	p, err := h.app.loadDiscoveryProvider(ctx, target.ProviderID)
+	if err != nil {
+		return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "failed to load provider"}
+	}
+	if p.AuthCredential != nil && p.AuthCredential.RefreshToken != "" {
+		expires := parseTime(p.AuthCredential.ExpiresAt)
+		if expires == nil || !expires.After(time.Now().Add(oauthRefreshLeadTime())) {
+			z := &resolvedRoute{Provider: Provider{ID: p.ID, Name: p.Name, Type: p.Type}, AuthCredential: p.AuthCredential, Credential: p.Credential}
+			if h.app.refreshProviderCredential(ctx, z, false) == nil {
+				p.Credential, p.AuthCredential = z.Credential, z.AuthCredential
+			}
+		}
+	}
+	if !strings.Contains(target.Capabilities, "chat") {
+		return healthCheckResult{Status: "unsupported", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "only chat models support generation health checks"}
+	}
+	probe := newGenerationProbe()
+	req, err := h.buildRouteProbeRequest(ctx, p, target.UpstreamModel, probe.Prompt)
+	if err != nil {
+		return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: sanitizeError(err.Error())}
+	}
+	resp, err := h.app.client.Do(req)
+	firstByte := time.Since(start).Milliseconds()
+	if err != nil {
+		latency := time.Since(start).Milliseconds()
+		if ctx.Err() != nil {
+			return healthCheckResult{Status: "timeout", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, Error: "request timeout"}
+		}
+		return healthCheckResult{Status: "network_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, Error: sanitizeError(err.Error())}
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	latency := time.Since(start).Milliseconds()
+	if readErr != nil {
+		return healthCheckResult{Status: "invalid_response", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: "could not read generation response"}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		status, message := h.parseProbeResponse(resp.StatusCode, body)
+		return healthCheckResult{Status: status, Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: message}
+	}
+	content, err := extractProbeContent(p.Type, body)
+	if err != nil {
+		return healthCheckResult{Status: "invalid_response", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: sanitizeError(err.Error())}
+	}
+	if normalizeProbeAnswer(content) != probe.Answer {
+		return healthCheckResult{Status: "content_mismatch", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: "model returned an unexpected answer"}
+	}
+	return healthCheckResult{Status: "healthy", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte}
+}
+
+func healthProbeURL(base, endpoint string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil {
+		return "", err
+	}
+	basePath := strings.TrimRight(u.Path, "/")
+	for _, version := range []string{"/v1", "/v1beta"} {
+		if strings.HasSuffix(basePath, version) && strings.HasPrefix(endpoint, version+"/") {
+			endpoint = strings.TrimPrefix(endpoint, version)
+			break
+		}
+	}
+	u.Path = basePath + endpoint
+	return u.String(), nil
+}
+
+func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryProvider, model, prompt string) (*http.Request, error) {
+	endpoint := "/v1/chat/completions"
+	body := map[string]any{
+		"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}},
+		"temperature": 0, "max_tokens": 32, "stream": false,
+	}
+	if p.Type == "anthropic" || p.Type == "claude_oauth" {
+		endpoint = "/v1/messages"
+		body = map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "temperature": 0, "max_tokens": 32}
+	} else if p.Type == "gemini" {
+		endpoint = "/v1beta/models/" + url.PathEscape(model) + ":generateContent"
+		body = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}}, "generationConfig": map[string]any{"temperature": 0, "maxOutputTokens": 32}}
+	} else if p.Type == "codex_oauth" {
+		endpoint = "/responses"
+		body = map[string]any{"model": model, "input": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": prompt}}}}, "store": false, "stream": true}
+	}
+	upstreamURL, err := healthProbeURL(p.BaseURL, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if p.Type == "gemini" {
+		u, parseErr := url.Parse(upstreamURL)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		q := u.Query()
+		q.Set("key", p.Credential)
+		u.RawQuery = q.Encode()
+		upstreamURL = u.String()
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setDiscoveryAuth(req, p)
+	req.Header.Set("Accept", "application/json")
+	if p.Type == "codex_oauth" {
+		req.Header.Set("Accept", "text/event-stream")
+	}
+	return req, nil
+}
+
+func extractProbeContent(providerType string, body []byte) (string, error) {
+	if providerType == "codex_oauth" {
+		completed, _, err := completedResponseFromSSE(body)
+		if err != nil {
+			return "", err
+		}
+		body = completed
+	}
+	var data map[string]any
+	if err := json.Unmarshal(body, &data); err != nil {
+		return "", errors.New("generation response was not valid JSON")
+	}
+	if providerType == "anthropic" || providerType == "claude_oauth" {
+		var content string
+		for _, item := range anySlice(data["content"]) {
+			part, _ := item.(map[string]any)
+			if text, _ := part["text"].(string); text != "" {
+				content += text
+			}
+		}
+		if content == "" {
+			return "", errors.New("generation response contained no assistant text")
+		}
+		return content, nil
+	}
+	if providerType == "gemini" {
+		candidates := anySlice(data["candidates"])
+		if len(candidates) > 0 {
+			candidate, _ := candidates[0].(map[string]any)
+			contentObj, _ := candidate["content"].(map[string]any)
+			var content string
+			for _, item := range anySlice(contentObj["parts"]) {
+				part, _ := item.(map[string]any)
+				if text, _ := part["text"].(string); text != "" {
+					content += text
+				}
+			}
+			if content != "" {
+				return content, nil
+			}
+		}
+		return "", errors.New("generation response contained no assistant text")
+	}
+	if output := anySlice(data["output"]); len(output) > 0 {
+		var content string
+		for _, item := range output {
+			message, _ := item.(map[string]any)
+			for _, value := range anySlice(message["content"]) {
+				part, _ := value.(map[string]any)
+				if text, _ := part["text"].(string); text != "" {
+					content += text
+				}
+			}
+		}
+		if content != "" {
+			return content, nil
+		}
+	}
+	choices := anySlice(data["choices"])
+	if len(choices) > 0 {
+		choice, _ := choices[0].(map[string]any)
+		message, _ := choice["message"].(map[string]any)
+		if content := textContent(message["content"]); content != "" {
+			return content, nil
+		}
+	}
+	return "", errors.New("generation response contained no assistant text")
+}
+
+func anySlice(value any) []any {
+	items, _ := value.([]any)
+	return items
+}
+
+func normalizeProbeAnswer(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Trim(value, "`*_.,!?:; ")
+	return value
+}
+
 func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvider) string {
 	var configured string
 	if err := h.app.db.QueryRowContext(ctx, `
@@ -433,9 +644,8 @@ func (h *HealthChecker) parseProbeResponse(statusCode int, body []byte) (string,
 		return "rate_limited", parseErrorMessage(body, "rate limit exceeded")
 	case 408, 504:
 		return "timeout", parseErrorMessage(body, "upstream timeout")
-	case 400:
-		// 400 可能是模型不存在，也算健康（token有效）
-		return "healthy", ""
+	case 400, 404, 422:
+		return "config_error", parseErrorMessage(body, fmt.Sprintf("upstream rejected the generation request (HTTP %d)", statusCode))
 	default:
 		if statusCode >= 500 {
 			return "server_error", parseErrorMessage(body, fmt.Sprintf("HTTP %d", statusCode))
@@ -485,32 +695,11 @@ func (h *HealthChecker) updateHealthStatus(providerID int64, result healthCheckR
 	}
 }
 
-// CheckProviderNow 立即检查单个 provider（同步）
-func (a *App) CheckProviderNow(ctx context.Context, providerID int64) (healthCheckResult, error) {
-	return a.CheckProviderNowMode(ctx, providerID, healthCheckModeGeneration)
-}
-
-func (a *App) CheckProviderNowMode(ctx context.Context, providerID int64, mode string) (healthCheckResult, error) {
-	if !validHealthCheckMode(mode) {
-		return healthCheckResult{}, errors.New("health check mode must be connectivity or generation")
-	}
-	var authKind string
-	err := a.db.QueryRowContext(ctx, `SELECT auth_kind FROM providers WHERE id=?`, providerID).Scan(&authKind)
+func (h *HealthChecker) updateRouteHealthStatus(routeID int64, result healthCheckResult) {
+	_, err := h.app.db.Exec(`UPDATE model_routes SET last_health_check_at=?,health_check_status=?,health_check_error=?,health_check_latency_ms=?,health_check_first_byte_ms=?,updated_at=? WHERE id=?`, now(), result.Status, result.Error, result.LatencyMS, result.FirstByteMS, now(), routeID)
 	if err != nil {
-		return healthCheckResult{}, errors.New("provider not found")
+		h.app.log.Error("failed to update model health status", "route_id", routeID, "error", err)
 	}
-	if authKind != "oauth" {
-		return healthCheckResult{}, errors.New("health check only supports OAuth providers")
-	}
-	if !a.beginHealthProbe(providerID) {
-		return healthCheckResult{}, errHealthProbeAlreadyRunning
-	}
-	defer a.endHealthProbe(providerID)
-
-	checker := NewHealthChecker(a, 15*time.Minute, 1)
-	result := checker.probeProviderMode(ctx, providerID, mode)
-	checker.updateHealthStatus(providerID, result)
-	return result, nil
 }
 
 func (a *App) beginHealthProbe(providerID int64) bool {

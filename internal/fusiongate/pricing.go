@@ -349,9 +349,56 @@ func parseOpenAIPricing(body []byte) (map[string]officialModelPrice, error) {
 		out[model] = officialModelPrice{Model: model, InputMicros: dollarsPerMillionMicros(match[2]), CachedMicros: dollarsPerMillionMicros(match[3]), OutputMicros: dollarsPerMillionMicros(output)}
 	}
 	if len(out) == 0 {
+		out = parseOpenAIMarkdownPricing(text)
+	}
+	if len(out) == 0 {
 		return nil, errors.New("official OpenAI pricing table was not recognized")
 	}
 	return out, nil
+}
+
+func parseOpenAIMarkdownPricing(text string) map[string]officialModelPrice {
+	if start := strings.Index(text, "### Standard pricing data"); start >= 0 {
+		text = text[start:]
+	}
+	if end := strings.Index(text, "### Batch pricing data"); end >= 0 {
+		text = text[:end]
+	}
+	out := map[string]officialModelPrice{}
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if len(cells) < 9 {
+			continue
+		}
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		model := strings.TrimSpace(strings.Split(cells[0], " (")[0])
+		if model == "" || strings.EqualFold(model, "Model") || strings.HasPrefix(model, "---") {
+			continue
+		}
+		price := officialModelPrice{
+			Model:            model,
+			InputMicros:      dollarsPerMillionMicros(cells[1]),
+			CachedMicros:     dollarsPerMillionMicros(cells[2]),
+			OutputMicros:     dollarsPerMillionMicros(cells[4]),
+			LongInputMicros:  dollarsPerMillionMicros(cells[5]),
+			LongCachedMicros: dollarsPerMillionMicros(cells[6]),
+		}
+		price.LongOutputMicros = dollarsPerMillionMicros(cells[8])
+		if price.LongInputMicros > 0 || price.LongOutputMicros > 0 {
+			price.LongContextThreshold = 272_000
+		}
+		if price.InputMicros > 0 || price.OutputMicros > 0 {
+			out[model] = price
+		}
+	}
+	return out
 }
 
 var (

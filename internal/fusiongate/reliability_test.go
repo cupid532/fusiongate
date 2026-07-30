@@ -270,12 +270,12 @@ func abruptServer(t *testing.T, body string, contentLength int) *httptest.Server
 }
 
 func TestStreamingDoesNotFailOverAfterResponseStarts(t *testing.T) {
-	first := abruptServer(t, "data: partial\n\n", 100)
+	first := abruptServer(t, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n", 100)
 	defer first.Close()
 	var backupCalls atomic.Int32
 	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		backupCalls.Add(1)
-		_, _ = w.Write([]byte("data: backup\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"backup\"}}]}\n\n"))
 	}))
 	defer backup.Close()
 	a, err := New(testConfig(t))
@@ -304,7 +304,7 @@ func TestStreamingFailsOverBeforeFirstByte(t *testing.T) {
 	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		backupCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: backup\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"backup\"}}]}\n\n"))
 	}))
 	defer backup.Close()
 	a, err := New(testConfig(t))
@@ -460,7 +460,7 @@ func TestEmptyStreamFailsOverBeforeHeadersAreCommitted(t *testing.T) {
 	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		backupCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"source\":\"backup\"}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"backup\"}}]}\n\n")
 	}))
 	defer backup.Close()
 
@@ -500,7 +500,7 @@ func TestRetryAfterImmediatelyOpensProviderCircuit(t *testing.T) {
 	defer primary.Close()
 	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		backupCalls.Add(1)
-		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "backup"}}}})
 	}))
 	defer backup.Close()
 
@@ -541,7 +541,7 @@ func TestRateLimitWithoutRetryAfterImmediatelyOpensProviderCircuit(t *testing.T)
 	defer primary.Close()
 	backup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		backupCalls.Add(1)
-		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{}})
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "backup"}}}})
 	}))
 	defer backup.Close()
 

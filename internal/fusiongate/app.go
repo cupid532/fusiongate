@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -50,55 +52,72 @@ type App struct {
 	healthCheckJobs   *healthCheckJobManager
 	healthProbeMu     sync.Mutex
 	healthProbes      map[int64]struct{}
+	balanceMu         sync.Mutex
+	balanceCache      map[int64]ProviderUpstreamBalance
+	loginMu           sync.Mutex
+	loginAttempts     map[string]*rateWindow
+	loginVerifiers    chan struct{}
+	sessionMu         sync.Mutex
+	adminSessions     map[string]adminSession
+	ready             atomic.Bool
+	budgetMu          sync.Mutex
+	budgetInflight    map[int64]bool
 }
 type rateWindow struct {
 	At    time.Time
 	Count int
 }
 type Provider struct {
-	ID                     int64  `json:"id"`
-	Name                   string `json:"name"`
-	Type                   string `json:"type"`
-	BaseURL                string `json:"base_url"`
-	CredentialHint         string `json:"credential_hint"`
-	AuthKind               string `json:"auth_kind"`
-	AuthSource             string `json:"auth_source"`
-	AuthEmail              string `json:"auth_email,omitempty"`
-	AuthAccountID          string `json:"auth_account_id,omitempty"`
-	AuthExpiresAt          string `json:"auth_expires_at,omitempty"`
-	AuthStatus             string `json:"auth_status"`
-	HasRefreshToken        bool   `json:"has_refresh_token"`
-	Status                 string `json:"status"`
-	Notes                  string `json:"notes"`
-	Enabled                bool   `json:"enabled"`
-	Priority               int    `json:"priority"`
-	Weight                 int    `json:"weight"`
-	PassthroughMode        string `json:"passthrough_mode"`
-	ClientPolicy           string `json:"client_policy"`
-	MaxConcurrency         int    `json:"max_concurrency"`
-	RequestTimeoutMS       int    `json:"request_timeout_ms"`
-	FailureThreshold       int    `json:"failure_threshold"`
-	CooldownSeconds        int    `json:"cooldown_seconds"`
-	ConsecutiveFailures    int    `json:"consecutive_failures"`
-	CircuitOpenUntil       string `json:"circuit_open_until,omitempty"`
-	LastError              string `json:"last_error,omitempty"`
-	LastLatencyMS          int64  `json:"last_latency_ms"`
-	LastFirstByteMS        int64  `json:"last_first_byte_ms"`
-	LastSuccessAt          string `json:"last_success_at,omitempty"`
-	LastFailureAt          string `json:"last_failure_at,omitempty"`
-	Inflight               int    `json:"inflight"`
-	ModelCount             int    `json:"model_count"`
-	GroupID                *int64 `json:"group_id,omitempty"`
-	GroupSortOrder         int    `json:"group_sort_order"`
-	LastHealthCheckAt      string `json:"last_health_check_at,omitempty"`
-	HealthCheckStatus      string `json:"health_check_status"`
-	HealthCheckError       string `json:"health_check_error,omitempty"`
-	HealthCheckLatencyMS   int64  `json:"health_check_latency_ms"`
-	HealthCheckMode        string `json:"health_check_mode"`
-	HealthCheckFirstByteMS int64  `json:"health_check_first_byte_ms"`
-	HealthCheckModel       string `json:"health_check_model,omitempty"`
-	HealthCheckModelCount  int    `json:"health_check_model_count"`
-	HealthScore            int    `json:"health_score"`
+	ID                      int64   `json:"id"`
+	Name                    string  `json:"name"`
+	Type                    string  `json:"type"`
+	BaseURL                 string  `json:"base_url"`
+	CredentialHint          string  `json:"credential_hint"`
+	AuthKind                string  `json:"auth_kind"`
+	AuthSource              string  `json:"auth_source"`
+	AuthEmail               string  `json:"auth_email,omitempty"`
+	AuthAccountID           string  `json:"auth_account_id,omitempty"`
+	AuthExpiresAt           string  `json:"auth_expires_at,omitempty"`
+	AuthStatus              string  `json:"auth_status"`
+	HasRefreshToken         bool    `json:"has_refresh_token"`
+	Status                  string  `json:"status"`
+	Notes                   string  `json:"notes"`
+	Enabled                 bool    `json:"enabled"`
+	Priority                int     `json:"priority"`
+	Weight                  int     `json:"weight"`
+	PassthroughMode         string  `json:"passthrough_mode"`
+	ClientPolicy            string  `json:"client_policy"`
+	MaxConcurrency          int     `json:"max_concurrency"`
+	RequestTimeoutMS        int     `json:"request_timeout_ms"`
+	FailureThreshold        int     `json:"failure_threshold"`
+	CooldownSeconds         int     `json:"cooldown_seconds"`
+	ConsecutiveFailures     int     `json:"consecutive_failures"`
+	CircuitOpenUntil        string  `json:"circuit_open_until,omitempty"`
+	LastError               string  `json:"last_error,omitempty"`
+	LastLatencyMS           int64   `json:"last_latency_ms"`
+	LastFirstByteMS         int64   `json:"last_first_byte_ms"`
+	LastSuccessAt           string  `json:"last_success_at,omitempty"`
+	LastFailureAt           string  `json:"last_failure_at,omitempty"`
+	Inflight                int     `json:"inflight"`
+	ModelCount              int     `json:"model_count"`
+	GroupID                 *int64  `json:"group_id,omitempty"`
+	GroupSortOrder          int     `json:"group_sort_order"`
+	LastHealthCheckAt       string  `json:"last_health_check_at,omitempty"`
+	HealthCheckStatus       string  `json:"health_check_status"`
+	HealthCheckError        string  `json:"health_check_error,omitempty"`
+	HealthCheckLatencyMS    int64   `json:"health_check_latency_ms"`
+	HealthCheckMode         string  `json:"health_check_mode"`
+	HealthCheckFirstByteMS  int64   `json:"health_check_first_byte_ms"`
+	HealthCheckModel        string  `json:"health_check_model,omitempty"`
+	HealthCheckModelCount   int     `json:"health_check_model_count"`
+	HealthScore             int     `json:"health_score"`
+	ManualBalanceMicros     *int64  `json:"manual_balance_micros,omitempty"`
+	BalanceBaselineAt       string  `json:"balance_baseline_at,omitempty"`
+	BalanceMultiplierOpenAI float64 `json:"balance_multiplier_openai"`
+	BalanceMultiplierClaude float64 `json:"balance_multiplier_claude"`
+	BalanceMultiplierGrok   float64 `json:"balance_multiplier_grok"`
+	BalanceMultiplierGemini float64 `json:"balance_multiplier_gemini"`
+	BalanceMultiplierOther  float64 `json:"balance_multiplier_other"`
 }
 
 type ProviderGroup struct {
@@ -113,33 +132,38 @@ type ProviderGroup struct {
 }
 
 type Route struct {
-	ID                    int64  `json:"id"`
-	ProviderID            int64  `json:"provider_id"`
-	PublicName            string `json:"public_name"`
-	UpstreamModel         string `json:"upstream_model"`
-	Capabilities          string `json:"capabilities"`
-	Enabled               bool   `json:"enabled"`
-	Priority              int    `json:"priority"`
-	InputPriceMicros      int64  `json:"input_price_micros"`
-	CachedPriceMicros     int64  `json:"cached_price_micros"`
-	OutputPriceMicros     int64  `json:"output_price_micros"`
-	LongContextThreshold  int64  `json:"long_context_threshold"`
-	LongInputPriceMicros  int64  `json:"long_input_price_micros"`
-	LongCachedPriceMicros int64  `json:"long_cached_price_micros"`
-	LongOutputPriceMicros int64  `json:"long_output_price_micros"`
-	PricingSource         string `json:"pricing_source,omitempty"`
-	PricingUpdatedAt      string `json:"pricing_updated_at,omitempty"`
-	ProviderName          string `json:"provider_name,omitempty"`
-	ProviderType          string `json:"provider_type,omitempty"`
-	ProviderEnabled       bool   `json:"provider_enabled"`
-	SortOrder             int    `json:"sort_order"`
-	Strategy              string `json:"strategy,omitempty"`
-	ProviderStatus        string `json:"provider_status,omitempty"`
-	ProviderLatencyMS     int64  `json:"provider_latency_ms"`
-	ProviderFirstByteMS   int64  `json:"provider_first_byte_ms"`
-	ProviderFailures      int    `json:"provider_failures"`
-	ProviderInflight      int    `json:"provider_inflight"`
-	HealthScore           int    `json:"health_score"`
+	ID                     int64  `json:"id"`
+	ProviderID             int64  `json:"provider_id"`
+	PublicName             string `json:"public_name"`
+	UpstreamModel          string `json:"upstream_model"`
+	Capabilities           string `json:"capabilities"`
+	Enabled                bool   `json:"enabled"`
+	Priority               int    `json:"priority"`
+	InputPriceMicros       int64  `json:"input_price_micros"`
+	CachedPriceMicros      int64  `json:"cached_price_micros"`
+	OutputPriceMicros      int64  `json:"output_price_micros"`
+	LongContextThreshold   int64  `json:"long_context_threshold"`
+	LongInputPriceMicros   int64  `json:"long_input_price_micros"`
+	LongCachedPriceMicros  int64  `json:"long_cached_price_micros"`
+	LongOutputPriceMicros  int64  `json:"long_output_price_micros"`
+	PricingSource          string `json:"pricing_source,omitempty"`
+	PricingUpdatedAt       string `json:"pricing_updated_at,omitempty"`
+	ProviderName           string `json:"provider_name,omitempty"`
+	ProviderType           string `json:"provider_type,omitempty"`
+	ProviderEnabled        bool   `json:"provider_enabled"`
+	SortOrder              int    `json:"sort_order"`
+	Strategy               string `json:"strategy,omitempty"`
+	ProviderStatus         string `json:"provider_status,omitempty"`
+	ProviderLatencyMS      int64  `json:"provider_latency_ms"`
+	ProviderFirstByteMS    int64  `json:"provider_first_byte_ms"`
+	ProviderFailures       int    `json:"provider_failures"`
+	ProviderInflight       int    `json:"provider_inflight"`
+	HealthScore            int    `json:"health_score"`
+	LastHealthCheckAt      string `json:"last_health_check_at,omitempty"`
+	HealthCheckStatus      string `json:"health_check_status"`
+	HealthCheckError       string `json:"health_check_error,omitempty"`
+	HealthCheckLatencyMS   int64  `json:"health_check_latency_ms"`
+	HealthCheckFirstByteMS int64  `json:"health_check_first_byte_ms"`
 }
 
 type APIKey struct {
@@ -201,7 +225,7 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}}
+	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{}, loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4), adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{}}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -216,9 +240,17 @@ func New(cfg Config) (*App, error) {
 	}
 	a.healthChecker = NewHealthChecker(a, healthCheckIntervalFromEnv(), healthCheckConcurrencyFromEnv())
 	a.healthCheckJobs = newHealthCheckJobManager(a)
+	for _, file := range []string{"fusiongate.db", "fusiongate.db-wal", "fusiongate.db-shm"} {
+		if err := os.Chmod(path.Join(cfg.DataDir, file), 0600); err != nil && !errors.Is(err, os.ErrNotExist) {
+			db.Close()
+			return nil, err
+		}
+	}
+	a.ready.Store(true)
 	return a, nil
 }
 func (a *App) Close() error {
+	a.ready.Store(false)
 	if a.healthChecker != nil {
 		a.healthChecker.Stop()
 	}
@@ -227,6 +259,8 @@ func (a *App) Close() error {
 	}
 	return a.db.Close()
 }
+
+func (a *App) BeginShutdown() { a.ready.Store(false) }
 
 // StartBackgroundTasks starts the health checker and other periodic background
 // jobs. The caller supplies a context that, when canceled, stops all tasks.
@@ -269,6 +303,13 @@ func healthCheckConcurrencyFromEnv() int {
 }
 
 func (a *App) migrate(ctx context.Context) error {
+	var schemaVersion int
+	if err := a.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&schemaVersion); err != nil {
+		return err
+	}
+	if schemaVersion > 1 {
+		return fmt.Errorf("database schema version %d is newer than supported version 1", schemaVersion)
+	}
 	_, err := a.db.ExecContext(ctx, `
   CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS providers (
@@ -349,6 +390,13 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "auth_status", "TEXT NOT NULL DEFAULT 'ready'"},
 		{"providers", "auth_fingerprint", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "auth_has_refresh", "INTEGER NOT NULL DEFAULT 0"},
+		{"providers", "manual_balance_micros", "INTEGER"},
+		{"providers", "balance_baseline_at", "TEXT"},
+		{"providers", "balance_multiplier_openai", "REAL NOT NULL DEFAULT 1"},
+		{"providers", "balance_multiplier_claude", "REAL NOT NULL DEFAULT 1"},
+		{"providers", "balance_multiplier_grok", "REAL NOT NULL DEFAULT 1"},
+		{"providers", "balance_multiplier_gemini", "REAL NOT NULL DEFAULT 1"},
+		{"providers", "balance_multiplier_other", "REAL NOT NULL DEFAULT 1"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -367,6 +415,11 @@ func (a *App) migrate(ctx context.Context) error {
 		{"model_routes", "long_output_price_micros", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "pricing_source", "TEXT NOT NULL DEFAULT ''"},
 		{"model_routes", "pricing_updated_at", "TEXT"},
+		{"model_routes", "last_health_check_at", "TEXT"},
+		{"model_routes", "health_check_status", "TEXT NOT NULL DEFAULT 'pending'"},
+		{"model_routes", "health_check_error", "TEXT NOT NULL DEFAULT ''"},
+		{"model_routes", "health_check_latency_ms", "INTEGER NOT NULL DEFAULT 0"},
+		{"model_routes", "health_check_first_byte_ms", "INTEGER NOT NULL DEFAULT 0"},
 	} {
 		if err := ensureColumn(ctx, a.db, column.table, column.name, column.ddl); err != nil {
 			return err
@@ -424,6 +477,10 @@ CREATE INDEX IF NOT EXISTS idx_groups_order ON provider_groups(sort_order, id);`
 	}
 
 	_, err = a.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_providers_group ON providers(group_id, group_sort_order, id);`)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.ExecContext(ctx, `PRAGMA user_version=1`)
 	return err
 }
 
@@ -559,7 +616,9 @@ func strBool(i int) bool { return i != 0 }
 
 func (a *App) Router() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", a.health)
+	mux.HandleFunc("/livez", a.live)
+	mux.HandleFunc("/readyz", a.readyHealth)
+	mux.HandleFunc("/healthz", a.readyHealth)
 	mux.HandleFunc("/", a.ui)
 	mux.HandleFunc("/api/admin/login", a.login)
 	mux.HandleFunc("/api/admin/logout", a.logout)
@@ -610,10 +669,31 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+var errRequestBodyTooLarge = errors.New("request body too large")
+
 func readJSON(r *http.Request, v any) error {
-	d := json.NewDecoder(io.LimitReader(r.Body, 10<<20))
+	const limit = 10 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > limit {
+		return errRequestBodyTooLarge
+	}
+	d := json.NewDecoder(strings.NewReader(string(body)))
 	d.DisallowUnknownFields()
-	return d.Decode(v)
+	if err := d.Decode(v); err != nil {
+		return err
+	}
+	var extra any
+	if err := d.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON value")
+		}
+		return fmt.Errorf("invalid trailing JSON: %w", err)
+	}
+	return nil
 }
 func fail(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": code, "code": code}})

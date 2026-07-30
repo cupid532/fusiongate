@@ -55,8 +55,37 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 			fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "API key rate limit exceeded")
 			return
 		}
+		if k.BudgetMicros > 0 {
+			if !a.acquireBudgetKey(k.ID) {
+				fail(w, http.StatusTooManyRequests, "budget_request_inflight", "another request is already using this key's budget")
+				return
+			}
+			defer a.releaseBudgetKey(k.ID)
+			refreshed, valid := a.authenticateKey(r)
+			if !valid || refreshed.SpentMicros >= refreshed.BudgetMicros {
+				fail(w, http.StatusPaymentRequired, "budget_exceeded", "API key budget exhausted")
+				return
+			}
+			k = refreshed
+		}
 		fn(w, r, k)
 	}
+}
+
+func (a *App) acquireBudgetKey(id int64) bool {
+	a.budgetMu.Lock()
+	defer a.budgetMu.Unlock()
+	if a.budgetInflight[id] {
+		return false
+	}
+	a.budgetInflight[id] = true
+	return true
+}
+
+func (a *App) releaseBudgetKey(id int64) {
+	a.budgetMu.Lock()
+	delete(a.budgetInflight, id)
+	a.budgetMu.Unlock()
 }
 
 func setGatewayCORS(w http.ResponseWriter, r *http.Request) {
@@ -314,9 +343,13 @@ func cost(z resolvedRoute, usage *Usage) {
 }
 
 func getBody(r *http.Request) (map[string]any, []byte, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 20<<20))
+	const limit = 20 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		return nil, nil, err
+	}
+	if len(body) > limit {
+		return nil, nil, errRequestBodyTooLarge
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -585,6 +618,14 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		switch z.Provider.Type {
 		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
+		case "codex_oauth":
+			encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
+			if err != nil {
+				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+			}
+			return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/responses", RawBody: encoded, Stream: stream, UsageFormat: "openai", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferResponsesSSE: true, ResponsesTransform: func(completed []byte) ([]byte, string, error) {
+				return codexChatResponse(completed, stream, z.Route.PublicName)
+			}})
 		case "anthropic", "claude_oauth":
 			if stream || z.Provider.PassthroughMode == "transparent" {
 				return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}

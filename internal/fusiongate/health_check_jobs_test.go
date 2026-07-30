@@ -4,17 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
+var healthProbeSumPattern = regexp.MustCompile(`What is (\d+) \+ (\d+)`)
+
+func healthProbeAnswer(r *http.Request) string {
+	body, _ := io.ReadAll(r.Body)
+	match := healthProbeSumPattern.FindSubmatch(body)
+	if len(match) != 3 {
+		return "invalid probe"
+	}
+	left, _ := strconv.Atoi(string(match[1]))
+	right, _ := strconv.Atoi(string(match[2]))
+	return strconv.Itoa(left + right)
+}
+
 func TestManualHealthCheckJobCompletesSelectedProviders(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(codexCompletedSSE("manual-health")))
+		_, _ = w.Write([]byte(codexCompletedSSEText("manual-health", healthProbeAnswer(r))))
 	}))
 	defer upstream.Close()
 
@@ -42,7 +58,7 @@ func TestManualHealthCheckJobCompletesSelectedProviders(t *testing.T) {
 		ids = append(ids, providerID)
 	}
 
-	job, err := a.healthCheckJobs.Start(context.Background(), []int64{ids[0], ids[1], ids[0]})
+	job, err := a.healthCheckJobs.StartModels(context.Background(), []int64{ids[0], ids[1], ids[0]}, nil, "all")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,11 +74,11 @@ func TestManualHealthCheckJobCompletesSelectedProviders(t *testing.T) {
 			t.Fatalf("result=%+v", result)
 		}
 		var status string
-		if err := a.db.QueryRow(`SELECT health_check_status FROM providers WHERE id=?`, result.ProviderID).Scan(&status); err != nil {
+		if err := a.db.QueryRow(`SELECT health_check_status FROM model_routes WHERE id=?`, result.RouteID).Scan(&status); err != nil {
 			t.Fatal(err)
 		}
 		if status != "healthy" {
-			t.Fatalf("provider %d status=%q", result.ProviderID, status)
+			t.Fatalf("route %d status=%q", result.RouteID, status)
 		}
 	}
 }
@@ -104,11 +120,11 @@ func TestManualHealthCheckRejectsOverlappingJob(t *testing.T) {
 	}
 	insertTestRoute(t, a, providerID, "health-overlap", "gpt-health", "chat,stream", 1)
 
-	job, err := a.healthCheckJobs.Start(context.Background(), []int64{providerID})
+	job, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, "all")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.healthCheckJobs.Start(context.Background(), []int64{providerID}); !errors.Is(err, errHealthCheckAlreadyRunning) {
+	if _, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, "all"); !errors.Is(err, errHealthCheckAlreadyRunning) {
 		t.Fatalf("second start error=%v", err)
 	}
 	if _, err := a.healthCheckJobs.Cancel(job.ID); err != nil {
@@ -136,6 +152,7 @@ func TestHealthChecksAdminEndpointStartsJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	insertTestRoute(t, a, providerID, "endpoint-health", "gpt-health", "chat,stream", 1)
 
 	body := `{"provider_ids":[` + jsonNumber(providerID) + `]}`
 	recorder := httptest.NewRecorder()
@@ -147,7 +164,7 @@ func TestHealthChecksAdminEndpointStartsJob(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &job); err != nil {
 		t.Fatal(err)
 	}
-	if job.ID == "" || job.Total != 1 || job.Mode != healthCheckModeConnectivity {
+	if job.ID == "" || job.Total != 1 || job.Mode != healthCheckModeGeneration {
 		t.Fatalf("job=%+v", job)
 	}
 	_, _ = a.healthCheckJobs.Cancel(job.ID)
@@ -169,8 +186,9 @@ func TestHealthChecksAdminEndpointAcceptsGenerationMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	insertTestRoute(t, a, providerID, "generation-health", "gpt-health", "chat,stream", 1)
 
-	body := `{"provider_ids":[` + jsonNumber(providerID) + `],"mode":"generation"}`
+	body := `{"provider_ids":[` + jsonNumber(providerID) + `],"model_scope":"all"}`
 	recorder := httptest.NewRecorder()
 	a.healthChecks(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/health-checks", strings.NewReader(body)), adminCtx{})
 	if recorder.Code != http.StatusAccepted {

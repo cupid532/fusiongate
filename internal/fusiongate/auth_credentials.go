@@ -365,8 +365,8 @@ func (a *App) oauthStart(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	verifier := pkceVerifier()
 	params := url.Values{
 		"client_id": {codexOAuthClientID}, "response_type": {"code"}, "redirect_uri": {codexOAuthRedirectURI},
-		"scope": {"openid email profile offline_access"}, "state": {state}, "code_challenge": {pkceChallenge(verifier)}, "code_challenge_method": {"S256"},
-		"prompt": {"login"}, "id_token_add_organizations": {"true"}, "codex_cli_simplified_flow": {"true"},
+		"scope": {"openid profile email offline_access api.connectors.read api.connectors.invoke"}, "state": {state}, "code_challenge": {pkceChallenge(verifier)}, "code_challenge_method": {"S256"},
+		"id_token_add_organizations": {"true"}, "codex_cli_simplified_flow": {"true"}, "originator": {"codex_cli_rs"},
 	}
 	authURL := codexOAuthAuthorizeURL + "?" + params.Encode()
 	if platform == "claude" {
@@ -399,6 +399,13 @@ func parseOAuthCallback(raw string) (code, state string, err error) {
 		}
 		code = strings.TrimSpace(u.Query().Get("code"))
 		state = strings.TrimSpace(u.Query().Get("state"))
+		if oauthError := strings.TrimSpace(u.Query().Get("error")); oauthError != "" {
+			description := strings.TrimSpace(u.Query().Get("error_description"))
+			if description != "" {
+				return "", state, fmt.Errorf("authorization was denied: %s", sanitizeOAuthDetail(description))
+			}
+			return "", state, fmt.Errorf("authorization was denied: %s", sanitizeOAuthDetail(oauthError))
+		}
 		if state == "" {
 			state = strings.TrimSpace(u.Fragment)
 		}
@@ -419,6 +426,28 @@ func parseOAuthCallback(raw string) (code, state string, err error) {
 		return "", "", errors.New("authorization code is missing")
 	}
 	return code, state, nil
+}
+
+func sanitizeOAuthDetail(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) > 240 {
+		value = value[:240] + "…"
+	}
+	return value
+}
+
+func publicOAuthExchangeError(err error) string {
+	if err == nil {
+		return "unknown authentication error"
+	}
+	detail := sanitizeOAuthDetail(err.Error())
+	lower := strings.ToLower(detail)
+	for _, sensitive := range []string{"access_token", "refresh_token", "id_token", "authorization: bearer", "client_secret"} {
+		if strings.Contains(lower, sensitive) {
+			return "authentication service rejected the authorization code"
+		}
+	}
+	return detail
 }
 
 func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) {
@@ -518,7 +547,9 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	defer cancel()
 	credential, err := a.exchangeOAuthCode(ctx, session, code)
 	if err != nil {
-		fail(w, http.StatusBadGateway, "oauth_exchange_failed", "authorization exchange failed; start a new login and try again")
+		detail := publicOAuthExchangeError(err)
+		a.log.Warn("OAuth code exchange failed", "platform", session.Platform, "error", detail)
+		fail(w, http.StatusBadGateway, "oauth_exchange_failed", "authorization exchange failed: "+detail+"; start a new login and try again")
 		return
 	}
 	id, createdName, err := a.saveOAuthProvider(r.Context(), strings.TrimSpace(in.Name), priority, credential, 0, false)

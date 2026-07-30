@@ -33,6 +33,7 @@ func secretEnv(name string) (string, error) {
 }
 
 func main() {
+	syscall.Umask(0o077)
 	masterKey, err := secretEnv("FUSIONGATE_MASTER_KEY")
 	if err != nil {
 		log.Fatal(err)
@@ -53,7 +54,7 @@ func main() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 	app.StartBackgroundTasks(bgCtx)
-	srv := &http.Server{Addr: cfg.Addr, Handler: app.Router(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+	srv := &http.Server{Addr: cfg.Addr, Handler: app.Router(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 3 * time.Minute, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
 	go func() {
 		fmt.Printf("FusionGate listening on http://%s\n", cfg.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -63,6 +64,7 @@ func main() {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
 	<-ch
+	app.BeginShutdown()
 	bgCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -19,10 +19,14 @@ func codexTestRoute(upstreamURL string) resolvedRoute {
 }
 
 func codexCompletedSSE(id string) string {
+	return codexCompletedSSEText(id, "OK")
+}
+
+func codexCompletedSSEText(id, text string) string {
 	return fmt.Sprintf("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":%q}}\n\n"+
-		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg-1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\",\"annotations\":[]}]}}\n\n"+
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"msg-1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":%q,\"annotations\":[]}]}}\n\n"+
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"object\":\"response\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}}\n\n"+
-		"data: [DONE]\n\n", id, id)
+		"data: [DONE]\n\n", id, text, id)
 }
 
 func TestNormalizedCodexResponsesBody(t *testing.T) {
@@ -63,6 +67,103 @@ func TestNormalizedCodexResponsesBody(t *testing.T) {
 	}
 	if input, ok := body["input"].([]any); !ok || len(input) != 1 {
 		t.Fatalf("object input was not wrapped: %s", encoded)
+	}
+}
+
+func TestCodexChatRequestAndResponseConversion(t *testing.T) {
+	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"system","content":"Be concise"},{"role":"user","content":"Hello"},{"role":"assistant","content":"Checking","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},{"role":"tool","tool_call_id":"call-1","content":"found"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup","parameters":{"type":"object"}}}],"stream":false}`), "upstream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(encoded, &request); err != nil {
+		t.Fatal(err)
+	}
+	if request["model"] != "upstream" || request["stream"] != true || request["store"] != false {
+		t.Fatalf("request=%#v", request)
+	}
+	input := anySlice(request["input"])
+	if len(input) != 5 || asMap(input[4])["type"] != "function_call_output" {
+		t.Fatalf("input=%#v", input)
+	}
+	tools := anySlice(request["tools"])
+	if len(tools) != 1 || asMap(tools[0])["name"] != "lookup" {
+		t.Fatalf("tools=%#v", tools)
+	}
+
+	completed := []byte(`{"id":"resp-chat","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"}]},{"type":"function_call","call_id":"call-2","name":"next","arguments":"{}"}],"usage":{"input_tokens":11,"output_tokens":4}}`)
+	chat, contentType, err := codexChatResponse(completed, false, "public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contentType != "application/json" {
+		t.Fatalf("content type=%q", contentType)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(chat, &response); err != nil {
+		t.Fatal(err)
+	}
+	choice := asMap(anySlice(response["choices"])[0])
+	message := asMap(choice["message"])
+	if message["content"] != "Done" || choice["finish_reason"] != "tool_calls" || len(anySlice(message["tool_calls"])) != 1 {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(codexCompletedSSEText("resp-chat", "Hello from Plus")))
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "fusiongate_oauth", AccessToken: "access", AccountID: "account"}
+	payload, _ := json.Marshal(credential)
+	sealed, _ := a.encrypt(string(payload))
+	stamp := now()
+	result, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,auth_kind,auth_source,enabled,priority,weight,status,passthrough_mode,client_policy,request_timeout_ms,failure_threshold,cooldown_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "plus", "codex_oauth", upstream.URL, sealed, "oauth", "fusiongate_oauth", 1, 1, 100, "unknown", "normalized", "any", 5000, 3, 30, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerID, _ := result.LastInsertId()
+	insertTestRoute(t, a, providerID, "gpt-plus", "gpt-upstream", "chat,stream", 1)
+	key := insertTestKey(t, a, false)
+
+	recorder := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"gpt-plus","messages":[{"role":"user","content":"Hello"}],"stream":false}`, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if received["model"] != "gpt-upstream" || received["stream"] != true || received["store"] != false {
+		t.Fatalf("upstream request=%#v", received)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("response JSON: %v body=%s", err, recorder.Body.String())
+	}
+	choice := asMap(anySlice(response["choices"])[0])
+	message := asMap(choice["message"])
+	if message["content"] != "Hello from Plus" || response["model"] != "gpt-plus" {
+		t.Fatalf("response=%#v", response)
+	}
+	var protocol string
+	var success int
+	if err := a.db.QueryRow(`SELECT protocol,success FROM request_ledger ORDER BY id DESC LIMIT 1`).Scan(&protocol, &success); err != nil {
+		t.Fatal(err)
+	}
+	if protocol != "openai_chat" || success != 1 {
+		t.Fatalf("ledger protocol=%q success=%d", protocol, success)
 	}
 }
 
