@@ -18,6 +18,7 @@ import (
 const maxBufferedUpstreamBody = 32 << 20
 const maxPendingStreamOutput = 1 << 20
 const defaultFailoverStartTimeout = 12 * time.Second
+const defaultFailoverIdleTimeout = 5 * time.Minute
 
 type proxyOptions struct {
 	Endpoint           string
@@ -32,6 +33,7 @@ type proxyOptions struct {
 	BufferResponsesSSE bool
 	ResponsesTransform func([]byte) ([]byte, string, error)
 	OutputStartTimeout time.Duration
+	IdleTimeout        time.Duration
 }
 
 type streamReadResult struct {
@@ -170,7 +172,7 @@ func sseEventPayloads(body []byte) []string {
 }
 
 func hasVisibleModelText(value map[string]any) bool {
-	for _, key := range []string{"content", "delta", "text", "reasoning", "reasoning_content", "refusal", "partial_json"} {
+	for _, key := range []string{"content", "delta", "text", "thinking", "reasoning", "reasoning_content", "refusal", "partial_json"} {
 		if textContent(value[key]) != "" {
 			return true
 		}
@@ -178,50 +180,96 @@ func hasVisibleModelText(value map[string]any) bool {
 	return false
 }
 
-func hasSemanticStreamOutput(body []byte, format string) bool {
+func hasSemanticStreamEvent(event map[string]any, format string) bool {
+	if format == "anthropic" {
+		if delta, _ := event["delta"].(map[string]any); hasVisibleModelText(delta) {
+			return true
+		}
+		if block, _ := event["content_block"].(map[string]any); block["type"] == "tool_use" || hasVisibleModelText(block) {
+			return true
+		}
+		return false
+	}
+	choices := anySlice(event["choices"])
+	for _, value := range choices {
+		choice, _ := value.(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		if hasVisibleModelText(delta) || len(anySlice(delta["tool_calls"])) > 0 || delta["function_call"] != nil || delta["audio"] != nil {
+			return true
+		}
+		message, _ := choice["message"].(map[string]any)
+		if hasVisibleModelText(message) || len(anySlice(message["tool_calls"])) > 0 || message["function_call"] != nil || message["audio"] != nil {
+			return true
+		}
+	}
+	eventType, _ := event["type"].(string)
+	if (strings.Contains(eventType, "output_text") || strings.Contains(eventType, "reasoning") || strings.Contains(eventType, "thinking") || strings.Contains(eventType, "refusal")) && hasVisibleModelText(event) {
+		return true
+	}
+	if item, _ := event["item"].(map[string]any); item != nil {
+		if item["type"] == "reasoning" || item["type"] == "function_call" || item["type"] == "custom_tool_call" || item["type"] == "image_generation_call" {
+			return true
+		}
+		for _, partValue := range anySlice(item["content"]) {
+			part, _ := partValue.(map[string]any)
+			if textContent(part["text"]) != "" || textContent(part["thinking"]) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func semanticStreamProgress(body []byte, format string) int {
+	progress := 0
 	for _, payload := range sseEventPayloads(body) {
 		var event map[string]any
 		if json.Unmarshal([]byte(payload), &event) != nil {
 			continue
 		}
-		if format == "anthropic" {
-			if delta, _ := event["delta"].(map[string]any); hasVisibleModelText(delta) {
-				return true
-			}
-			if block, _ := event["content_block"].(map[string]any); block["type"] == "tool_use" || hasVisibleModelText(block) {
-				return true
-			}
-			continue
-		}
-		choices := anySlice(event["choices"])
-		for _, value := range choices {
-			choice, _ := value.(map[string]any)
-			delta, _ := choice["delta"].(map[string]any)
-			if hasVisibleModelText(delta) || len(anySlice(delta["tool_calls"])) > 0 || delta["function_call"] != nil || delta["audio"] != nil {
-				return true
-			}
-			message, _ := choice["message"].(map[string]any)
-			if hasVisibleModelText(message) || len(anySlice(message["tool_calls"])) > 0 || message["function_call"] != nil || message["audio"] != nil {
-				return true
-			}
-		}
-		eventType, _ := event["type"].(string)
-		if (strings.Contains(eventType, "output_text") || strings.Contains(eventType, "refusal")) && hasVisibleModelText(event) {
-			return true
-		}
-		if item, _ := event["item"].(map[string]any); item != nil {
-			if item["type"] == "function_call" || item["type"] == "custom_tool_call" || item["type"] == "image_generation_call" {
-				return true
-			}
-			for _, partValue := range anySlice(item["content"]) {
-				part, _ := partValue.(map[string]any)
-				if textContent(part["text"]) != "" {
-					return true
-				}
-			}
+		if hasSemanticStreamEvent(event, format) {
+			progress++
 		}
 	}
-	return false
+	return progress
+}
+
+func hasSemanticStreamOutput(body []byte, format string) bool {
+	return semanticStreamProgress(body, format) > 0
+}
+
+type semanticStreamObserver struct {
+	format  string
+	pending []byte
+}
+
+func (o *semanticStreamObserver) observe(chunk []byte) bool {
+	o.pending = append(o.pending, bytes.ReplaceAll(chunk, []byte("\r"), nil)...)
+	progress := false
+	for {
+		end := bytes.Index(o.pending, []byte("\n\n"))
+		if end < 0 {
+			if len(o.pending) > maxUsageSSEEvent {
+				o.pending = o.pending[len(o.pending)-maxUsageSSEEvent:]
+			}
+			break
+		}
+		event := o.pending[:end]
+		o.pending = o.pending[end+2:]
+		var data []string
+		for _, line := range strings.Split(strings.TrimSpace(string(event)), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		payload := strings.Join(data, "\n")
+		var decoded map[string]any
+		if payload != "" && payload != "[DONE]" && json.Unmarshal([]byte(payload), &decoded) == nil && hasSemanticStreamEvent(decoded, o.format) {
+			progress = true
+		}
+	}
+	return progress
 }
 
 func hasSemanticJSONOutput(body []byte, format string) bool {
@@ -620,7 +668,13 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
-	ctx, cancel := providerContext(incoming.Context(), z.Provider)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if options.Stream || options.BufferResponsesSSE {
+		ctx, cancel = context.WithCancel(incoming.Context())
+	} else {
+		ctx, cancel = providerContext(incoming.Context(), z.Provider)
+	}
 	defer cancel()
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
@@ -690,6 +744,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	if options.BufferResponsesSSE {
 		var buffered bytes.Buffer
 		var readErr error
+		observer := semanticStreamObserver{format: "openai"}
 		outputDeadline := started.Add(startTimeout)
 		for !hasSemanticStreamOutput(buffered.Bytes(), "openai") {
 			remaining := time.Until(outputDeadline)
@@ -699,6 +754,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			chunk, err := readStreamChunk(resp.Body, 32<<10, remaining)
 			if len(chunk) > 0 {
 				_, _ = buffered.Write(chunk)
+				observer.observe(chunk)
 			}
 			readErr = err
 			if readErr != nil {
@@ -718,9 +774,34 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			}
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_stream_interrupted", Err: readErr}
 		}
-		if _, readErr = io.Copy(&buffered, io.LimitReader(resp.Body, maxBufferedUpstreamBody+1-int64(buffered.Len()))); readErr != nil {
+		idleTimeout := options.IdleTimeout
+		if idleTimeout <= 0 {
+			idleTimeout = defaultFailoverIdleTimeout
+		}
+		idleDeadline := time.Now().Add(idleTimeout)
+		for readErr == nil {
+			remaining := time.Until(idleDeadline)
+			if remaining <= 0 {
+				return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_stalled", Err: context.DeadlineExceeded}
+			}
+			chunk, err := readStreamChunk(resp.Body, 32<<10, remaining)
+			if len(chunk) > 0 {
+				_, _ = buffered.Write(chunk)
+				if observer.observe(chunk) {
+					idleDeadline = time.Now().Add(idleTimeout)
+				}
+			}
+			readErr = err
+		}
+		if errors.Is(readErr, io.EOF) {
+			readErr = nil
+		}
+		if readErr != nil {
 			if downstreamCanceled(incoming) {
 				return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: readErr}
+			}
+			if errors.Is(readErr, context.DeadlineExceeded) {
+				return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_stalled", Err: readErr}
 			}
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_stream_interrupted", Err: readErr}
 		}
@@ -815,9 +896,41 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			}
 		}
 		if readErr != io.EOF {
-			if _, copyErr := io.Copy(out, resp.Body); copyErr != nil {
+			idleTimeout := options.IdleTimeout
+			if idleTimeout <= 0 {
+				idleTimeout = defaultFailoverIdleTimeout
+			}
+			observer := semanticStreamObserver{format: options.UsageFormat}
+			observer.observe(pending.Bytes())
+			idleDeadline := time.Now().Add(idleTimeout)
+			for {
+				remaining := time.Until(idleDeadline)
+				if remaining <= 0 {
+					return attemptResult{Status: http.StatusGatewayTimeout, Handled: true, Reason: "upstream_stalled", Err: context.DeadlineExceeded}
+				}
+				chunk, copyErr := readStreamChunk(resp.Body, 32<<10, remaining)
+				if len(chunk) > 0 {
+					if observer.observe(chunk) {
+						idleDeadline = time.Now().Add(idleTimeout)
+					}
+					if _, err := out.Write(chunk); err != nil {
+						return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: err}
+					}
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
+				}
+				if copyErr == nil {
+					continue
+				}
+				if errors.Is(copyErr, io.EOF) {
+					break
+				}
 				if downstreamCanceled(incoming) {
 					return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_canceled", Err: copyErr}
+				}
+				if errors.Is(copyErr, context.DeadlineExceeded) {
+					return attemptResult{Status: http.StatusGatewayTimeout, Handled: true, Reason: "upstream_stalled", Err: copyErr}
 				}
 				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "upstream_stream_interrupted", Err: copyErr}
 			}

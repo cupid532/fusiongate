@@ -733,6 +733,74 @@ func TestFailoverStartTimeoutCoversResponseBody(t *testing.T) {
 	}
 }
 
+func TestReasoningEventsCountAsModelProgress(t *testing.T) {
+	tests := []struct {
+		name   string
+		format string
+		event  string
+	}{
+		{name: "openai reasoning", format: "openai", event: "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"working\"}}]}\n\n"},
+		{name: "responses reasoning", format: "openai", event: "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"working\"}\n\n"},
+		{name: "anthropic thinking", format: "anthropic", event: "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"working\"}}\n\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !hasSemanticStreamOutput([]byte(tc.event), tc.format) {
+				t.Fatal("reasoning event was not recognized as model progress")
+			}
+		})
+	}
+	if hasSemanticStreamOutput([]byte("event: ping\ndata: {\"type\":\"ping\"}\n\n"), "anthropic") {
+		t.Fatal("heartbeat was incorrectly recognized as model progress")
+	}
+}
+
+func TestStreamingHeartbeatDoesNotHideStalledModel(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"started\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		ticker := time.NewTicker(15 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-release:
+				return
+			case <-ticker.C:
+				_, _ = io.WriteString(w, ": heartbeat\n\n")
+				w.(http.Flusher).Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+	defer close(release)
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	z := resolvedRoute{
+		Route:      Route{ID: 1, PublicName: "model", UpstreamModel: "model"},
+		Provider:   Provider{ID: 1, Type: "openai_compatible", BaseURL: upstream.URL, RequestTimeoutMS: 40},
+		Credential: "secret",
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"model","stream":true}`))
+	result := a.proxyUpstream(httptest.NewRecorder(), req, z, proxyOptions{
+		Endpoint:           "/v1/chat/completions",
+		RawBody:            []byte(`{"model":"model","stream":true}`),
+		Stream:             true,
+		UsageFormat:        "openai",
+		SafeTransportRetry: true,
+		OutputStartTimeout: 40 * time.Millisecond,
+		IdleTimeout:        80 * time.Millisecond,
+	})
+	if result.Status != http.StatusGatewayTimeout || !result.Handled || result.Reason != "upstream_stalled" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
 func TestProviderAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
