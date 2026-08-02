@@ -223,9 +223,10 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 			// 构造最小 resolvedRoute 用于调用 refresh
 			z := &resolvedRoute{
 				Provider: Provider{
-					ID:   p.ID,
-					Name: p.Name,
-					Type: p.Type,
+					ID:           p.ID,
+					Name:         p.Name,
+					Type:         p.Type,
+					IPPoolNodeID: p.IPPoolNodeID,
 				},
 				AuthCredential: p.AuthCredential,
 				Credential:     p.Credential,
@@ -279,7 +280,7 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 	}
 
 	// 发起探测请求
-	resp, err := h.app.client.Do(req)
+	resp, err := h.app.doProviderRequest(req, p.IPPoolNodeID)
 	firstByte := time.Since(start).Milliseconds()
 
 	if err != nil {
@@ -321,7 +322,7 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 	if p.AuthCredential != nil && p.AuthCredential.RefreshToken != "" {
 		expires := parseTime(p.AuthCredential.ExpiresAt)
 		if expires == nil || !expires.After(time.Now().Add(oauthRefreshLeadTime())) {
-			z := &resolvedRoute{Provider: Provider{ID: p.ID, Name: p.Name, Type: p.Type}, AuthCredential: p.AuthCredential, Credential: p.Credential}
+			z := &resolvedRoute{Provider: Provider{ID: p.ID, Name: p.Name, Type: p.Type, IPPoolNodeID: p.IPPoolNodeID}, AuthCredential: p.AuthCredential, Credential: p.Credential}
 			if h.app.refreshProviderCredential(ctx, z, false) == nil {
 				p.Credential, p.AuthCredential = z.Credential, z.AuthCredential
 			}
@@ -335,7 +336,7 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 	if err != nil {
 		return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: sanitizeError(err.Error())}
 	}
-	resp, err := h.app.client.Do(req)
+	resp, err := h.app.doProviderRequest(req, p.IPPoolNodeID)
 	firstByte := time.Since(start).Milliseconds()
 	if err != nil {
 		latency := time.Since(start).Milliseconds()

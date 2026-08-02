@@ -254,6 +254,10 @@ type xaiOIDCConfiguration struct {
 }
 
 func (a *App) xaiOIDCConfiguration(ctx context.Context) (xaiOIDCConfiguration, error) {
+	return a.xaiOIDCConfigurationViaNode(ctx, nil)
+}
+
+func (a *App) xaiOIDCConfigurationViaNode(ctx context.Context, nodeID *int64) (xaiOIDCConfiguration, error) {
 	if !isTrustedXAIEndpoint(xaiOIDCDiscoveryURL) {
 		return xaiOIDCConfiguration{}, errors.New("xAI discovery configuration is invalid")
 	}
@@ -262,7 +266,7 @@ func (a *App) xaiOIDCConfiguration(ctx context.Context) (xaiOIDCConfiguration, e
 		return xaiOIDCConfiguration{}, errors.New("xAI discovery configuration is invalid")
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := a.client.Do(req)
+	resp, err := a.doProviderRequest(req, nodeID)
 	if err != nil {
 		return xaiOIDCConfiguration{}, errors.New("xAI authorization service is unavailable")
 	}
@@ -657,7 +661,11 @@ func oauthTokenErrorMessage(status int, body []byte) string {
 }
 
 func (a *App) readOAuthTokenResponse(req *http.Request, platform, source string) (ProviderCredential, error) {
-	resp, err := a.client.Do(req)
+	return a.readOAuthTokenResponseViaNode(req, platform, source, nil)
+}
+
+func (a *App) readOAuthTokenResponseViaNode(req *http.Request, platform, source string, nodeID *int64) (ProviderCredential, error) {
+	resp, err := a.doProviderRequest(req, nodeID)
 	if err != nil {
 		return ProviderCredential{}, errors.New("authentication service is unavailable")
 	}
@@ -1588,7 +1596,7 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 			return nil
 		}
 	}
-	refreshed, err := a.refreshOAuthCredential(ctx, current)
+	refreshed, err := a.refreshOAuthCredentialViaNode(ctx, current, z.Provider.IPPoolNodeID)
 	if err != nil {
 		detail := strings.TrimSpace(err.Error())
 		if detail == "" {
@@ -1615,6 +1623,10 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 }
 
 func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCredential) (ProviderCredential, error) {
+	return a.refreshOAuthCredentialViaNode(ctx, current, nil)
+}
+
+func (a *App) refreshOAuthCredentialViaNode(ctx context.Context, current ProviderCredential, nodeID *int64) (ProviderCredential, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var req *http.Request
@@ -1626,7 +1638,7 @@ func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCreden
 	case "grok":
 		tokenEndpoint, _ := current.Extra["token_endpoint"].(string)
 		if !isTrustedXAIEndpoint(tokenEndpoint) {
-			config, err := a.xaiOIDCConfiguration(ctx)
+			config, err := a.xaiOIDCConfigurationViaNode(ctx, nodeID)
 			if err != nil {
 				return current, err
 			}
@@ -1645,7 +1657,7 @@ func (a *App) refreshOAuthCredential(ctx context.Context, current ProviderCreden
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	fresh, err := a.readOAuthTokenResponse(req, current.Platform, current.Source)
+	fresh, err := a.readOAuthTokenResponseViaNode(req, current.Platform, current.Source, nodeID)
 	if err != nil {
 		return current, err
 	}
@@ -1807,9 +1819,10 @@ func (a *App) refreshProviderByID(ctx context.Context, providerID int64, force b
 	}
 	z := &resolvedRoute{
 		Provider: Provider{
-			ID:   p.ID,
-			Name: p.Name,
-			Type: p.Type,
+			ID:           p.ID,
+			Name:         p.Name,
+			Type:         p.Type,
+			IPPoolNodeID: p.IPPoolNodeID,
 		},
 		AuthCredential: p.AuthCredential,
 		Credential:     p.Credential,
@@ -1936,6 +1949,10 @@ func setCodexQuotaRequestHeaders(req *http.Request, accessToken, accountID strin
 }
 
 func (a *App) doCodexQuotaRequest(ctx context.Context, method, endpoint, accessToken, accountID string, body any) (map[string]any, int, error) {
+	return a.doCodexQuotaRequestViaNode(ctx, method, endpoint, accessToken, accountID, body, nil)
+}
+
+func (a *App) doCodexQuotaRequestViaNode(ctx context.Context, method, endpoint, accessToken, accountID string, body any, nodeID *int64) (map[string]any, int, error) {
 	var reader io.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -1952,7 +1969,7 @@ func (a *App) doCodexQuotaRequest(ctx context.Context, method, endpoint, accessT
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := a.client.Do(req)
+	resp, err := a.doProviderRequest(req, nodeID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -1982,7 +1999,11 @@ func (a *App) doCodexQuotaRequest(ctx context.Context, method, endpoint, accessT
 }
 
 func (a *App) doCodexQuotaGET(ctx context.Context, endpoint, accessToken, accountID string) (map[string]any, error) {
-	payload, _, err := a.doCodexQuotaRequest(ctx, http.MethodGet, endpoint, accessToken, accountID, nil)
+	return a.doCodexQuotaGETViaNode(ctx, endpoint, accessToken, accountID, nil)
+}
+
+func (a *App) doCodexQuotaGETViaNode(ctx context.Context, endpoint, accessToken, accountID string, nodeID *int64) (map[string]any, error) {
+	payload, _, err := a.doCodexQuotaRequestViaNode(ctx, http.MethodGet, endpoint, accessToken, accountID, nil, nodeID)
 	return payload, err
 }
 
@@ -2045,11 +2066,15 @@ func parseCodexResetCards(payload map[string]any) (int, []codexResetCard) {
 }
 
 func (a *App) fetchCodexAccountQuota(ctx context.Context, accessToken, accountID string) (*codexAccountQuota, error) {
+	return a.fetchCodexAccountQuotaViaNode(ctx, accessToken, accountID, nil)
+}
+
+func (a *App) fetchCodexAccountQuotaViaNode(ctx context.Context, accessToken, accountID string, nodeID *int64) (*codexAccountQuota, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	usageURL := "https://chatgpt.com/backend-api/wham/usage"
-	usage, err := a.doCodexQuotaGET(ctx, usageURL, accessToken, accountID)
+	usage, err := a.doCodexQuotaGETViaNode(ctx, usageURL, accessToken, accountID, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -2077,7 +2102,7 @@ func (a *App) fetchCodexAccountQuota(ctx context.Context, accessToken, accountID
 	}
 
 	// Prefer dedicated reset-credit inventory; fall back to summary embedded in /wham/usage.
-	resetPayload, resetErr := a.doCodexQuotaGET(ctx, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", accessToken, accountID)
+	resetPayload, resetErr := a.doCodexQuotaGETViaNode(ctx, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", accessToken, accountID, nodeID)
 	if resetErr == nil {
 		quota.ResetCards, quota.ResetCardDetails = parseCodexResetCards(resetPayload)
 	} else {
@@ -2118,28 +2143,34 @@ func (a *App) fetchCodexAccountQuota(ctx context.Context, accessToken, accountID
 	return quota, nil
 }
 
-func (a *App) loadCodexOAuthCredential(ctx context.Context, id int64) (ProviderCredential, error) {
+func (a *App) loadCodexOAuthCredential(ctx context.Context, id int64) (ProviderCredential, *int64, error) {
 	var providerType, authKind string
 	var encrypted []byte
-	err := a.db.QueryRowContext(ctx, `SELECT type, auth_kind, credential FROM providers WHERE id=?`, id).Scan(&providerType, &authKind, &encrypted)
+	var nodeID sql.NullInt64
+	err := a.db.QueryRowContext(ctx, `SELECT type, auth_kind, credential, ip_pool_node_id FROM providers WHERE id=?`, id).Scan(&providerType, &authKind, &encrypted, &nodeID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ProviderCredential{}, errProviderNotFound
+		return ProviderCredential{}, nil, errProviderNotFound
 	}
 	if err != nil {
-		return ProviderCredential{}, err
+		return ProviderCredential{}, nil, err
 	}
 	if authKind != "oauth" || providerType != "codex_oauth" {
-		return ProviderCredential{}, errUnsupportedQuotaProvider
+		return ProviderCredential{}, nil, errUnsupportedQuotaProvider
 	}
 	plaintext, err := a.decrypt(encrypted)
 	if err != nil {
-		return ProviderCredential{}, err
+		return ProviderCredential{}, nil, err
 	}
 	var credential ProviderCredential
 	if err := json.Unmarshal([]byte(plaintext), &credential); err != nil {
-		return ProviderCredential{}, err
+		return ProviderCredential{}, nil, err
 	}
-	return credential, nil
+	var selected *int64
+	if nodeID.Valid {
+		value := nodeID.Int64
+		selected = &value
+	}
+	return credential, selected, nil
 }
 
 func (a *App) persistOAuthCredential(ctx context.Context, id int64, updated ProviderCredential) {
@@ -2154,14 +2185,14 @@ func (a *App) persistOAuthCredential(ctx context.Context, id int64, updated Prov
 	_, _ = a.db.ExecContext(ctx, `UPDATE providers SET credential=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status='ready',auth_has_refresh=?,updated_at=? WHERE id=?`, sealed, updated.AccountID, updated.Email, nullableString(updated.ExpiresAt), nullableString(updated.LastRefresh), boolInt(updated.RefreshToken != ""), now(), id)
 }
 
-func (a *App) ensureCodexAccessToken(ctx context.Context, id int64, credential ProviderCredential) (ProviderCredential, error) {
+func (a *App) ensureCodexAccessToken(ctx context.Context, id int64, credential ProviderCredential, nodeID *int64) (ProviderCredential, error) {
 	if strings.TrimSpace(credential.AccessToken) != "" {
 		return credential, nil
 	}
 	if strings.TrimSpace(credential.RefreshToken) == "" {
 		return credential, errors.New("access token not found")
 	}
-	refreshed, err := a.refreshOAuthCredential(ctx, credential)
+	refreshed, err := a.refreshOAuthCredentialViaNode(ctx, credential, nodeID)
 	if err != nil || strings.TrimSpace(refreshed.AccessToken) == "" {
 		if err != nil {
 			return credential, err
@@ -2172,21 +2203,21 @@ func (a *App) ensureCodexAccessToken(ctx context.Context, id int64, credential P
 	return refreshed, nil
 }
 
-func (a *App) withCodexCredential(ctx context.Context, id int64, fn func(ProviderCredential) (any, error)) (any, error) {
-	credential, err := a.loadCodexOAuthCredential(ctx, id)
+func (a *App) withCodexCredential(ctx context.Context, id int64, fn func(ProviderCredential, *int64) (any, error)) (any, error) {
+	credential, nodeID, err := a.loadCodexOAuthCredential(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	credential, err = a.ensureCodexAccessToken(ctx, id, credential)
+	credential, err = a.ensureCodexAccessToken(ctx, id, credential, nodeID)
 	if err != nil {
 		return nil, err
 	}
-	result, err := fn(credential)
+	result, err := fn(credential, nodeID)
 	if err != nil && strings.TrimSpace(credential.RefreshToken) != "" {
-		refreshed, refreshErr := a.refreshOAuthCredential(ctx, credential)
+		refreshed, refreshErr := a.refreshOAuthCredentialViaNode(ctx, credential, nodeID)
 		if refreshErr == nil && strings.TrimSpace(refreshed.AccessToken) != "" {
 			a.persistOAuthCredential(ctx, id, refreshed)
-			return fn(refreshed)
+			return fn(refreshed, nodeID)
 		}
 	}
 	return result, err
@@ -2197,10 +2228,10 @@ var (
 	errUnsupportedQuotaProvider = errors.New("only Codex OAuth providers support quota operations")
 )
 
-func (a *App) redeemCodexResetCard(ctx context.Context, accessToken, accountID, creditID string) (map[string]any, error) {
+func (a *App) redeemCodexResetCard(ctx context.Context, accessToken, accountID, creditID string, nodeID *int64) (map[string]any, error) {
 	if strings.TrimSpace(creditID) == "" {
 		// Auto-pick the soonest-expiring available card.
-		inventory, err := a.doCodexQuotaGET(ctx, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", accessToken, accountID)
+		inventory, err := a.doCodexQuotaGETViaNode(ctx, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", accessToken, accountID, nodeID)
 		if err != nil {
 			return nil, err
 		}
@@ -2237,7 +2268,7 @@ func (a *App) redeemCodexResetCard(ctx context.Context, accessToken, accountID, 
 		"credit_id":         creditID,
 		"redeem_request_id": redeemID,
 	}
-	result, _, err := a.doCodexQuotaRequest(ctx, http.MethodPost, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", accessToken, accountID, payload)
+	result, _, err := a.doCodexQuotaRequestViaNode(ctx, http.MethodPost, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume", accessToken, accountID, payload, nodeID)
 	if err != nil {
 		return nil, err
 	}
@@ -2267,8 +2298,8 @@ func (a *App) authQuota(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 
 	switch {
 	case action == "" && r.Method == http.MethodGet:
-		result, err := a.withCodexCredential(r.Context(), id, func(credential ProviderCredential) (any, error) {
-			return a.fetchCodexAccountQuota(r.Context(), credential.AccessToken, credential.AccountID)
+		result, err := a.withCodexCredential(r.Context(), id, func(credential ProviderCredential, nodeID *int64) (any, error) {
+			return a.fetchCodexAccountQuotaViaNode(r.Context(), credential.AccessToken, credential.AccountID, nodeID)
 		})
 		if err != nil {
 			a.writeQuotaError(w, err)
@@ -2282,12 +2313,12 @@ func (a *App) authQuota(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if r.Body != nil {
 			_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in)
 		}
-		result, err := a.withCodexCredential(r.Context(), id, func(credential ProviderCredential) (any, error) {
-			redeemed, redeemErr := a.redeemCodexResetCard(r.Context(), credential.AccessToken, credential.AccountID, strings.TrimSpace(in.CreditID))
+		result, err := a.withCodexCredential(r.Context(), id, func(credential ProviderCredential, nodeID *int64) (any, error) {
+			redeemed, redeemErr := a.redeemCodexResetCard(r.Context(), credential.AccessToken, credential.AccountID, strings.TrimSpace(in.CreditID), nodeID)
 			if redeemErr != nil {
 				return nil, redeemErr
 			}
-			quota, quotaErr := a.fetchCodexAccountQuota(r.Context(), credential.AccessToken, credential.AccountID)
+			quota, quotaErr := a.fetchCodexAccountQuotaViaNode(r.Context(), credential.AccessToken, credential.AccountID, nodeID)
 			if quotaErr != nil {
 				return map[string]any{"redeemed": redeemed, "quota": nil, "warning": quotaErr.Error()}, nil
 			}

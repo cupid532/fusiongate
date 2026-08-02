@@ -62,6 +62,7 @@ type App struct {
 	ready             atomic.Bool
 	budgetMu          sync.Mutex
 	budgetInflight    map[int64]bool
+	ipPool            *ipPoolManager
 }
 type rateWindow struct {
 	At    time.Time
@@ -118,6 +119,9 @@ type Provider struct {
 	BalanceMultiplierGrok   float64 `json:"balance_multiplier_grok"`
 	BalanceMultiplierGemini float64 `json:"balance_multiplier_gemini"`
 	BalanceMultiplierOther  float64 `json:"balance_multiplier_other"`
+	IPPoolNodeID            *int64  `json:"ip_pool_node_id,omitempty"`
+	IPPoolNodeName          string  `json:"ip_pool_node_name,omitempty"`
+	IPPoolNodeProtocol      string  `json:"ip_pool_node_protocol,omitempty"`
 }
 
 type ProviderGroup struct {
@@ -238,6 +242,10 @@ func New(cfg Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
+	a.ipPool = newIPPoolManager(a)
+	if err := a.reconcileIPPool(context.Background()); err != nil {
+		a.log.Warn("IP pool starts degraded", "error", err)
+	}
 	a.healthChecker = NewHealthChecker(a, healthCheckIntervalFromEnv(), healthCheckConcurrencyFromEnv())
 	a.healthCheckJobs = newHealthCheckJobManager(a)
 	for _, file := range []string{"fusiongate.db", "fusiongate.db-wal", "fusiongate.db-shm"} {
@@ -256,6 +264,9 @@ func (a *App) Close() error {
 	}
 	if a.healthCheckJobs != nil {
 		a.healthCheckJobs.Close()
+	}
+	if a.ipPool != nil {
+		a.ipPool.Close()
 	}
 	return a.db.Close()
 }
@@ -312,6 +323,12 @@ func (a *App) migrate(ctx context.Context) error {
 	}
 	_, err := a.db.ExecContext(ctx, `
   CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS ip_pool_nodes (
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, protocol TEXT NOT NULL, server TEXT NOT NULL,
+    share_link BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, local_port INTEGER NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending', last_error TEXT NOT NULL DEFAULT '', last_checked_at TEXT,
+    last_latency_ms INTEGER NOT NULL DEFAULT 0, exit_ip TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS providers (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, base_url TEXT NOT NULL,
     credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 1,
@@ -397,6 +414,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "balance_multiplier_grok", "REAL NOT NULL DEFAULT 1"},
 		{"providers", "balance_multiplier_gemini", "REAL NOT NULL DEFAULT 1"},
 		{"providers", "balance_multiplier_other", "REAL NOT NULL DEFAULT 1"},
+		{"providers", "ip_pool_node_id", "INTEGER REFERENCES ip_pool_nodes(id) ON DELETE SET NULL"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -438,6 +456,8 @@ CREATE INDEX IF NOT EXISTS idx_ledger_provider_created ON request_ledger(provide
 CREATE INDEX IF NOT EXISTS idx_ledger_model_created ON request_ledger(public_model,created_at);
 CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_order, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_auth_fingerprint ON providers(auth_fingerprint) WHERE auth_fingerprint <> '';
+CREATE INDEX IF NOT EXISTS idx_providers_ip_pool_node ON providers(ip_pool_node_id);
+CREATE INDEX IF NOT EXISTS idx_ip_pool_nodes_enabled ON ip_pool_nodes(enabled,id);
 UPDATE request_ledger SET usage_reported=1 WHERE usage_reported=0 AND (input_tokens>0 OR output_tokens>0 OR cached_tokens>0 OR reasoning_tokens>0);`)
 	if err != nil {
 		return err
@@ -625,6 +645,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/session", a.admin(a.session))
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
 	mux.HandleFunc("/api/admin/providers/batch", a.admin(a.providerBatch))
+	mux.HandleFunc("/api/admin/ip-pool", a.admin(a.ipPoolNodes))
+	mux.HandleFunc("/api/admin/ip-pool/", a.admin(a.ipPoolNodeByID))
 	mux.HandleFunc("/api/admin/providers/", a.admin(a.providerByID))
 	mux.HandleFunc("/api/admin/health-checks", a.admin(a.healthChecks))
 	mux.HandleFunc("/api/admin/health-checks/", a.admin(a.healthCheckByID))
