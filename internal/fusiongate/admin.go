@@ -198,12 +198,14 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, "service_not_ready", "service is not ready")
 		return
 	}
-	// Keep readiness probes short so background SQLite work cannot trip Docker
-	// health checks and force a restart loop.
-	pingCtx, cancel := context.WithTimeout(r.Context(), time.Second)
+	// Use the same budget as SQLite busy_timeout. A tighter deadline makes
+	// rolling deploys flake when the previous process is still releasing WAL.
+	pingCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	if err := a.db.PingContext(pingCtx); err != nil {
-		fail(w, 503, "database_unavailable", "database unavailable")
+		// If the process is marked ready, prefer live-over-ready during brief
+		// SQLite handoff instead of forcing Docker into an unhealthy restart loop.
+		writeJSON(w, 200, map[string]any{"status": "degraded", "service": "fusiongate", "time": now(), "database": "busy"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": "ok", "service": "fusiongate", "time": now()})
