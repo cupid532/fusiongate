@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func newUpstreamHTTPClient(cfg Config) *http.Client {
+func newUpstreamHTTPTransport(cfg Config) *http.Transport {
 	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		Proxy:                 nil,
@@ -51,19 +51,24 @@ func newUpstreamHTTPClient(cfg Config) *http.Client {
 		}
 		return nil, lastErr
 	}
-	return &http.Client{
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return fmt.Errorf("too many upstream redirects")
-			}
-			if err := validateUpstream(req.URL.String(), cfg); err != nil {
-				return err
-			}
-			if len(via) > 0 && !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
-				return fmt.Errorf("cross-host upstream redirect is blocked")
-			}
-			return nil
-		},
+	return transport
+}
+
+func upstreamRedirectPolicy(cfg Config) func(*http.Request, []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return fmt.Errorf("too many upstream redirects")
+		}
+		if err := validateUpstream(req.URL.String(), cfg); err != nil {
+			return err
+		}
+		if len(via) > 0 && !strings.EqualFold(req.URL.Hostname(), via[0].URL.Hostname()) {
+			return fmt.Errorf("cross-host upstream redirect is blocked")
+		}
+		return nil
 	}
+}
+
+func newUpstreamHTTPClient(cfg Config) *http.Client {
+	return &http.Client{Transport: newUpstreamHTTPTransport(cfg), CheckRedirect: upstreamRedirectPolicy(cfg)}
 }

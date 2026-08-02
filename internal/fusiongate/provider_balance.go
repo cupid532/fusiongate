@@ -191,8 +191,8 @@ func (a *App) providerBalance(ctx context.Context, id int64, refresh bool) (prov
 	}
 
 	upstream := ProviderUpstreamBalance{Status: "error", Source: "openai_codex", CheckedAt: now()}
-	result, err := a.withCodexCredential(ctx, id, func(credential ProviderCredential) (any, error) {
-		return a.fetchCodexAccountQuota(ctx, credential.AccessToken, credential.AccountID)
+	result, err := a.withCodexCredential(ctx, id, func(credential ProviderCredential, nodeID *int64) (any, error) {
+		return a.fetchCodexAccountQuotaViaNode(ctx, credential.AccessToken, credential.AccountID, nodeID)
 	})
 	if err != nil {
 		upstream.Message = "upstream quota could not be read"

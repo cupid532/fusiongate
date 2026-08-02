@@ -709,7 +709,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
 
-	resp, err := a.client.Do(req)
+	resp, err := a.doProviderRequest(req, z.Provider.IPPoolNodeID)
 	if err != nil {
 		if downstreamCanceled(incoming) {
 			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}

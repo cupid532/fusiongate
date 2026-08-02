@@ -79,6 +79,7 @@ type discoveryProvider struct {
 	Credential       string
 	AuthCredential   *ProviderCredential
 	RequestTimeoutMS int
+	IPPoolNodeID     *int64
 }
 
 type discoveryEnvelope struct {
@@ -101,7 +102,8 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 	var p discoveryProvider
 	var encrypted []byte
 	var authKind string
-	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS)
+	var ipPoolNodeID sql.NullInt64
+	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,ip_pool_node_id FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS, &ipPoolNodeID)
 	if err != nil {
 		return p, err
 	}
@@ -114,6 +116,10 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 		return p, err
 	}
 	p.Credential = token
+	if ipPoolNodeID.Valid {
+		value := ipPoolNodeID.Int64
+		p.IPPoolNodeID = &value
+	}
 	if authKind == "oauth" {
 		// Discovery first uses the stored access token. Some OAuth providers
 		// issue tokens that remain accepted after locally recorded expiry
@@ -392,7 +398,7 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 			return nil, err
 		}
 		setDiscoveryAuth(req, p)
-		resp, err := a.client.Do(req)
+		resp, err := a.doProviderRequest(req, p.IPPoolNodeID)
 		if err != nil {
 			lastErr = fmt.Errorf("model discovery request failed: %s", safeDiscoveryError(err, p.Credential))
 			continue
@@ -498,7 +504,7 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 		// A 401/403 is the only discovery failure that can justify refreshing.
 		// Force a single refresh because the provider may reject a token even
 		// when its locally recorded expiry has not yet elapsed.
-		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type}, Credential: p.Credential, AuthCredential: p.AuthCredential}
+		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type, IPPoolNodeID: p.IPPoolNodeID}, Credential: p.Credential, AuthCredential: p.AuthCredential}
 		if refreshErr := a.refreshProviderCredential(ctx, &z, true); refreshErr != nil {
 			return modelDiscoveryResult{}, refreshErr
 		}

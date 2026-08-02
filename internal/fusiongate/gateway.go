@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -224,7 +225,7 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
 	       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
 	       p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
-       COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,'')
+       COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
 WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1
 ORDER BY p.priority DESC,p.id,r.id`, model)
@@ -238,6 +239,7 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 		var routeEnabled, providerEnabled int
 		var credential []byte
 		var authKind string
+		var ipPoolNodeID sql.NullInt64
 		if err := rows.Scan(
 			&z.Route.ID, &z.Route.ProviderID, &z.Route.PublicName, &z.Route.UpstreamModel, &z.Route.Capabilities, &routeEnabled,
 			&z.Route.Priority, &z.Route.SortOrder, &z.Route.InputPriceMicros, &z.Route.CachedPriceMicros, &z.Route.OutputPriceMicros,
@@ -247,12 +249,16 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 			&z.Provider.PassthroughMode, &z.Provider.ClientPolicy, &z.Provider.MaxConcurrency, &z.Provider.RequestTimeoutMS,
 			&z.Provider.FailureThreshold, &z.Provider.CooldownSeconds, &z.Provider.ConsecutiveFailures,
 			&z.Provider.CircuitOpenUntil, &z.Provider.LastError, &z.Provider.LastLatencyMS, &z.Provider.LastFirstByteMS,
-			&z.Provider.LastSuccessAt, &z.Provider.LastFailureAt,
+			&z.Provider.LastSuccessAt, &z.Provider.LastFailureAt, &ipPoolNodeID,
 		); err != nil {
 			return nil, err
 		}
 		z.Route.Enabled = strBool(routeEnabled)
 		z.Provider.Enabled = strBool(providerEnabled)
+		if ipPoolNodeID.Valid {
+			value := ipPoolNodeID.Int64
+			z.Provider.IPPoolNodeID = &value
+		}
 		if !matchesCapability(z.Route.Capabilities, requiredCapability) {
 			continue
 		}
@@ -684,7 +690,7 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 	if err := setProviderAuth(req, z); err != nil {
 		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
-	resp, err := a.client.Do(req)
+	resp, err := a.doProviderRequest(req, z.Provider.IPPoolNodeID)
 	if err != nil {
 		if downstreamCanceled(r) {
 			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}
@@ -748,7 +754,7 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	copyUpstreamRequestHeaders(req.Header, r.Header)
 	req.Header.Set("content-type", "application/json")
-	resp, err := a.client.Do(req)
+	resp, err := a.doProviderRequest(req, z.Provider.IPPoolNodeID)
 	if err != nil {
 		if downstreamCanceled(r) {
 			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}

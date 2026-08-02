@@ -59,6 +59,27 @@ func TestRoutesPageUsesProviderDiscoveryAndUnifiedMapping(t *testing.T) {
 	}
 }
 
+func TestIPPoolUIKeepsDirectAsDefaultAndNeverRendersShareLink(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		`data-page="ippool"`,
+		`id="page-ippool"`,
+		`本机直连（默认）`,
+		`id="providerIPPoolNode"`,
+		`function renderIPPool()`,
+		`function openProviderEgress(id)`,
+		`api('/api/admin/ip-pool')`,
+		`ip_pool_node_id:Number(o.ipPoolNodeID)||0`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("IP pool UI is missing %q", required)
+		}
+	}
+	if strings.Contains(html, "node.share_link") || strings.Contains(html, "x.share_link") {
+		t.Fatal("IP pool UI must never expect or render stored share links")
+	}
+}
+
 func TestModelPickerShowsExistingUnifiedAliases(t *testing.T) {
 	html := string(adminHTML)
 	for _, required := range []string{

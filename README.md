@@ -10,6 +10,7 @@
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
 - 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
 - Provider 管理：OpenAI 官方 Key、Grok / xAI 官方 Key（默认 `https://api.x.ai`）、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude / Grok OAuth；官方 API Key 与 OAuth 认证文件是独立渠道类型。普通 API 渠道可随时编辑名称、类型、Base URL、API Key 与调度设置，更换 Key 无需删除渠道或重建模型路由；保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
+- IP 池与固定出口：默认所有渠道使用服务器本机直连；管理员可粘贴 SOCKS4/5、HTTP(S)、Shadowsocks、Trojan、VLESS（含 Reality）、VMess、Hysteria/Hysteria2、TUIC、AnyTLS 分享链接，或单个受支持的 sing-box outbound JSON，并为普通 API 渠道或 OAuth 认证文件指定节点。转发、模型识别、检活、OAuth 续签和额度查询使用同一渠道出口；节点故障时严格失败并交给现有渠道故障转移，不会静默泄漏到本机直连。
 - 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE）、Grok 设备授权，以及常见工具导出的 Codex / Claude / Grok OAuth JSON。JSON 可一次选择多个文件，必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。认证文件支持按厂商筛选、批量选择和敏感凭据 JSON 导出。
 - 安全检活：认证文件可自由勾选后一键检活；默认“基础检活”只读取模型列表、不会生成内容，明确选择“真实生成测速”时才发送最多 1 token 的请求并记录首字节/总耗时。任务采用低并发、单项超时、重复探测互斥、可取消和逐项结果展示，不会因一次手动检活自动启停或删除账号。
 - 公共模型 / 别名与多条候选路由；既可删除单条渠道映射，也可从模型页一次删除某个公开模型的全部映射。渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级。数字越大越优先，同级按渠道添加顺序自动故障转移；可在渠道页全局选择优先级、逐个轮询、智能轮询或智能选择。
@@ -54,7 +55,7 @@ go run ./cmd/fusiongate
 
 打开 `http://127.0.0.1:8787`，登录后依次：
 
-1. 添加普通 API Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），或在“授权接入”中完成 Codex / Claude 浏览器授权、导入兼容 OAuth JSON。系统只识别候选模型，不会直接添加；在候选弹窗中勾选需要的模型并确认导入。公开模型名与保存的上游模型 ID 会统一转为小写。
+1. 添加普通 API Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），或在“授权接入”中完成 Codex / Claude 浏览器授权、导入兼容 OAuth JSON。系统只识别候选模型，不会直接添加；在候选弹窗中勾选需要的模型并确认导入。公开模型名与保存的上游模型 ID 会统一转为小写。需要固定出口时，可先在“IP 池”添加节点，再在渠道的“网络出口”中选择；不选择即保持本机直连。
 2. 按需创建额外别名，例如公开名 `smart` → 上游模型 `gpt-4.1`。
 3. 创建下游 API Key，从实时模型列表勾选允许/拒绝权限；完整 Key 可在管理员控制台再次复制。
 4. 在任意 OpenAI SDK / 客户端中使用：
@@ -139,6 +140,19 @@ sudo bash install.sh
 | `FUSIONGATE_PRICING_SYNC_INTERVAL` | 官方价格同步间隔，默认 `24h`，最低 `1h`；设为 `0`、`off` 或 `false` 可关闭。 |
 | `FUSIONGATE_ALLOW_INSECURE_UPSTREAMS` | 仅可信开发环境可设 `true`，允许 HTTP。 |
 | `FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS` | 仅可信开发环境可设 `true`，允许私有网络上游。 |
+| `FUSIONGATE_SING_BOX_PATH` | 可选，sing-box 可执行文件路径；官方 Docker 镜像已内置固定版本，本机运行仅在启用 IP 池节点时需要安装。 |
+
+## IP 池与渠道网络出口
+
+IP 池由 FusionGate 管理节点元数据与渠道绑定，实际多协议网络栈由镜像内固定版本的 [sing-box](https://sing-box.sagernet.org/) 提供：
+
+- 分享链接和其中的密码、UUID、Reality 公钥等信息使用与上游凭据相同的 AES-256-GCM 主密钥加密后写入 SQLite，管理 API 和页面不回显原始链接。
+- 运行配置只写入权限为 `0700/0600` 的临时目录；sing-box 读取并打开仅监听 `127.0.0.1` 的本地 SOCKS 入口后立即删除配置文件，不会把节点密钥明文持久化到 `/data`。
+- FusionGate 仍在本地解析上游 API 域名并过滤私网、回环、链路本地、未指定与组播地址，使用代理不会绕过原有 SSRF 防护。
+- 已绑定节点不可用或被暂停时，渠道会产生可重试网络失败并按现有模型路由切换到其他渠道；不会自动改用服务器真实出口。删除仍被渠道引用的节点会被拒绝。
+- 分享 URI 无法完整表达的高级配置可粘贴单个 sing-box outbound JSON。仅允许代理型 outbound，禁止 `direct`、`block`、`selector` 等可改变隔离语义的类型。
+
+源码本机运行且需要 IP 池时，请安装兼容的 sing-box，并按需设置 `FUSIONGATE_SING_BOX_PATH`。不创建或不启用任何节点时，FusionGate 不启动 sing-box，行为与升级前一致。
 
 ## 备份与恢复
 
