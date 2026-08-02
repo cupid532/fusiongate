@@ -64,14 +64,19 @@ func (a *App) runPricingSyncLoop(ctx context.Context) {
 	if interval <= 0 {
 		return
 	}
-	timer := time.NewTimer(5 * time.Second)
+	// Delay the first sync so startup health checks and admin traffic are not
+	// blocked by a long network scrape on the single SQLite connection.
+	timer := time.NewTimer(2 * time.Minute)
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			if _, err := a.syncOfficialPricing(ctx); err != nil {
+			syncCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			_, err := a.syncOfficialPricing(syncCtx)
+			cancel()
+			if err != nil {
 				a.log.Warn("official pricing sync failed", "error", err)
 			}
 			timer.Reset(interval)

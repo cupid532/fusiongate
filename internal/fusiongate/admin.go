@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -197,7 +198,11 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, "service_not_ready", "service is not ready")
 		return
 	}
-	if err := a.db.PingContext(r.Context()); err != nil {
+	// Keep readiness probes short so background SQLite work cannot trip Docker
+	// health checks and force a restart loop.
+	pingCtx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+	if err := a.db.PingContext(pingCtx); err != nil {
 		fail(w, 503, "database_unavailable", "database unavailable")
 		return
 	}
