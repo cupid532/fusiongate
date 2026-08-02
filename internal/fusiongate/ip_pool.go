@@ -386,7 +386,7 @@ func (a *App) reconcileIPPool(ctx context.Context) error {
 func (a *App) ipPoolNodes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT n.id,n.name,n.protocol,n.server,n.enabled,n.status,n.last_error,COALESCE(n.last_checked_at,''),n.last_latency_ms,n.exit_ip,(SELECT COUNT(*) FROM providers p WHERE p.ip_pool_node_id=n.id),n.created_at,n.updated_at FROM ip_pool_nodes n ORDER BY n.id`)
+		rows, err := a.db.Query(`SELECT n.id,n.name,n.protocol,n.server,n.enabled,n.status,n.last_error,COALESCE(n.last_checked_at,''),n.last_latency_ms,n.exit_ip,((SELECT COUNT(*) FROM providers p WHERE p.ip_pool_node_id=n.id)+(SELECT COUNT(*) FROM provider_api_keys k WHERE k.ip_pool_node_id=n.id)),n.created_at,n.updated_at FROM ip_pool_nodes n ORDER BY n.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -560,12 +560,12 @@ func (a *App) ipPoolNodeByID(w http.ResponseWriter, r *http.Request, _ adminCtx)
 		writeJSON(w, http.StatusOK, response)
 	case http.MethodDelete:
 		var providerCount int
-		if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE ip_pool_node_id=?`, id).Scan(&providerCount); err != nil {
+		if err := a.db.QueryRow(`SELECT (SELECT COUNT(*) FROM providers WHERE ip_pool_node_id=?)+(SELECT COUNT(*) FROM provider_api_keys WHERE ip_pool_node_id=?)`, id, id).Scan(&providerCount); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
 		if providerCount > 0 {
-			fail(w, http.StatusConflict, "node_in_use", fmt.Sprintf("node is still assigned to %d provider(s); change their network exit before deleting it", providerCount))
+			fail(w, http.StatusConflict, "node_in_use", fmt.Sprintf("node is still assigned to %d provider or API key configuration(s); change their network exit before deleting it", providerCount))
 			return
 		}
 		res, err := a.db.Exec(`DELETE FROM ip_pool_nodes WHERE id=?`, id)

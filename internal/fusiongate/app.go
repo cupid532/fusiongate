@@ -122,6 +122,9 @@ type Provider struct {
 	IPPoolNodeID            *int64  `json:"ip_pool_node_id,omitempty"`
 	IPPoolNodeName          string  `json:"ip_pool_node_name,omitempty"`
 	IPPoolNodeProtocol      string  `json:"ip_pool_node_protocol,omitempty"`
+	DefaultModel            string  `json:"default_model,omitempty"`
+	APIKeyCount             int     `json:"api_key_count"`
+	EnabledAPIKeyCount      int     `json:"enabled_api_key_count"`
 }
 
 type ProviderGroup struct {
@@ -342,7 +345,17 @@ func (a *App) migrate(ctx context.Context) error {
     auth_account_id TEXT NOT NULL DEFAULT '', auth_email TEXT NOT NULL DEFAULT '', auth_expires_at TEXT,
     auth_last_refresh_at TEXT, auth_status TEXT NOT NULL DEFAULT 'ready', auth_fingerprint TEXT NOT NULL DEFAULT '',
     auth_has_refresh INTEGER NOT NULL DEFAULT 0,
+    default_model TEXT NOT NULL DEFAULT '', multi_key_initialized INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS provider_api_keys (
+    id INTEGER PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+    credential BLOB NOT NULL, fingerprint TEXT NOT NULL, key_hint TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '', egress_mode TEXT NOT NULL DEFAULT 'inherit',
+    ip_pool_node_id INTEGER REFERENCES ip_pool_nodes(id) ON DELETE RESTRICT,
+    enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'untested', last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT,
+    last_test_latency_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE(provider_id,fingerprint));
   CREATE TABLE IF NOT EXISTS model_routes (
     id INTEGER PRIMARY KEY, public_name TEXT NOT NULL, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     upstream_model TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT 'chat,stream', enabled INTEGER NOT NULL DEFAULT 1,
@@ -415,6 +428,8 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "balance_multiplier_gemini", "REAL NOT NULL DEFAULT 1"},
 		{"providers", "balance_multiplier_other", "REAL NOT NULL DEFAULT 1"},
 		{"providers", "ip_pool_node_id", "INTEGER REFERENCES ip_pool_nodes(id) ON DELETE SET NULL"},
+		{"providers", "default_model", "TEXT NOT NULL DEFAULT ''"},
+		{"providers", "multi_key_initialized", "INTEGER NOT NULL DEFAULT 0"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -458,6 +473,8 @@ CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_or
 CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_auth_fingerprint ON providers(auth_fingerprint) WHERE auth_fingerprint <> '';
 CREATE INDEX IF NOT EXISTS idx_providers_ip_pool_node ON providers(ip_pool_node_id);
 CREATE INDEX IF NOT EXISTS idx_ip_pool_nodes_enabled ON ip_pool_nodes(enabled,id);
+CREATE INDEX IF NOT EXISTS idx_provider_api_keys_selection ON provider_api_keys(provider_id,enabled,sort_order,id);
+CREATE INDEX IF NOT EXISTS idx_provider_api_keys_node ON provider_api_keys(ip_pool_node_id);
 UPDATE request_ledger SET usage_reported=1 WHERE usage_reported=0 AND (input_tokens>0 OR output_tokens>0 OR cached_tokens>0 OR reasoning_tokens>0);`)
 	if err != nil {
 		return err
@@ -498,6 +515,9 @@ CREATE INDEX IF NOT EXISTS idx_groups_order ON provider_groups(sort_order, id);`
 
 	_, err = a.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_providers_group ON providers(group_id, group_sort_order, id);`)
 	if err != nil {
+		return err
+	}
+	if err := a.migrateProviderAPIKeys(ctx); err != nil {
 		return err
 	}
 	_, err = a.db.ExecContext(ctx, `PRAGMA user_version=1`)

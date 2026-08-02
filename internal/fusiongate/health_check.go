@@ -319,6 +319,9 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 	if err != nil {
 		return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "failed to load provider"}
 	}
+	if err := h.app.applyProviderKeyForModel(ctx, &p, target.UpstreamModel); err != nil {
+		return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: sanitizeError(err.Error())}
+	}
 	if p.AuthCredential != nil && p.AuthCredential.RefreshToken != "" {
 		expires := parseTime(p.AuthCredential.ExpiresAt)
 		if expires == nil || !expires.After(time.Now().Add(oauthRefreshLeadTime())) {
