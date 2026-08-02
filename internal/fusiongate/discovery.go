@@ -103,9 +103,23 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 	var encrypted []byte
 	var authKind string
 	var ipPoolNodeID sql.NullInt64
-	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,ip_pool_node_id FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS, &ipPoolNodeID)
+	var multiKeyInitialized int
+	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,ip_pool_node_id,multi_key_initialized FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS, &ipPoolNodeID, &multiKeyInitialized)
 	if err != nil {
 		return p, err
+	}
+	if ipPoolNodeID.Valid {
+		value := ipPoolNodeID.Int64
+		p.IPPoolNodeID = &value
+	}
+	if authKind == "api_key" {
+		selected, err := a.loadDiscoveryProviderKey(ctx, p.ID, p.IPPoolNodeID, encrypted, strBool(multiKeyInitialized))
+		if err != nil {
+			return p, err
+		}
+		p.Credential = selected.Credential
+		p.IPPoolNodeID = selected.IPPoolNodeID
+		return p, nil
 	}
 	plaintext, err := a.decrypt(encrypted)
 	if err != nil {
@@ -116,10 +130,6 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 		return p, err
 	}
 	p.Credential = token
-	if ipPoolNodeID.Valid {
-		value := ipPoolNodeID.Int64
-		p.IPPoolNodeID = &value
-	}
 	if authKind == "oauth" {
 		// Discovery first uses the stored access token. Some OAuth providers
 		// issue tokens that remain accepted after locally recorded expiry
