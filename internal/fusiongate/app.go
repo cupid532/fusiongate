@@ -671,6 +671,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/logout", a.logout)
 	mux.HandleFunc("/api/admin/session", a.admin(a.session))
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
+	mux.HandleFunc("/api/admin/providers/export", a.admin(a.providerBackupExport))
+	mux.HandleFunc("/api/admin/providers/import", a.admin(a.providerBackupImport))
 	mux.HandleFunc("/api/admin/providers/batch", a.admin(a.providerBatch))
 	mux.HandleFunc("/api/admin/ip-pool", a.admin(a.ipPoolNodes))
 	mux.HandleFunc("/api/admin/ip-pool/", a.admin(a.ipPoolNodeByID))
