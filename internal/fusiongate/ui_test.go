@@ -92,3 +92,29 @@ func TestModelPickerShowsExistingUnifiedAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderStatusFiltersFollowSchedulingStates(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		`id="providerStatusFilters"`,
+		`aria-label="渠道状态筛选"`,
+		`let providerEditId=0;let providerStatusFilter='all';`,
+		`function providerCircuitCooling(x)`,
+		`if(Number.isFinite(until))return until>Date.now()`,
+		`function providerStatusBucket(x)`,
+		`if(!x.enabled)return 'disabled'`,
+		`return providerCircuitCooling(x)?'circuit':'enabled'`,
+		`badge('恢复探测','orange')`,
+		`function setProviderStatusFilter(value)`,
+		`function resetProviderFilters()`,
+		`全部渠道`,
+		`参与调度`,
+		`已停用`,
+		`熔断冷却`,
+		`providerStatusBucket(x)===providerStatusFilter`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("provider status filters are missing %q", required)
+		}
+	}
+}
