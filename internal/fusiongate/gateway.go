@@ -222,9 +222,9 @@ func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
        r.input_price_micros,r.cached_price_micros,r.output_price_micros,r.long_context_threshold,
        r.long_input_price_micros,r.long_cached_price_micros,r.long_output_price_micros,
-	       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.weight,p.status,p.notes,
+       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
-	       p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
+       p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id,p.multi_key_initialized,p.default_model
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
 WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1
@@ -232,8 +232,13 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []resolvedRoute{}
+	type pendingRoute struct {
+		resolved            resolvedRoute
+		credential          []byte
+		authKind            string
+		multiKeyInitialized bool
+	}
+	pending := []pendingRoute{}
 	for rows.Next() {
 		var z resolvedRoute
 		var routeEnabled, providerEnabled int
@@ -252,6 +257,7 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 			&z.Provider.CircuitOpenUntil, &z.Provider.LastError, &z.Provider.LastLatencyMS, &z.Provider.LastFirstByteMS,
 			&z.Provider.LastSuccessAt, &z.Provider.LastFailureAt, &ipPoolNodeID, &multiKeyInitialized, &z.Provider.DefaultModel,
 		); err != nil {
+			_ = rows.Close()
 			return nil, err
 		}
 		z.Route.Enabled = strBool(routeEnabled)
@@ -263,8 +269,26 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 		if !matchesCapability(z.Route.Capabilities, requiredCapability) {
 			continue
 		}
-		if authKind == "api_key" {
-			selected, selectErr := a.selectProviderKey(ctx, z.Provider.ID, z.Route.UpstreamModel, z.Provider.IPPoolNodeID, credential, strBool(multiKeyInitialized))
+		pending = append(pending, pendingRoute{
+			resolved:            z,
+			credential:          append([]byte(nil), credential...),
+			authKind:            authKind,
+			multiKeyInitialized: strBool(multiKeyInitialized),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	out := make([]resolvedRoute, 0, len(pending))
+	for _, candidate := range pending {
+		z := candidate.resolved
+		if candidate.authKind == "api_key" {
+			selected, selectErr := a.selectProviderKey(ctx, z.Provider.ID, z.Route.UpstreamModel, z.Provider.IPPoolNodeID, candidate.credential, candidate.multiKeyInitialized)
 			if selectErr != nil {
 				continue
 			}
@@ -273,20 +297,17 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 			out = append(out, z)
 			continue
 		}
-		plaintext, decryptErr := a.decrypt(credential)
+		plaintext, decryptErr := a.decrypt(candidate.credential)
 		if decryptErr != nil {
 			return nil, fmt.Errorf("cannot decrypt provider %s credential: %w", z.Provider.Name, decryptErr)
 		}
-		authCredential, accessToken, decodeErr := decodeStoredCredential(authKind, plaintext)
+		authCredential, accessToken, decodeErr := decodeStoredCredential(candidate.authKind, plaintext)
 		if decodeErr != nil {
 			return nil, fmt.Errorf("cannot load provider %s credential: %w", z.Provider.Name, decodeErr)
 		}
 		z.Credential = accessToken
 		z.AuthCredential = &authCredential
 		out = append(out, z)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no eligible route for model %q", model)
@@ -596,6 +617,9 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 			bufferResponsesSSE = !stream
 		} else {
 			body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, stream, z.Provider.Type != "codex_oauth")
+			if err == nil && z.Provider.Type == "openai_compatible" && endpoint == "/v1/chat/completions" {
+				body, err = normalizedCompatibleChatBody(body)
+			}
 		}
 		if err != nil {
 			return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
@@ -847,6 +871,9 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	a.runRoutes(w, r, key, compatible, protocol, stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		if protocol == "openai_images" && z.Provider.Type == "codex_oauth" {
 			return a.codexImageProxy(w, r, raw, z, rid, onFirstByte)
+		}
+		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" {
+			return a.compatibleResponsesProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
 		}
 		return a.openAIProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte)
 	})

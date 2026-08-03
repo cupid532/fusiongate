@@ -32,37 +32,39 @@ type Config struct {
 }
 
 type App struct {
-	db                *sql.DB
-	cfg               Config
-	aead              cipher.AEAD
-	client            *http.Client
-	log               *slog.Logger
-	mu                sync.Mutex
-	rate              map[string]*rateWindow
-	routeMu           sync.Mutex
-	providerStates    map[int64]*providerRuntime
-	roundRobinCursor  map[string]int
-	authMu            sync.Mutex
-	refreshMu         sync.Mutex
-	oauthSessions     map[string]oauthSession
-	authImports       map[string]credentialImportSession
-	ledgerCleanupMu   sync.Mutex
-	lastLedgerCleanup time.Time
-	healthChecker     *HealthChecker
-	healthCheckJobs   *healthCheckJobManager
-	healthProbeMu     sync.Mutex
-	healthProbes      map[int64]struct{}
-	balanceMu         sync.Mutex
-	balanceCache      map[int64]ProviderUpstreamBalance
-	loginMu           sync.Mutex
-	loginAttempts     map[string]*rateWindow
-	loginVerifiers    chan struct{}
-	sessionMu         sync.Mutex
-	adminSessions     map[string]adminSession
-	ready             atomic.Bool
-	budgetMu          sync.Mutex
-	budgetInflight    map[int64]bool
-	ipPool            *ipPoolManager
+	db                 *sql.DB
+	cfg                Config
+	aead               cipher.AEAD
+	client             *http.Client
+	log                *slog.Logger
+	mu                 sync.Mutex
+	rate               map[string]*rateWindow
+	routeMu            sync.Mutex
+	providerStates     map[int64]*providerRuntime
+	roundRobinCursor   map[string]int
+	authMu             sync.Mutex
+	refreshMu          sync.Mutex
+	oauthSessions      map[string]oauthSession
+	authImports        map[string]credentialImportSession
+	ledgerCleanupMu    sync.Mutex
+	lastLedgerCleanup  time.Time
+	healthChecker      *HealthChecker
+	healthCheckJobs    *healthCheckJobManager
+	healthProbeMu      sync.Mutex
+	healthProbes       map[int64]struct{}
+	balanceMu          sync.Mutex
+	balanceCache       map[int64]ProviderUpstreamBalance
+	loginMu            sync.Mutex
+	loginAttempts      map[string]*rateWindow
+	loginVerifiers     chan struct{}
+	sessionMu          sync.Mutex
+	adminSessions      map[string]adminSession
+	ready              atomic.Bool
+	budgetMu           sync.Mutex
+	budgetInflight     map[int64]bool
+	pricingSyncMu      sync.Mutex
+	pricingSyncTrigger chan struct{}
+	ipPool             *ipPoolManager
 }
 type rateWindow struct {
 	At    time.Time
@@ -232,7 +234,7 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{}, loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4), adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{}}
+	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{}, loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4), adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{}, pricingSyncTrigger: make(chan struct{}, 1)}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -356,6 +358,10 @@ func (a *App) migrate(ctx context.Context) error {
     status TEXT NOT NULL DEFAULT 'untested', last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT,
     last_test_latency_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     UNIQUE(provider_id,fingerprint));
+  CREATE TABLE IF NOT EXISTS provider_api_key_models (
+    provider_key_id INTEGER NOT NULL REFERENCES provider_api_keys(id) ON DELETE CASCADE,
+    model TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', capabilities TEXT NOT NULL DEFAULT 'chat,stream',
+    discovered_at TEXT NOT NULL, PRIMARY KEY(provider_key_id,model));
   CREATE TABLE IF NOT EXISTS model_routes (
     id INTEGER PRIMARY KEY, public_name TEXT NOT NULL, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     upstream_model TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT 'chat,stream', enabled INTEGER NOT NULL DEFAULT 1,
@@ -475,6 +481,7 @@ CREATE INDEX IF NOT EXISTS idx_providers_ip_pool_node ON providers(ip_pool_node_
 CREATE INDEX IF NOT EXISTS idx_ip_pool_nodes_enabled ON ip_pool_nodes(enabled,id);
 CREATE INDEX IF NOT EXISTS idx_provider_api_keys_selection ON provider_api_keys(provider_id,enabled,sort_order,id);
 CREATE INDEX IF NOT EXISTS idx_provider_api_keys_node ON provider_api_keys(ip_pool_node_id);
+CREATE INDEX IF NOT EXISTS idx_provider_api_key_models_lookup ON provider_api_key_models(provider_key_id,model);
 UPDATE request_ledger SET usage_reported=1 WHERE usage_reported=0 AND (input_tokens>0 OR output_tokens>0 OR cached_tokens>0 OR reasoning_tokens>0);`)
 	if err != nil {
 		return err

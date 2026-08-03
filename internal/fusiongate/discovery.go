@@ -49,10 +49,21 @@ type discoveredModel struct {
 	SupportedGenerationAPIs []string `json:"-"`
 }
 
+type providerKeyDiscoveryResult struct {
+	KeyID            int64  `json:"key_id"`
+	KeyName          string `json:"key_name,omitempty"`
+	KeyHint          string `json:"key_hint,omitempty"`
+	Discovered       int    `json:"discovered"`
+	LatencyMS        int64  `json:"latency_ms"`
+	LastDiscoveredAt string `json:"last_discovered_at,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+
 type modelDiscoveryResult struct {
-	Discovered int               `json:"discovered"`
-	Skipped    int               `json:"skipped"`
-	Models     []discoveredModel `json:"models"`
+	Discovered int                          `json:"discovered"`
+	Skipped    int                          `json:"skipped"`
+	Models     []discoveredModel            `json:"models"`
+	Keys       []providerKeyDiscoveryResult `json:"keys,omitempty"`
 }
 
 type modelImportResult struct {
@@ -96,6 +107,155 @@ type discoveryModelEntry struct {
 	DisplayName                string   `json:"display_name"`
 	DisplayNameCamel           string   `json:"displayName"`
 	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+}
+
+type discoveryCandidate struct {
+	provider discoveryProvider
+	key      selectedProviderKey
+}
+
+// loadDiscoveryCandidates reads and closes every DB row before decrypting or
+// making an upstream request. FusionGate intentionally uses one SQLite
+// connection, so discovery must never hold a row iterator while doing nested
+// work.
+func (a *App) loadDiscoveryCandidates(ctx context.Context, id int64) ([]discoveryCandidate, error) {
+	var base discoveryProvider
+	var encrypted []byte
+	var authKind string
+	var providerNodeID sql.NullInt64
+	var initialized int
+	if err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,ip_pool_node_id,multi_key_initialized FROM providers WHERE id=?`, id).Scan(&base.ID, &base.Name, &base.Type, &base.BaseURL, &encrypted, &authKind, &base.RequestTimeoutMS, &providerNodeID, &initialized); err != nil {
+		return nil, err
+	}
+	if providerNodeID.Valid {
+		value := providerNodeID.Int64
+		base.IPPoolNodeID = &value
+	}
+	if authKind != "api_key" {
+		p, err := a.loadDiscoveryProvider(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		return []discoveryCandidate{{provider: p}}, nil
+	}
+	if !strBool(initialized) {
+		raw, err := a.decrypt(encrypted)
+		if err != nil {
+			return nil, err
+		}
+		base.Credential = raw
+		return []discoveryCandidate{{provider: base}}, nil
+	}
+
+	type storedKey struct {
+		selected   selectedProviderKey
+		encrypted  []byte
+		egressMode string
+		node       sql.NullInt64
+	}
+	rows, err := a.db.QueryContext(ctx, `SELECT id,credential,name,key_hint,model,egress_mode,ip_pool_node_id FROM provider_api_keys WHERE provider_id=? AND enabled=1 ORDER BY sort_order,id`, id)
+	if err != nil {
+		return nil, err
+	}
+	stored := make([]storedKey, 0)
+	for rows.Next() {
+		var item storedKey
+		if err := rows.Scan(&item.selected.ID, &item.encrypted, &item.selected.Name, &item.selected.Hint, &item.selected.Model, &item.egressMode, &item.node); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		stored = append(stored, item)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if len(stored) == 0 {
+		return nil, errors.New("provider has no enabled API key")
+	}
+	candidates := make([]discoveryCandidate, 0, len(stored))
+	var inheritedNode sql.NullInt64
+	if providerNodeID.Valid {
+		inheritedNode = providerNodeID
+	}
+	for _, item := range stored {
+		raw, err := a.decrypt(item.encrypted)
+		if err != nil {
+			return nil, err
+		}
+		item.selected.Credential = raw
+		item.selected.IPPoolNodeID, _ = effectiveProviderKeyNode(item.egressMode, item.node, inheritedNode)
+		candidate := base
+		candidate.Credential = raw
+		candidate.IPPoolNodeID = item.selected.IPPoolNodeID
+		candidates = append(candidates, discoveryCandidate{provider: candidate, key: item.selected})
+	}
+	return candidates, nil
+}
+
+func discoveryTimeout(p discoveryProvider) time.Duration {
+	timeout := 20 * time.Second
+	if p.RequestTimeoutMS > 0 && time.Duration(p.RequestTimeoutMS)*time.Millisecond < timeout {
+		timeout = time.Duration(p.RequestTimeoutMS) * time.Millisecond
+	}
+	return timeout
+}
+
+func (a *App) fetchDiscoveryCandidate(parent context.Context, p discoveryProvider) ([]discoveredModel, int64, error) {
+	ctx, cancel := context.WithTimeout(parent, discoveryTimeout(p))
+	defer cancel()
+	started := time.Now()
+	models, err := a.fetchDiscoveredModels(ctx, p)
+	if err != nil && p.AuthCredential != nil && isDiscoveryAuthenticationError(err) {
+		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type, IPPoolNodeID: p.IPPoolNodeID}, Credential: p.Credential, AuthCredential: p.AuthCredential}
+		if refreshErr := a.refreshProviderCredential(ctx, &z, true); refreshErr != nil {
+			return nil, time.Since(started).Milliseconds(), refreshErr
+		}
+		p.Credential, p.AuthCredential = z.Credential, z.AuthCredential
+		models, err = a.fetchDiscoveredModels(ctx, p)
+	}
+	return models, time.Since(started).Milliseconds(), err
+}
+
+func providerInventoryModel(model discoveredModel) string {
+	value := normalizedModelID(model.UpstreamID)
+	if value == "" {
+		value = normalizedModelID(model.ID)
+	}
+	return value
+}
+
+func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, models []discoveredModel, latency int64, discoveryErr error) error {
+	if keyID < 1 {
+		return nil
+	}
+	stamp := now()
+	if discoveryErr != nil {
+		_, err := a.db.ExecContext(ctx, `UPDATE provider_api_keys SET status='failed',last_error=?,last_tested_at=?,last_test_latency_ms=?,updated_at=? WHERE id=?`, sanitizeError(discoveryErr.Error()), stamp, latency, stamp, keyID)
+		return err
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID); err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for _, model := range models {
+		id := providerInventoryModel(model)
+		if id == "" || model.Capabilities == "unsupported" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at) VALUES(?,?,?,?,?)`, keyID, id, model.DisplayName, model.Capabilities, stamp); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE provider_api_keys SET status='healthy',last_error='',last_tested_at=?,last_test_latency_ms=?,updated_at=? WHERE id=?`, stamp, latency, stamp, keyID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryProvider, error) {
@@ -499,30 +659,59 @@ func appendUniqueModelName(values []string, value string) []string {
 }
 
 func (a *App) discoverProviderModels(parent context.Context, providerID int64) (modelDiscoveryResult, error) {
-	p, err := a.loadDiscoveryProvider(parent, providerID)
+	candidates, err := a.loadDiscoveryCandidates(parent, providerID)
 	if err != nil {
 		return modelDiscoveryResult{}, err
 	}
-	timeout := 20 * time.Second
-	if p.RequestTimeoutMS > 0 && time.Duration(p.RequestTimeoutMS)*time.Millisecond < timeout {
-		timeout = time.Duration(p.RequestTimeoutMS) * time.Millisecond
-	}
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	allModels, err := a.fetchDiscoveredModels(ctx, p)
-	if err != nil && p.AuthCredential != nil && isDiscoveryAuthenticationError(err) {
-		// A 401/403 is the only discovery failure that can justify refreshing.
-		// Force a single refresh because the provider may reject a token even
-		// when its locally recorded expiry has not yet elapsed.
-		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type, IPPoolNodeID: p.IPPoolNodeID}, Credential: p.Credential, AuthCredential: p.AuthCredential}
-		if refreshErr := a.refreshProviderCredential(ctx, &z, true); refreshErr != nil {
-			return modelDiscoveryResult{}, refreshErr
+	byID := map[string]discoveredModel{}
+	keyResults := make([]providerKeyDiscoveryResult, 0, len(candidates))
+	successes := 0
+	failures := make([]string, 0)
+	for _, candidate := range candidates {
+		models, latency, fetchErr := a.fetchDiscoveryCandidate(parent, candidate.provider)
+		if persistErr := a.persistProviderKeyDiscovery(parent, candidate.key.ID, models, latency, fetchErr); persistErr != nil {
+			fetchErr = persistErr
 		}
-		p.Credential, p.AuthCredential = z.Credential, z.AuthCredential
-		allModels, err = a.fetchDiscoveredModels(ctx, p)
+		keyResult := providerKeyDiscoveryResult{KeyID: candidate.key.ID, KeyName: candidate.key.Name, KeyHint: candidate.key.Hint, LatencyMS: latency}
+		if fetchErr != nil {
+			keyResult.Error = sanitizeError(fetchErr.Error())
+			if candidate.key.ID > 0 {
+				keyResults = append(keyResults, keyResult)
+			}
+			failures = append(failures, firstNonEmpty(candidate.key.Name, candidate.key.Hint, "provider")+": "+keyResult.Error)
+			continue
+		}
+		successes++
+		keyResult.LastDiscoveredAt = now()
+		seenForKey := map[string]bool{}
+		for _, model := range models {
+			model.ID = normalizedModelID(model.ID)
+			if model.ID == "" {
+				continue
+			}
+			if model.Capabilities != "unsupported" && !seenForKey[model.ID] {
+				seenForKey[model.ID] = true
+				keyResult.Discovered++
+			}
+			if existing, ok := byID[model.ID]; ok {
+				if existing.DisplayName == "" {
+					existing.DisplayName = model.DisplayName
+				}
+				byID[model.ID] = existing
+			} else {
+				byID[model.ID] = model
+			}
+		}
+		if candidate.key.ID > 0 {
+			keyResults = append(keyResults, keyResult)
+		}
 	}
-	if err != nil {
-		return modelDiscoveryResult{}, err
+	if successes == 0 {
+		return modelDiscoveryResult{Keys: keyResults}, errors.New(strings.Join(failures, "; "))
+	}
+	allModels := make([]discoveredModel, 0, len(byID))
+	for _, model := range byID {
+		allModels = append(allModels, model)
 	}
 
 	discovered := make(map[string]discoveredModel, len(allModels))
@@ -574,7 +763,7 @@ func (a *App) discoverProviderModels(parent context.Context, providerID int64) (
 	}
 
 	matchedRoutes := make(map[int64]bool, len(routes))
-	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels)+len(routes))}
+	result := modelDiscoveryResult{Models: make([]discoveredModel, 0, len(allModels)+len(routes)), Keys: keyResults}
 	for _, model := range allModels {
 		if model.Capabilities == "unsupported" {
 			result.Skipped++
@@ -808,6 +997,9 @@ SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHER
 	if err := tx.Commit(); err != nil {
 		return modelSelectionResult{}, err
 	}
+	if result.Added > 0 {
+		a.triggerPricingSync()
+	}
 	return result, nil
 }
 
@@ -900,6 +1092,9 @@ WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(publi
 	}
 	if err := tx.Commit(); err != nil {
 		return modelImportResult{}, err
+	}
+	if result.Added > 0 {
+		a.triggerPricingSync()
 	}
 	return result, nil
 }

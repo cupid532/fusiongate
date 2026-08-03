@@ -779,6 +779,7 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			in.DefaultModel = &value
 		}
 		connectionChanged := credentialUpdated || (in.Name != nil && *in.Name != currentName) || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL) || in.IPPoolNodeID != nil || in.DefaultModel != nil
+		discoveryConnectionChanged := credentialUpdated || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL)
 		if in.IPPoolNodeID != nil && *in.IPPoolNodeID > 0 {
 			if err := a.validateIPPoolNode(*in.IPPoolNodeID); err != nil {
 				fail(w, http.StatusBadRequest, "invalid_ip_pool_node", err.Error())
@@ -836,6 +837,16 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if n == 0 {
 			fail(w, http.StatusNotFound, "not_found", "provider not found")
 			return
+		}
+		if discoveryConnectionChanged {
+			if _, err := a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, id); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			if _, err := a.db.Exec(`UPDATE provider_api_keys SET status='untested',last_error='',updated_at=? WHERE provider_id=?`, now(), id); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
 		}
 		if in.ManualBalanceUSD != nil || in.ClearManualBalance || in.BalanceMultiplierOpenAI != nil || in.BalanceMultiplierClaude != nil || in.BalanceMultiplierGrok != nil || in.BalanceMultiplierGemini != nil || in.BalanceMultiplierOther != nil {
 			var balance any
@@ -1055,6 +1066,9 @@ ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
 			return
 		}
 		id, _ := res.LastInsertId()
+		if in.InputPriceMicros == 0 && in.OutputPriceMicros == 0 {
+			a.triggerPricingSync()
+		}
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")

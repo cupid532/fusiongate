@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,8 @@ type ProviderAPIKey struct {
 	LastError         string `json:"last_error,omitempty"`
 	LastTestedAt      string `json:"last_tested_at,omitempty"`
 	LastTestLatencyMS int64  `json:"last_test_latency_ms"`
+	DiscoveredModels  int    `json:"discovered_models"`
+	LastDiscoveredAt  string `json:"last_discovered_at,omitempty"`
 	CreatedAt         string `json:"created_at"`
 	UpdatedAt         string `json:"updated_at"`
 }
@@ -165,8 +168,17 @@ func (a *App) selectProviderKey(ctx context.Context, providerID int64, upstreamM
 SELECT k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id
 FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id
 WHERE k.provider_id=? AND k.enabled=1
-  AND (COALESCE(NULLIF(k.model,''),NULLIF(p.default_model,''),'')='' OR lower(COALESCE(NULLIF(k.model,''),NULLIF(p.default_model,'')))=lower(?))
-ORDER BY k.sort_order,k.id LIMIT 1`, providerID, upstreamModel).Scan(&selected.ID, &encrypted, &selected.Name, &selected.Hint, &selected.Model, &egressMode, &keyNodeID)
+  AND (
+    lower(COALESCE(NULLIF(k.model,''),NULLIF(p.default_model,''),''))=lower(?)
+    OR (
+      COALESCE(NULLIF(k.model,''),NULLIF(p.default_model,''),'')=''
+      AND (
+        NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id)
+        OR EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND lower(km.model)=lower(?))
+      )
+    )
+  )
+ORDER BY k.sort_order,k.id LIMIT 1`, providerID, upstreamModel, upstreamModel).Scan(&selected.ID, &encrypted, &selected.Name, &selected.Hint, &selected.Model, &egressMode, &keyNodeID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return selectedProviderKey{}, errors.New("no enabled API key supports this model")
@@ -259,7 +271,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 	}
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT k.id,k.provider_id,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(n.name,''),k.enabled,k.sort_order,k.status,k.last_error,COALESCE(k.last_tested_at,''),k.last_test_latency_ms,k.created_at,k.updated_at FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, providerID)
+		rows, err := a.db.Query(`SELECT k.id,k.provider_id,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(n.name,''),k.enabled,k.sort_order,k.status,k.last_error,COALESCE(k.last_tested_at,''),k.last_test_latency_ms,(SELECT COUNT(*) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),COALESCE((SELECT MAX(discovered_at) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),''),k.created_at,k.updated_at FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, providerID)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -270,7 +282,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			var key ProviderAPIKey
 			var enabled int
 			var keyNodeID sql.NullInt64
-			if err := rows.Scan(&key.ID, &key.ProviderID, &key.Name, &key.KeyHint, &key.Model, &key.EgressMode, &keyNodeID, &key.IPPoolNodeName, &enabled, &key.SortOrder, &key.Status, &key.LastError, &key.LastTestedAt, &key.LastTestLatencyMS, &key.CreatedAt, &key.UpdatedAt); err != nil {
+			if err := rows.Scan(&key.ID, &key.ProviderID, &key.Name, &key.KeyHint, &key.Model, &key.EgressMode, &keyNodeID, &key.IPPoolNodeName, &enabled, &key.SortOrder, &key.Status, &key.LastError, &key.LastTestedAt, &key.LastTestLatencyMS, &key.DiscoveredModels, &key.LastDiscoveredAt, &key.CreatedAt, &key.UpdatedAt); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -400,6 +412,10 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		a.testProviderKey(w, r, providerID, keyID)
 		return
 	}
+	if action == "discover-models" {
+		a.discoverProviderKeyModels(w, r, providerID, keyID)
+		return
+	}
 	if action != "" {
 		fail(w, http.StatusNotFound, "not_found", "unknown API key action")
 		return
@@ -486,6 +502,9 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			fail(w, http.StatusNotFound, "not_found", "API key card not found")
 			return
 		}
+		if encryptedArg != nil {
+			_, _ = a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
+		}
 		// Keep the legacy provider credential synchronized with the current first
 		// card. New runtimes never select it after initialization, but this makes
 		// a binary rollback preserve the same primary credential.
@@ -534,6 +553,56 @@ func (a *App) validateProviderKeyNode(mode string, nodeID *int64) error {
 	return a.validateIPPoolNode(*nodeID)
 }
 
+func (a *App) discoverProviderKeyModels(w http.ResponseWriter, r *http.Request, providerID, keyID int64) {
+	if r.Method != http.MethodPost {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var p discoveryProvider
+	var providerNodeID, keyNodeID sql.NullInt64
+	var encrypted []byte
+	var egressMode, keyName, keyHint string
+	if err := a.db.QueryRow(`SELECT p.id,p.name,p.type,p.base_url,p.request_timeout_ms,p.ip_pool_node_id,k.credential,k.name,k.key_hint,k.egress_mode,k.ip_pool_node_id FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.id=? AND k.provider_id=?`, keyID, providerID).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.RequestTimeoutMS, &providerNodeID, &encrypted, &keyName, &keyHint, &egressMode, &keyNodeID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			fail(w, http.StatusNotFound, "not_found", "API key card not found")
+		} else {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		}
+		return
+	}
+	raw, err := a.decrypt(encrypted)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "credential_error", "API key could not be decrypted")
+		return
+	}
+	p.Credential = raw
+	p.IPPoolNodeID, _ = effectiveProviderKeyNode(egressMode, keyNodeID, providerNodeID)
+	models, latency, discoveryErr := a.fetchDiscoveryCandidate(r.Context(), p)
+	if persistErr := a.persistProviderKeyDiscovery(r.Context(), keyID, models, latency, discoveryErr); persistErr != nil && discoveryErr == nil {
+		discoveryErr = persistErr
+	}
+	result := providerKeyDiscoveryResult{KeyID: keyID, KeyName: keyName, KeyHint: keyHint, LatencyMS: latency}
+	if discoveryErr != nil {
+		result.Error = sanitizeError(discoveryErr.Error())
+		fail(w, discoveryErrorStatus(discoveryErr), "model_discovery_failed", result.Error)
+		return
+	}
+	available := make([]discoveredModel, 0, len(models))
+	seen := map[string]bool{}
+	for _, model := range models {
+		model.ID = normalizedModelID(model.ID)
+		if model.ID == "" || model.Capabilities == "unsupported" || seen[model.ID] {
+			continue
+		}
+		seen[model.ID] = true
+		available = append(available, model)
+	}
+	sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
+	result.Discovered = len(available)
+	result.LastDiscoveredAt = now()
+	writeJSON(w, http.StatusOK, map[string]any{"key": result, "models": available})
+}
+
 func (a *App) testProviderKey(w http.ResponseWriter, r *http.Request, providerID, keyID int64) {
 	if r.Method != http.MethodPost {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -563,6 +632,9 @@ func (a *App) testProviderKey(w http.ResponseWriter, r *http.Request, providerID
 	start := time.Now()
 	models, testErr := a.fetchDiscoveredModels(ctx, p)
 	latency := time.Since(start).Milliseconds()
+	if persistErr := a.persistProviderKeyDiscovery(r.Context(), keyID, models, latency, testErr); persistErr != nil && testErr == nil {
+		testErr = persistErr
+	}
 	status, message := "healthy", ""
 	effectiveModel := firstNonEmpty(keyModel, defaultModel)
 	if testErr == nil && effectiveModel != "" {

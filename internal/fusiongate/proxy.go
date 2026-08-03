@@ -32,6 +32,7 @@ type proxyOptions struct {
 	UpstreamSSE        bool
 	BufferResponsesSSE bool
 	ResponsesTransform func([]byte) ([]byte, string, error)
+	JSONTransform      func([]byte) ([]byte, string, error)
 	OutputStartTimeout time.Duration
 	IdleTimeout        time.Duration
 }
@@ -437,6 +438,20 @@ func normalizedOpenAIBody(raw []byte, upstreamModel string, stream, includeStrea
 	return json.Marshal(body)
 }
 
+func normalizedCompatibleChatBody(raw []byte) ([]byte, error) {
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, err
+	}
+	for _, value := range anySlice(body["messages"]) {
+		message, _ := value.(map[string]any)
+		if message["role"] == "developer" {
+			message["role"] = "system"
+		}
+	}
+	return json.Marshal(body)
+}
+
 func normalizedCodexResponsesBody(raw []byte, upstreamModel string) ([]byte, error) {
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
@@ -681,6 +696,12 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	startTimeout := options.OutputStartTimeout
 	if startTimeout <= 0 {
 		startTimeout = defaultFailoverStartTimeout
+		if !options.Stream && !options.BufferResponsesSSE && z.Provider.RequestTimeoutMS > 0 {
+			// A non-streaming request often does not receive headers until the full
+			// reasoning pass has completed. Honor the provider timeout instead of
+			// applying the much shorter streaming first-output deadline.
+			startTimeout = time.Duration(z.Provider.RequestTimeoutMS) * time.Millisecond
+		}
 	}
 	started := time.Now()
 	startTimer := time.AfterFunc(startTimeout, cancelAttempt)
@@ -695,9 +716,15 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		req.Header.Set("User-Agent", "")
 	}
 	if !options.Transparent {
+		// Let net/http negotiate and transparently decode gzip itself. Forwarding
+		// the downstream Accept-Encoding header disables automatic decoding, which
+		// makes buffered JSON responses look like invalid or empty model output.
+		req.Header.Del("Accept-Encoding")
 		req.Header.Set("Content-Type", "application/json")
 		if options.UpstreamSSE {
 			req.Header.Set("Accept", "text/event-stream")
+		} else if !options.Stream {
+			req.Header.Set("Accept", "application/json")
 		} else if req.Header.Get("Accept") == "" {
 			req.Header.Set("Accept", "application/json")
 		}
@@ -981,7 +1008,20 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			cost(z, &usage)
 		}
 	}
+	contentType := resp.Header.Get("Content-Type")
+	if options.JSONTransform != nil {
+		transformed, transformedType, transformErr := options.JSONTransform(body)
+		if transformErr != nil {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: transformErr}
+		}
+		body = transformed
+		contentType = transformedType
+	}
 	copyUpstreamResponseHeaders(w.Header(), resp.Header)
+	w.Header().Del("Content-Encoding")
+	if contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
 	w.WriteHeader(resp.StatusCode)

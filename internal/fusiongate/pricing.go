@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,11 +18,12 @@ import (
 )
 
 const (
-	openAIPricingURL    = "https://developers.openai.com/api/docs/pricing.md"
-	xAIPricingURL       = "https://docs.x.ai/developers/pricing"
-	geminiPricingURL    = "https://ai.google.dev/gemini-api/docs/pricing?hl=en"
-	claudePricingURL    = "https://platform.claude.com/docs/en/about-claude/pricing.md"
-	manualPricingSource = "manual"
+	openAIPricingURL     = "https://developers.openai.com/api/docs/pricing.md"
+	xAIPricingURL        = "https://docs.x.ai/developers/pricing"
+	geminiPricingURL     = "https://ai.google.dev/gemini-api/docs/pricing?hl=en"
+	claudePricingURL     = "https://platform.claude.com/docs/en/about-claude/pricing.md"
+	openRouterPricingURL = "https://openrouter.ai/api/v1/models"
+	manualPricingSource  = "manual"
 )
 
 type officialModelPrice struct {
@@ -47,16 +49,23 @@ type pricingSyncResult struct {
 func pricingSyncInterval() time.Duration {
 	value := strings.TrimSpace(os.Getenv("FUSIONGATE_PRICING_SYNC_INTERVAL"))
 	if value == "" {
-		return 24 * time.Hour
+		return time.Hour
 	}
 	if value == "0" || strings.EqualFold(value, "off") || strings.EqualFold(value, "false") {
 		return 0
 	}
 	interval, err := time.ParseDuration(value)
-	if err != nil || interval < time.Hour {
-		return 24 * time.Hour
+	if err != nil || interval < 5*time.Minute {
+		return time.Hour
 	}
 	return interval
+}
+
+func (a *App) triggerPricingSync() {
+	select {
+	case a.pricingSyncTrigger <- struct{}{}:
+	default:
+	}
 }
 
 func (a *App) runPricingSyncLoop(ctx context.Context) {
@@ -64,22 +73,33 @@ func (a *App) runPricingSyncLoop(ctx context.Context) {
 	if interval <= 0 {
 		return
 	}
-	// Delay the first sync so startup health checks and admin traffic are not
-	// blocked by a long network scrape on the single SQLite connection.
-	timer := time.NewTimer(2 * time.Minute)
+	// Do an initial refresh soon after startup, while model imports can request
+	// an immediate debounced refresh through pricingSyncTrigger.
+	timer := time.NewTimer(30 * time.Second)
 	defer timer.Stop()
+	resetTimer := func(delay time.Duration) {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer.Reset(delay)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-a.pricingSyncTrigger:
+			resetTimer(2 * time.Second)
 		case <-timer.C:
-			syncCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			syncCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			_, err := a.syncOfficialPricing(syncCtx)
 			cancel()
 			if err != nil {
 				a.log.Warn("official pricing sync failed", "error", err)
 			}
-			timer.Reset(interval)
+			resetTimer(interval)
 		}
 	}
 }
@@ -100,7 +120,7 @@ func (a *App) pricing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 				status[key] = value
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": status, "interval": pricingSyncInterval().String(), "sources": []string{openAIPricingURL, xAIPricingURL, geminiPricingURL, claudePricingURL}})
+		writeJSON(w, http.StatusOK, map[string]any{"status": status, "interval": pricingSyncInterval().String(), "sources": []string{openAIPricingURL, xAIPricingURL, geminiPricingURL, claudePricingURL, openRouterPricingURL}})
 	case http.MethodPost:
 		result, err := a.syncOfficialPricing(r.Context())
 		if err != nil && result.Sources == 0 {
@@ -118,6 +138,8 @@ func (a *App) syncOfficialPricing(ctx context.Context) (pricingSyncResult, error
 }
 
 func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) (pricingSyncResult, error) {
+	a.pricingSyncMu.Lock()
+	defer a.pricingSyncMu.Unlock()
 	result := pricingSyncResult{SyncedAt: now()}
 	type source struct {
 		name  string
@@ -129,6 +151,7 @@ func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) 
 		{"grok", xAIPricingURL, parseXAIPricing},
 		{"gemini", geminiPricingURL, parseGeminiPricing},
 		{"claude", claudePricingURL, parseAnthropicPricing},
+		{"openrouter", openRouterPricingURL, parseOpenRouterPricing},
 	}
 	catalogs := map[string]map[string]officialModelPrice{}
 	client := &http.Client{Timeout: 25 * time.Second}
@@ -138,7 +161,7 @@ func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) 
 			result.Errors = append(result.Errors, source.name+": "+err.Error())
 			continue
 		}
-		req.Header.Set("Accept", "text/markdown,text/html;q=0.9")
+		req.Header.Set("Accept", "application/json,text/markdown,text/html;q=0.9")
 		req.Header.Set("User-Agent", "FusionGate pricing-sync/1.0")
 		resp, err := client.Do(req)
 		if err != nil {
@@ -189,53 +212,108 @@ func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) 
 	return result, syncErr
 }
 
+type pricingRouteTarget struct {
+	publicName, model, providerType, pricingSource string
+}
+
 func (a *App) applyOfficialPricing(ctx context.Context, catalogs map[string]map[string]officialModelPrice, publicName string) (int64, []string, error) {
-	query := `SELECT r.id,r.upstream_model,p.type,r.pricing_source FROM model_routes r JOIN providers p ON p.id=r.provider_id`
+	query := `SELECT r.public_name,r.upstream_model,p.type,r.pricing_source FROM model_routes r JOIN providers p ON p.id=r.provider_id`
 	args := []any{}
 	if strings.TrimSpace(publicName) != "" {
-		query += ` WHERE r.public_name=?`
+		query += ` WHERE LOWER(r.public_name)=?`
 		args = append(args, strings.ToLower(strings.TrimSpace(publicName)))
 	}
 	rows, err := a.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return 0, nil, err
 	}
-	type routeTarget struct {
-		id                  int64
-		model, providerType string
-		pricingSource       string
-	}
-	targets := []routeTarget{}
+	groups := map[string][]pricingRouteTarget{}
 	for rows.Next() {
-		var target routeTarget
-		if rows.Scan(&target.id, &target.model, &target.providerType, &target.pricingSource) == nil {
-			targets = append(targets, target)
+		var target pricingRouteTarget
+		if err := rows.Scan(&target.publicName, &target.model, &target.providerType, &target.pricingSource); err != nil {
+			_ = rows.Close()
+			return 0, nil, err
 		}
+		name := strings.ToLower(strings.TrimSpace(target.publicName))
+		groups[name] = append(groups[name], target)
 	}
 	if err := rows.Close(); err != nil {
 		return 0, nil, err
 	}
+
 	stamp := now()
 	var updated int64
 	applyErrors := []string{}
-	for _, target := range targets {
-		if target.pricingSource == manualPricingSource {
-			continue
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		targets := groups[name]
+		price, ok, warning := lookupUnifiedModelPrice(catalogs, name, targets)
+		if warning != "" {
+			applyErrors = append(applyErrors, warning)
 		}
-		catalogName := officialPricingCatalogName(target.providerType, target.model)
-		price, ok := lookupOfficialPrice(catalogs[catalogName], target.model)
 		if !ok {
 			continue
 		}
-		res, updateErr := a.db.ExecContext(ctx, `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE id=? AND pricing_source<>?`, price.InputMicros, price.CachedMicros, price.OutputMicros, price.LongContextThreshold, price.LongInputMicros, price.LongCachedMicros, price.LongOutputMicros, price.Source, stamp, stamp, target.id, manualPricingSource)
+		res, updateErr := a.db.ExecContext(ctx, `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE LOWER(public_name)=? AND pricing_source<>?`, price.InputMicros, price.CachedMicros, price.OutputMicros, price.LongContextThreshold, price.LongInputMicros, price.LongCachedMicros, price.LongOutputMicros, price.Source, stamp, stamp, name, manualPricingSource)
 		if updateErr != nil {
-			applyErrors = append(applyErrors, fmt.Sprintf("route %d: %v", target.id, updateErr))
+			applyErrors = append(applyErrors, fmt.Sprintf("model %s: %v", name, updateErr))
 			continue
 		}
 		changed, _ := res.RowsAffected()
 		updated += changed
 	}
 	return updated, applyErrors, nil
+}
+
+func catalogLookupOrder(providerType, model string) []string {
+	order := make([]string, 0, 3)
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		for _, existing := range order {
+			if existing == name {
+				return
+			}
+		}
+		order = append(order, name)
+	}
+	add(officialPricingCatalogName(providerType, model))
+	add("openrouter")
+	return order
+}
+
+func lookupUnifiedModelPrice(catalogs map[string]map[string]officialModelPrice, publicName string, targets []pricingRouteTarget) (officialModelPrice, bool, string) {
+	// The public model identity is authoritative. This is what makes one model
+	// mapped through several compatible channels receive one consistent price.
+	for _, catalogName := range catalogLookupOrder("", publicName) {
+		if price, ok := lookupOfficialPrice(catalogs[catalogName], publicName); ok {
+			return price, true, ""
+		}
+	}
+
+	var selected officialModelPrice
+	matched := false
+	matchedModel := ""
+	for _, target := range targets {
+		for _, catalogName := range catalogLookupOrder(target.providerType, target.model) {
+			price, ok := lookupOfficialPrice(catalogs[catalogName], target.model)
+			if !ok {
+				continue
+			}
+			if !matched {
+				selected, matched, matchedModel = price, true, target.model
+			} else if !sameOfficialPrice(selected, price) {
+				return officialModelPrice{}, false, fmt.Sprintf("model %s matched conflicting prices through %s and %s; kept existing prices", publicName, matchedModel, target.model)
+			}
+			break
+		}
+	}
+	return selected, matched, ""
 }
 
 func officialPricingCatalogName(providerType, upstreamModel string) string {
@@ -250,6 +328,8 @@ func officialPricingCatalogName(providerType, upstreamModel string) string {
 		return "grok"
 	case strings.HasPrefix(model, "gemini-"):
 		return "gemini"
+	case strings.HasPrefix(model, "gpt-"), strings.HasPrefix(model, "chatgpt-"), strings.HasPrefix(model, "codex-"), regexp.MustCompile(`^o[134](?:-|$)`).MatchString(model):
+		return "openai"
 	}
 	switch providerType {
 	case "openai":
@@ -280,6 +360,83 @@ func (a *App) savePricingSyncStatus(result pricingSyncResult, syncErr error) {
 	for key, value := range values {
 		_, _ = a.db.Exec(`INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
 	}
+}
+
+type openRouterModelsEnvelope struct {
+	Data []struct {
+		ID            string `json:"id"`
+		CanonicalSlug string `json:"canonical_slug"`
+		Pricing       struct {
+			Prompt         string `json:"prompt"`
+			Completion     string `json:"completion"`
+			InputCacheRead string `json:"input_cache_read"`
+		} `json:"pricing"`
+	} `json:"data"`
+}
+
+func dollarsPerTokenMicrosPerMillion(value string) int64 {
+	amount, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || amount < 0 {
+		return 0
+	}
+	return int64(amount*1_000_000_000_000 + 0.5)
+}
+
+func normalizePricingModel(value string) string {
+	return strings.ToLower(strings.TrimSpace(strings.TrimPrefix(value, "models/")))
+}
+
+func sameOfficialPrice(a, b officialModelPrice) bool {
+	return a.InputMicros == b.InputMicros && a.CachedMicros == b.CachedMicros && a.OutputMicros == b.OutputMicros && a.LongContextThreshold == b.LongContextThreshold && a.LongInputMicros == b.LongInputMicros && a.LongCachedMicros == b.LongCachedMicros && a.LongOutputMicros == b.LongOutputMicros
+}
+
+func parseOpenRouterPricing(body []byte) (map[string]officialModelPrice, error) {
+	var envelope openRouterModelsEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	out := map[string]officialModelPrice{}
+	ambiguous := map[string]bool{}
+	add := func(alias string, price officialModelPrice) {
+		alias = normalizePricingModel(alias)
+		if alias == "" || ambiguous[alias] {
+			return
+		}
+		if existing, ok := out[alias]; ok && !sameOfficialPrice(existing, price) {
+			delete(out, alias)
+			ambiguous[alias] = true
+			return
+		}
+		out[alias] = price
+	}
+	for _, model := range envelope.Data {
+		id := normalizePricingModel(model.ID)
+		if id == "" {
+			continue
+		}
+		price := officialModelPrice{
+			Model:        id,
+			InputMicros:  dollarsPerTokenMicrosPerMillion(model.Pricing.Prompt),
+			CachedMicros: dollarsPerTokenMicrosPerMillion(model.Pricing.InputCacheRead),
+			OutputMicros: dollarsPerTokenMicrosPerMillion(model.Pricing.Completion),
+		}
+		if price.InputMicros == 0 && price.OutputMicros == 0 {
+			continue
+		}
+		add(id, price)
+		add(model.CanonicalSlug, price)
+		if slash := strings.LastIndex(id, "/"); slash >= 0 {
+			add(id[slash+1:], price)
+		}
+		canonical := normalizePricingModel(model.CanonicalSlug)
+		if slash := strings.LastIndex(canonical, "/"); slash >= 0 {
+			add(canonical[slash+1:], price)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("OpenRouter pricing catalog was empty or unrecognized")
+	}
+	return out, nil
 }
 
 func dollarsPerMillionMicros(value string) int64 {

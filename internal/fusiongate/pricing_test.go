@@ -428,3 +428,108 @@ func TestLiveOfficialPricingSources(t *testing.T) {
 		t.Fatalf("unexpected live pricing result: %+v", result)
 	}
 }
+
+func TestParseOpenRouterPricingConvertsPerTokenRatesAndAliases(t *testing.T) {
+	catalog, err := parseOpenRouterPricing([]byte(`{"data":[{"id":"openai/gpt-test","canonical_slug":"openai/gpt-test-20260801","pricing":{"prompt":"0.000002","completion":"0.000008","input_cache_read":"0.0000002"}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range []string{"openai/gpt-test", "gpt-test", "openai/gpt-test-20260801", "gpt-test-20260801"} {
+		price, ok := catalog[alias]
+		if !ok {
+			t.Fatalf("missing alias %q in %#v", alias, catalog)
+		}
+		if price.InputMicros != 2_000_000 || price.CachedMicros != 200_000 || price.OutputMicros != 8_000_000 {
+			t.Fatalf("alias %q price=%+v", alias, price)
+		}
+	}
+}
+
+func TestOfficialPricingUpdatesUnifiedModelAcrossCompatibleChannels(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	stamp := now()
+	for i, upstream := range []string{"gpt-unified", "openai/gpt-unified"} {
+		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "compatible-"+string(rune('a'+i)), "openai_compatible", "https://api.example", []byte{1}, stamp, stamp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		providerID, _ := res.LastInsertId()
+		if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,created_at,updated_at) VALUES(?,?,?,?,?)`, "gpt-unified", providerID, upstream, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	catalogs := map[string]map[string]officialModelPrice{
+		"openai": {"gpt-unified": {Model: "gpt-unified", InputMicros: 2_000_000, CachedMicros: 200_000, OutputMicros: 8_000_000, Source: openAIPricingURL}},
+	}
+	updated, warnings, err := a.applyOfficialPricing(t.Context(), catalogs, "gpt-unified")
+	if err != nil || len(warnings) != 0 || updated != 2 {
+		t.Fatalf("updated=%d warnings=%v err=%v", updated, warnings, err)
+	}
+	rows, err := a.db.Query(`SELECT input_price_micros,output_price_micros,pricing_source FROM model_routes WHERE public_name='gpt-unified'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var input, output int64
+		var source string
+		if err := rows.Scan(&input, &output, &source); err != nil {
+			t.Fatal(err)
+		}
+		if input != 2_000_000 || output != 8_000_000 || source != openAIPricingURL {
+			t.Fatalf("price=%d/%d source=%q", input, output, source)
+		}
+	}
+}
+
+func TestOpenRouterPricingFallbackUpdatesCompatibleModel(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	stamp := now()
+	res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "router-fallback", "openai_compatible", "https://api.example", []byte{1}, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerID, _ := res.LastInsertId()
+	_, _ = a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,created_at,updated_at) VALUES(?,?,?,?,?)`, "kimi-k2.5", providerID, "moonshotai/kimi-k2.5", stamp, stamp)
+	catalogs := map[string]map[string]officialModelPrice{
+		"openrouter": {"kimi-k2.5": {Model: "moonshotai/kimi-k2.5", InputMicros: 500_000, OutputMicros: 2_500_000, Source: openRouterPricingURL}},
+	}
+	updated, warnings, err := a.applyOfficialPricing(t.Context(), catalogs, "kimi-k2.5")
+	if err != nil || len(warnings) != 0 || updated != 1 {
+		t.Fatalf("updated=%d warnings=%v err=%v", updated, warnings, err)
+	}
+	var input, output int64
+	var source string
+	if err := a.db.QueryRow(`SELECT input_price_micros,output_price_micros,pricing_source FROM model_routes WHERE public_name='kimi-k2.5'`).Scan(&input, &output, &source); err != nil {
+		t.Fatal(err)
+	}
+	if input != 500_000 || output != 2_500_000 || source != openRouterPricingURL {
+		t.Fatalf("price=%d/%d source=%q", input, output, source)
+	}
+}
+
+func TestModelImportTriggersDebouncedPricingSync(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "trigger-price", "openai_compatible", "https://api.example", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	result, err := a.importDiscoveredModels(t.Context(), providerID, []discoveredModel{{ID: "trigger-model", UpstreamID: "trigger-model", Capabilities: "chat,stream"}}, false)
+	if err != nil || result.Added != 1 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	select {
+	case <-a.pricingSyncTrigger:
+	case <-time.After(time.Second):
+		t.Fatal("pricing sync was not triggered")
+	}
+}

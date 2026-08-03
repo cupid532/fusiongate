@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func insertProviderKeyForTest(t *testing.T, a *App, providerID int64, raw, name, model, egress string, nodeID any, enabled, order int) int64 {
@@ -87,6 +88,34 @@ func TestProviderKeySelectionUsesOrderModelAndEgressOverride(t *testing.T) {
 	}
 	if _, err := a.selectProviderKey(context.Background(), providerID, "unsupported", &providerNode, nil, true); err == nil {
 		t.Fatal("unsupported model unexpectedly selected a key")
+	}
+}
+
+func TestResolveMultiKeyProviderReleasesRouteRowsBeforeKeySelection(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	providerID := insertTestProvider(t, a, "resolve-multi-key", "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "public-model", "upstream-model", "chat", 0)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	insertProviderKeyForTest(t, a, providerID, "sk-selected", "selected", "upstream-model", providerKeyEgressInherit, nil, 1, 0)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	routes, err := a.resolve(ctx, "public-model", "chat")
+	if err != nil {
+		t.Fatalf("resolve multi-key route: %v", err)
+	}
+	if len(routes) != 1 || routes[0].Credential != "sk-selected" {
+		t.Fatalf("routes=%#v", routes)
 	}
 }
 
@@ -251,3 +280,192 @@ func TestEffectiveProviderKeyNodeModes(t *testing.T) {
 }
 
 func int64Ptr(value int64) *int64 { return &value }
+
+func TestProviderDiscoveryAggregatesAllKeysAndRoutesByInventory(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer sk-first-discovery":
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-a"},{"id":"shared"}]}`))
+		case "Bearer sk-second-discovery":
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-b"},{"id":"shared"}]}`))
+		default:
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "inventory-provider", "openai_compatible", upstream.URL+"/v1", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1,default_model='' WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	firstID := insertProviderKeyForTest(t, a, providerID, "sk-first-discovery", "first", "", providerKeyEgressInherit, nil, 1, 0)
+	secondID := insertProviderKeyForTest(t, a, providerID, "sk-second-discovery", "second", "", providerKeyEgressInherit, nil, 1, 1)
+
+	result, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Discovered != 3 || len(result.Keys) != 2 || result.Keys[0].Discovered != 2 || result.Keys[1].Discovered != 2 {
+		t.Fatalf("result=%#v", result)
+	}
+	var firstCount, secondCount int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM provider_api_key_models WHERE provider_key_id=?`, firstID).Scan(&firstCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM provider_api_key_models WHERE provider_key_id=?`, secondID).Scan(&secondCount); err != nil {
+		t.Fatal(err)
+	}
+	if firstCount != 2 || secondCount != 2 {
+		t.Fatalf("inventory counts first=%d second=%d", firstCount, secondCount)
+	}
+	selected, err := a.selectProviderKey(context.Background(), providerID, "model-b", nil, nil, true)
+	if err != nil || selected.ID != secondID || selected.Credential != "sk-second-discovery" {
+		t.Fatalf("selected=%#v err=%v", selected, err)
+	}
+	selected, err = a.selectProviderKey(context.Background(), providerID, "model-a", nil, nil, true)
+	if err != nil || selected.ID != firstID {
+		t.Fatalf("selected=%#v err=%v", selected, err)
+	}
+}
+
+func TestProviderDiscoveryKeepsSuccessfulKeyWhenAnotherFails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer sk-working-discovery" {
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-working"}]}`))
+			return
+		}
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "partial-inventory-provider", "openai_compatible", upstream.URL+"/v1", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	failedID := insertProviderKeyForTest(t, a, providerID, "sk-failed-discovery", "failed", "", providerKeyEgressInherit, nil, 1, 0)
+	workingID := insertProviderKeyForTest(t, a, providerID, "sk-working-discovery", "working", "", providerKeyEgressInherit, nil, 1, 1)
+
+	result, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Discovered != 1 || len(result.Keys) != 2 || result.Keys[0].KeyID != failedID || result.Keys[0].Error == "" || result.Keys[1].KeyID != workingID || result.Keys[1].Error != "" {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestProviderDiscoveryAggregatesEveryEnabledKeyAndRoutesByInventory(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Header.Get("Authorization") {
+		case "Bearer sk-one":
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-common"},{"id":"model-one"}]}`))
+		case "Bearer sk-two":
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-common"},{"id":"model-two"}]}`))
+		default:
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "inventory-provider", "openai_compatible", upstream.URL+"/v1", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1,default_model='' WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	keyOne := insertProviderKeyForTest(t, a, providerID, "sk-one", "one", "", providerKeyEgressInherit, nil, 1, 0)
+	keyTwo := insertProviderKeyForTest(t, a, providerID, "sk-two", "two", "", providerKeyEgressInherit, nil, 1, 1)
+
+	result, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Discovered != 3 || len(result.Keys) != 2 || result.Keys[0].Discovered != 2 || result.Keys[1].Discovered != 2 {
+		t.Fatalf("discovery=%#v", result)
+	}
+	var oneCount, twoCount int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM provider_api_key_models WHERE provider_key_id=?`, keyOne).Scan(&oneCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM provider_api_key_models WHERE provider_key_id=?`, keyTwo).Scan(&twoCount); err != nil {
+		t.Fatal(err)
+	}
+	if oneCount != 2 || twoCount != 2 {
+		t.Fatalf("inventory counts one=%d two=%d", oneCount, twoCount)
+	}
+	selected, err := a.selectProviderKey(context.Background(), providerID, "model-two", nil, nil, true)
+	if err != nil || selected.ID != keyTwo || selected.Credential != "sk-two" {
+		t.Fatalf("model-two selected=%#v err=%v", selected, err)
+	}
+	selected, err = a.selectProviderKey(context.Background(), providerID, "model-one", nil, nil, true)
+	if err != nil || selected.ID != keyOne || selected.Credential != "sk-one" {
+		t.Fatalf("model-one selected=%#v err=%v", selected, err)
+	}
+	if _, err := a.selectProviderKey(context.Background(), providerID, "model-missing", nil, nil, true); err == nil {
+		t.Fatal("discovered inventories unexpectedly allowed an unsupported model")
+	}
+}
+
+func TestProviderDiscoveryKeepsSuccessfulKeysWhenAnotherKeyFails(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer sk-good" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"model-good"}]}`))
+			return
+		}
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "partial-inventory-provider", "openai_compatible", upstream.URL+"/v1", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	_, _ = a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID)
+	_, _ = a.db.Exec(`UPDATE providers SET multi_key_initialized=1,default_model='' WHERE id=?`, providerID)
+	goodID := insertProviderKeyForTest(t, a, providerID, "sk-good", "good", "", providerKeyEgressInherit, nil, 1, 0)
+	badID := insertProviderKeyForTest(t, a, providerID, "sk-bad", "bad", "", providerKeyEgressInherit, nil, 1, 1)
+
+	result, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Discovered != 1 || len(result.Keys) != 2 || result.Keys[1].Error == "" {
+		t.Fatalf("partial discovery=%#v", result)
+	}
+	var goodStatus, badStatus string
+	if err := a.db.QueryRow(`SELECT status FROM provider_api_keys WHERE id=?`, goodID).Scan(&goodStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT status FROM provider_api_keys WHERE id=?`, badID).Scan(&badStatus); err != nil {
+		t.Fatal(err)
+	}
+	if goodStatus != "healthy" || badStatus != "failed" {
+		t.Fatalf("good=%q bad=%q", goodStatus, badStatus)
+	}
+}
