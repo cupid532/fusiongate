@@ -98,6 +98,10 @@ func TestResolveMultiKeyProviderReleasesRouteRowsBeforeKeySelection(t *testing.T
 	}
 	defer a.Close()
 
+	// Force route scanning and key selection to share one SQLite connection.
+	// resolve must close the route rows before selectProviderKey starts its query.
+	a.db.SetMaxOpenConns(1)
+
 	providerID := insertTestProvider(t, a, "resolve-multi-key", "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "public-model", "upstream-model", "chat", 0)
 	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
