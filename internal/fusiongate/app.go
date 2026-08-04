@@ -286,6 +286,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	}
 	go a.runOAuthRefreshLoop(ctx)
 	go a.runPricingSyncLoop(ctx)
+	go a.runCircuitRecoveryLoop(ctx)
 }
 
 func healthCheckIntervalFromEnv() time.Duration {
@@ -436,6 +437,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "ip_pool_node_id", "INTEGER REFERENCES ip_pool_nodes(id) ON DELETE SET NULL"},
 		{"providers", "default_model", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "multi_key_initialized", "INTEGER NOT NULL DEFAULT 0"},
+		{"provider_api_key_models", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -468,6 +470,11 @@ func (a *App) migrate(ctx context.Context) error {
 		if _, err := a.db.ExecContext(ctx, `UPDATE model_routes SET sort_order=id`); err != nil {
 			return err
 		}
+	}
+	// Older builds permanently disabled a provider after five failures. Those
+	// rows are distinguishable from an administrator toggle by their status.
+	if _, err := a.db.ExecContext(ctx, `UPDATE providers SET enabled=1,status='circuit_open',circuit_open_until=COALESCE(circuit_open_until,?),updated_at=? WHERE enabled=0 AND status='disabled' AND consecutive_failures>=5`, now(), now()); err != nil {
+		return err
 	}
 	_, err = a.db.ExecContext(ctx, `
 CREATE INDEX IF NOT EXISTS idx_ledger_gateway_request ON request_ledger(gateway_request_id, attempt);

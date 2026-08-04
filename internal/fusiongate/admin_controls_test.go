@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDeleteKeyRemovesItAndPreservesLedgerWithoutKeyReference(t *testing.T) {
@@ -59,6 +60,56 @@ func TestDeleteKeyRemovesItAndPreservesLedgerWithoutKeyReference(t *testing.T) {
 	a.keyByID(reveal, httptest.NewRequest(http.MethodPost, "/api/admin/keys/"+intString(key.ID)+"/reveal", nil), adminCtx{})
 	if reveal.Code != http.StatusNotFound {
 		t.Fatalf("reveal deleted key status=%d body=%s", reveal.Code, reveal.Body.String())
+	}
+}
+
+func TestRequestLedgerFiltersByDetailedTimeStatusProviderAndQuery(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "ledger-provider", "openai_compatible", "https://example.test", "secret", 1, 1, "normalized", "any", 0, 3, 30)
+	before := "2026-08-04T09:10:11Z"
+	inside := "2026-08-04T10:20:30Z"
+	after := "2026-08-04T11:40:50Z"
+	for _, row := range []struct {
+		requestID, created, model string
+		completed                 any
+		success                   int
+	}{
+		{"before", before, "gpt-before", before, 1},
+		{"matching", inside, "gpt-filtered", inside, 1},
+		{"failed", inside, "gpt-filtered", inside, 0},
+		{"running", inside, "gpt-filtered", nil, 0},
+		{"after", after, "gpt-after", after, 1},
+	} {
+		if _, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,created_at,completed_at,provider_id,provider_name,public_model,upstream_model,protocol,success) VALUES(?,?,?,?,?,?,?,?,?,?)`, row.requestID, "gateway-"+row.requestID, row.created, row.completed, providerID, "ledger-provider", row.model, row.model, "openai_chat", row.success); err != nil {
+			t.Fatal(err)
+		}
+	}
+	from := time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	to := time.Date(2026, 8, 4, 10, 59, 59, 0, time.UTC).Format(time.RFC3339)
+	recorder := httptest.NewRecorder()
+	path := "/api/admin/requests?from=" + from + "&to=" + to + "&provider_id=" + intString(providerID) + "&status=success&q=filtered&limit=100"
+	a.requests(recorder, httptest.NewRequest(http.MethodGet, path, nil), adminCtx{})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var rows []struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].RequestID != "matching" {
+		t.Fatalf("filtered rows=%+v", rows)
+	}
+
+	invalid := httptest.NewRecorder()
+	a.requests(invalid, httptest.NewRequest(http.MethodGet, "/api/admin/requests?from=not-a-time", nil), adminCtx{})
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid time status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
 }
 

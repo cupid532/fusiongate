@@ -238,6 +238,19 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 		return err
 	}
 	defer tx.Rollback()
+	previous := map[string]int{}
+	rows, err := tx.QueryContext(ctx, `SELECT model,enabled FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var model string
+		var enabled int
+		if rows.Scan(&model, &enabled) == nil {
+			previous[strings.ToLower(model)] = enabled
+		}
+	}
+	_ = rows.Close()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID); err != nil {
 		return err
 	}
@@ -248,7 +261,11 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 			continue
 		}
 		seen[id] = true
-		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at) VALUES(?,?,?,?,?)`, keyID, id, model.DisplayName, model.Capabilities, stamp); err != nil {
+		enabled, existed := previous[strings.ToLower(id)]
+		if !existed {
+			enabled = 1
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,?)`, keyID, id, model.DisplayName, model.Capabilities, stamp, enabled); err != nil {
 			return err
 		}
 	}

@@ -119,20 +119,40 @@ func TestProviderStatusFiltersFollowSchedulingStates(t *testing.T) {
 	}
 }
 
-func TestLightThemeUsesWarmCreamPalette(t *testing.T) {
+func TestLightThemeUsesHighContrastCoolPalette(t *testing.T) {
 	html := string(adminHTML)
 	for _, required := range []string{
-		`/* warm cream light theme and route orchestration */`,
-		`html[data-theme="light"]{--bg:#f2efe7;--sidebar:#eeeae1;--surface:#fbf9f4;--surface-2:#f3efe7;--surface-3:#e9e3d8`,
-		`--text:#2b2925;--muted:#6f685f;--muted-2:#938a7d;--accent:#a84f32;--accent-strong:#c66745`,
-		`html[data-theme="light"] .brand-mark{color:#fffaf4;background:linear-gradient(145deg,#d98262,#b75639)`,
-		`notice(next==='light'?'已切换到奶白主题':'已切换到深色主题')`,
+		`/* Crisp visual system: strong hierarchy, compact controls, explicit status. */`,
+		`html[data-theme="light"]{--bg:#f3f6fa;--sidebar:#0d1726;--surface:#fff;--surface-2:#f6f8fb;--surface-3:#e9eef5`,
+		`--text:#172033;--muted:#526176;--muted-2:#758399;--accent:#087f70;--accent-strong:#0a927f`,
+		`html[data-theme="light"] .sidebar{background:linear-gradient(180deg,#0d1726,#101c2e)`,
+		`notice(next==='light'?'已切换到高对比日间主题':'已切换到深色主题')`,
+		`<strong>运行正常</strong><small>LOCAL · SQLITE</small>`,
 	} {
 		if !strings.Contains(html, required) {
-			t.Fatalf("warm cream light theme is missing %q", required)
+			t.Fatalf("high contrast light theme is missing %q", required)
 		}
 	}
-	if strings.Contains(html, `html[data-theme="light"]{--bg:#f4f7fb`) {
-		t.Fatal("the old cool white light-theme palette is still present")
+	if strings.Contains(html, `已切换到奶白主题`) {
+		t.Fatal("the low-contrast cream theme label is still present")
+	}
+}
+
+func TestRequestLedgerHasServerSideDetailedTimeFilters(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		`id="requestFrom" type="datetime-local" step="1"`,
+		`id="requestTo" type="datetime-local" step="1"`,
+		`id="requestStatus"`,
+		`id="requestProvider"`,
+		`function requestParams()`,
+		`new Date(from).toISOString()`,
+		`/api/admin/requests?'+requestParams()`,
+		`function formatRequestTime(value)`,
+		`开始 / 完成时间`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("request ledger detailed filters are missing %q", required)
+		}
 	}
 }

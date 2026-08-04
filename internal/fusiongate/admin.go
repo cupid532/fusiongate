@@ -527,15 +527,16 @@ func (a *App) healthChecks(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, map[string]any{"active": true, "job": job})
 	case http.MethodPost:
 		var in struct {
-			ProviderIDs []int64 `json:"provider_ids"`
-			RouteIDs    []int64 `json:"route_ids"`
-			ModelScope  string  `json:"model_scope"`
+			ProviderIDs    []int64 `json:"provider_ids"`
+			RouteIDs       []int64 `json:"route_ids"`
+			ProviderKeyIDs []int64 `json:"provider_key_ids"`
+			ModelScope     string  `json:"model_scope"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		job, err := a.healthCheckJobs.StartModels(r.Context(), in.ProviderIDs, in.RouteIDs, in.ModelScope)
+		job, err := a.healthCheckJobs.StartModels(r.Context(), in.ProviderIDs, in.RouteIDs, in.ProviderKeyIDs, in.ModelScope)
 		if errors.Is(err, errHealthCheckAlreadyRunning) {
 			fail(w, http.StatusConflict, "health_check_running", "another health check is already running; wait for it to finish or cancel it")
 			return
@@ -1577,7 +1578,57 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			limit = x
 		}
 	}
-	rows, err := a.db.Query(`SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id ORDER BY l.id DESC LIMIT ?`, limit)
+	where := []string{"1=1"}
+	args := []any{}
+	for _, filter := range []struct {
+		name, operator string
+	}{
+		{"from", ">="},
+		{"to", "<="},
+	} {
+		value := strings.TrimSpace(r.URL.Query().Get(filter.name))
+		if value == "" {
+			continue
+		}
+		parsed, parseErr := time.Parse(time.RFC3339, value)
+		if parseErr != nil {
+			fail(w, http.StatusBadRequest, "invalid_time_filter", filter.name+" must be an RFC3339 timestamp")
+			return
+		}
+		where = append(where, "l.created_at "+filter.operator+" ?")
+		args = append(args, parsed.UTC().Format(time.RFC3339Nano))
+	}
+	if providerID := strings.TrimSpace(r.URL.Query().Get("provider_id")); providerID != "" {
+		id, parseErr := strconv.ParseInt(providerID, 10, 64)
+		if parseErr != nil || id < 1 {
+			fail(w, http.StatusBadRequest, "invalid_provider_filter", "provider_id must be a positive integer")
+			return
+		}
+		where = append(where, "l.provider_id=?")
+		args = append(args, id)
+	}
+	switch status := strings.TrimSpace(r.URL.Query().Get("status")); status {
+	case "", "all":
+	case "running":
+		where = append(where, "l.completed_at IS NULL")
+	case "success":
+		where = append(where, "l.completed_at IS NOT NULL AND l.success=1")
+	case "failed":
+		where = append(where, "l.completed_at IS NOT NULL AND l.success=0")
+	default:
+		fail(w, http.StatusBadRequest, "invalid_status_filter", "status must be all, running, success, or failed")
+		return
+	}
+	if query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))); query != "" {
+		like := "%" + query + "%"
+		where = append(where, `(LOWER(l.public_model) LIKE ? OR LOWER(l.upstream_model) LIKE ? OR LOWER(l.protocol) LIKE ? OR LOWER(l.request_id) LIKE ? OR LOWER(l.gateway_request_id) LIKE ? OR LOWER(COALESCE(NULLIF(l.provider_name,''),p.name,'')) LIKE ? OR LOWER(l.error_type) LIKE ? OR LOWER(l.retry_reason) LIKE ?)`)
+		for range 8 {
+			args = append(args, like)
+		}
+	}
+	args = append(args, limit)
+	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id DESC LIMIT ?`
+	rows, err := a.db.Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
 		return

@@ -24,29 +24,37 @@ const (
 )
 
 type ProviderAPIKey struct {
-	ID                int64  `json:"id"`
-	ProviderID        int64  `json:"provider_id"`
-	Name              string `json:"name"`
-	KeyHint           string `json:"key_hint"`
-	Model             string `json:"model,omitempty"`
-	EffectiveModel    string `json:"effective_model,omitempty"`
-	ModelInherited    bool   `json:"model_inherited"`
-	EgressMode        string `json:"egress_mode"`
-	IPPoolNodeID      *int64 `json:"ip_pool_node_id,omitempty"`
-	IPPoolNodeName    string `json:"ip_pool_node_name,omitempty"`
-	EffectiveEgress   string `json:"effective_egress"`
-	EffectiveNodeID   *int64 `json:"effective_node_id,omitempty"`
-	EgressInherited   bool   `json:"egress_inherited"`
-	Enabled           bool   `json:"enabled"`
-	SortOrder         int    `json:"sort_order"`
-	Status            string `json:"status"`
-	LastError         string `json:"last_error,omitempty"`
-	LastTestedAt      string `json:"last_tested_at,omitempty"`
-	LastTestLatencyMS int64  `json:"last_test_latency_ms"`
-	DiscoveredModels  int    `json:"discovered_models"`
-	LastDiscoveredAt  string `json:"last_discovered_at,omitempty"`
-	CreatedAt         string `json:"created_at"`
-	UpdatedAt         string `json:"updated_at"`
+	ID                int64              `json:"id"`
+	ProviderID        int64              `json:"provider_id"`
+	Name              string             `json:"name"`
+	KeyHint           string             `json:"key_hint"`
+	Model             string             `json:"model,omitempty"`
+	EffectiveModel    string             `json:"effective_model,omitempty"`
+	ModelInherited    bool               `json:"model_inherited"`
+	EgressMode        string             `json:"egress_mode"`
+	IPPoolNodeID      *int64             `json:"ip_pool_node_id,omitempty"`
+	IPPoolNodeName    string             `json:"ip_pool_node_name,omitempty"`
+	EffectiveEgress   string             `json:"effective_egress"`
+	EffectiveNodeID   *int64             `json:"effective_node_id,omitempty"`
+	EgressInherited   bool               `json:"egress_inherited"`
+	Enabled           bool               `json:"enabled"`
+	SortOrder         int                `json:"sort_order"`
+	Status            string             `json:"status"`
+	LastError         string             `json:"last_error,omitempty"`
+	LastTestedAt      string             `json:"last_tested_at,omitempty"`
+	LastTestLatencyMS int64              `json:"last_test_latency_ms"`
+	DiscoveredModels  int                `json:"discovered_models"`
+	LastDiscoveredAt  string             `json:"last_discovered_at,omitempty"`
+	Models            []ProviderKeyModel `json:"models"`
+	CreatedAt         string             `json:"created_at"`
+	UpdatedAt         string             `json:"updated_at"`
+}
+
+type ProviderKeyModel struct {
+	Model        string `json:"model"`
+	DisplayName  string `json:"display_name"`
+	Capabilities string `json:"capabilities"`
+	Enabled      bool   `json:"enabled"`
 }
 
 type selectedProviderKey struct {
@@ -169,16 +177,11 @@ SELECT k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_
 FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id
 WHERE k.provider_id=? AND k.enabled=1
   AND (
-    lower(COALESCE(NULLIF(k.model,''),NULLIF(p.default_model,''),''))=lower(?)
-    OR (
-      COALESCE(NULLIF(k.model,''),NULLIF(p.default_model,''),'')=''
-      AND (
-        NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id)
-        OR EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND lower(km.model)=lower(?))
-      )
-    )
+    (k.model<>'' AND lower(k.model)=lower(?))
+    OR (k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?)))
+    OR (k.model='' AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id) AND (p.default_model='' OR lower(p.default_model)=lower(?)))
   )
-ORDER BY k.sort_order,k.id LIMIT 1`, providerID, upstreamModel, upstreamModel).Scan(&selected.ID, &encrypted, &selected.Name, &selected.Hint, &selected.Model, &egressMode, &keyNodeID)
+ORDER BY k.sort_order,k.id LIMIT 1`, providerID, upstreamModel, upstreamModel, upstreamModel).Scan(&selected.ID, &encrypted, &selected.Name, &selected.Hint, &selected.Model, &egressMode, &keyNodeID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return selectedProviderKey{}, errors.New("no enabled API key supports this model")
@@ -223,6 +226,29 @@ func (a *App) applyProviderKeyForModel(ctx context.Context, p *discoveryProvider
 	}
 	p.Credential = selected.Credential
 	p.IPPoolNodeID = selected.IPPoolNodeID
+	return nil
+}
+
+func (a *App) applyProviderKeyByID(ctx context.Context, p *discoveryProvider, keyID int64, upstreamModel string) error {
+	if p == nil {
+		return errors.New("provider is required")
+	}
+	var encrypted []byte
+	var mode string
+	var keyNode, providerNode sql.NullInt64
+	err := a.db.QueryRowContext(ctx, `SELECT k.credential,k.egress_mode,k.ip_pool_node_id,p.ip_pool_node_id FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.id=? AND k.provider_id=? AND k.enabled=1 AND (k.model<>'' AND lower(k.model)=lower(?) OR k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?)))`, keyID, p.ID, upstreamModel, upstreamModel).Scan(&encrypted, &mode, &keyNode, &providerNode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("selected API key does not support this model")
+	}
+	if err != nil {
+		return err
+	}
+	raw, err := a.decrypt(encrypted)
+	if err != nil {
+		return err
+	}
+	p.Credential = raw
+	p.IPPoolNodeID, _ = effectiveProviderKeyNode(mode, keyNode, providerNode)
 	return nil
 }
 
@@ -300,6 +326,27 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			effectiveID, effectiveMode := effectiveProviderKeyNode(key.EgressMode, keyNodeID, providerNodeID)
 			key.EffectiveNodeID, key.EffectiveEgress = effectiveID, effectiveMode
 			out = append(out, key)
+		}
+		if err := rows.Close(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		for i := range out {
+			modelRows, modelErr := a.db.Query(`SELECT model,display_name,capabilities,enabled FROM provider_api_key_models WHERE provider_key_id=? ORDER BY model`, out[i].ID)
+			if modelErr != nil {
+				fail(w, http.StatusInternalServerError, "database_error", modelErr.Error())
+				return
+			}
+			out[i].Models = []ProviderKeyModel{}
+			for modelRows.Next() {
+				var model ProviderKeyModel
+				var modelEnabled int
+				if modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities, &modelEnabled) == nil {
+					model.Enabled = strBool(modelEnabled)
+					out[i].Models = append(out[i].Models, model)
+				}
+			}
+			_ = modelRows.Close()
 		}
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
@@ -423,13 +470,14 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 	switch r.Method {
 	case http.MethodPatch:
 		var in struct {
-			APIKey       *string `json:"api_key"`
-			Name         *string `json:"name"`
-			Model        *string `json:"model"`
-			EgressMode   *string `json:"egress_mode"`
-			IPPoolNodeID *int64  `json:"ip_pool_node_id"`
-			Enabled      *bool   `json:"enabled"`
-			SortOrder    *int    `json:"sort_order"`
+			APIKey       *string   `json:"api_key"`
+			Name         *string   `json:"name"`
+			Model        *string   `json:"model"`
+			EgressMode   *string   `json:"egress_mode"`
+			IPPoolNodeID *int64    `json:"ip_pool_node_id"`
+			Enabled      *bool     `json:"enabled"`
+			SortOrder    *int      `json:"sort_order"`
+			Models       *[]string `json:"models"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -504,6 +552,30 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		}
 		if encryptedArg != nil {
 			_, _ = a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
+		}
+		if in.Models != nil {
+			selected := map[string]bool{}
+			for _, model := range *in.Models {
+				if normalized := normalizeProviderKeyModel(model); normalized != "" {
+					selected[normalized] = true
+				}
+			}
+			modelRows, queryErr := a.db.Query(`SELECT model FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
+			if queryErr != nil {
+				fail(w, http.StatusInternalServerError, "database_error", queryErr.Error())
+				return
+			}
+			var inventory []string
+			for modelRows.Next() {
+				var model string
+				if modelRows.Scan(&model) == nil {
+					inventory = append(inventory, model)
+				}
+			}
+			_ = modelRows.Close()
+			for _, model := range inventory {
+				_, _ = a.db.Exec(`UPDATE provider_api_key_models SET enabled=? WHERE provider_key_id=? AND model=?`, boolInt(selected[strings.ToLower(model)]), keyID, model)
+			}
 		}
 		// Keep the legacy provider credential synchronized with the current first
 		// card. New runtimes never select it after initialization, but this makes

@@ -36,12 +36,15 @@ type healthCheckJobManager struct {
 }
 
 type healthCheckTarget struct {
-	ProviderID    int64
-	ProviderName  string
-	RouteID       int64
-	PublicName    string
-	UpstreamModel string
-	Capabilities  string
+	ProviderID      int64
+	ProviderName    string
+	ProviderKeyID   int64
+	ProviderKeyName string
+	ProviderKeyHint string
+	RouteID         int64
+	PublicName      string
+	UpstreamModel   string
+	Capabilities    string
 }
 
 type healthCheckJob struct {
@@ -63,19 +66,22 @@ type healthCheckJob struct {
 }
 
 type healthCheckItemResult struct {
-	ProviderID   int64  `json:"provider_id"`
-	ProviderName string `json:"provider_name"`
-	RouteID      int64  `json:"route_id,omitempty"`
-	PublicName   string `json:"public_name,omitempty"`
-	Status       string `json:"status"`
-	LatencyMS    int64  `json:"latency_ms"`
-	FirstByteMS  int64  `json:"first_byte_ms"`
-	Mode         string `json:"mode"`
-	Model        string `json:"model,omitempty"`
-	ModelCount   int    `json:"model_count"`
-	Error        string `json:"error,omitempty"`
-	StartedAt    string `json:"started_at,omitempty"`
-	FinishedAt   string `json:"finished_at,omitempty"`
+	ProviderID      int64  `json:"provider_id"`
+	ProviderName    string `json:"provider_name"`
+	ProviderKeyID   int64  `json:"provider_key_id,omitempty"`
+	ProviderKeyName string `json:"provider_key_name,omitempty"`
+	ProviderKeyHint string `json:"provider_key_hint,omitempty"`
+	RouteID         int64  `json:"route_id,omitempty"`
+	PublicName      string `json:"public_name,omitempty"`
+	Status          string `json:"status"`
+	LatencyMS       int64  `json:"latency_ms"`
+	FirstByteMS     int64  `json:"first_byte_ms"`
+	Mode            string `json:"mode"`
+	Model           string `json:"model,omitempty"`
+	ModelCount      int    `json:"model_count"`
+	Error           string `json:"error,omitempty"`
+	StartedAt       string `json:"started_at,omitempty"`
+	FinishedAt      string `json:"finished_at,omitempty"`
 }
 
 func newHealthCheckJobManager(app *App) *healthCheckJobManager {
@@ -103,7 +109,7 @@ func (m *healthCheckJobManager) Close() {
 	m.wg.Wait()
 }
 
-func (m *healthCheckJobManager) StartModels(ctx context.Context, providerIDs, routeIDs []int64, modelScope string) (healthCheckJob, error) {
+func (m *healthCheckJobManager) StartModels(ctx context.Context, providerIDs, routeIDs, providerKeyIDs []int64, modelScope string) (healthCheckJob, error) {
 	mode := healthCheckModeGeneration
 	providerTargets, err := m.loadTargets(ctx, providerIDs)
 	if err != nil {
@@ -112,7 +118,7 @@ func (m *healthCheckJobManager) StartModels(ctx context.Context, providerIDs, ro
 	if modelScope == "" {
 		modelScope = "all"
 	}
-	targets, err := m.loadModelTargets(ctx, providerTargets, routeIDs, modelScope)
+	targets, err := m.loadModelTargets(ctx, providerTargets, routeIDs, providerKeyIDs, modelScope)
 	if err != nil {
 		return healthCheckJob{}, err
 	}
@@ -138,13 +144,16 @@ func (m *healthCheckJobManager) StartModels(ctx context.Context, providerIDs, ro
 	}
 	for i, target := range targets {
 		job.Results[i] = healthCheckItemResult{
-			ProviderID:   target.ProviderID,
-			ProviderName: target.ProviderName,
-			RouteID:      target.RouteID,
-			PublicName:   target.PublicName,
-			Model:        target.UpstreamModel,
-			Mode:         mode,
-			Status:       "queued",
+			ProviderID:      target.ProviderID,
+			ProviderName:    target.ProviderName,
+			ProviderKeyID:   target.ProviderKeyID,
+			ProviderKeyName: target.ProviderKeyName,
+			ProviderKeyHint: target.ProviderKeyHint,
+			RouteID:         target.RouteID,
+			PublicName:      target.PublicName,
+			Model:           target.UpstreamModel,
+			Mode:            mode,
+			Status:          "queued",
 		}
 	}
 	m.jobs[jobID] = job
@@ -249,7 +258,7 @@ func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []i
 	return targets, nil
 }
 
-func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers []healthCheckTarget, routeIDs []int64, scope string) ([]healthCheckTarget, error) {
+func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers []healthCheckTarget, routeIDs, providerKeyIDs []int64, scope string) ([]healthCheckTarget, error) {
 	if scope != "all" && scope != "selected" {
 		return nil, errors.New("model_scope must be all or selected")
 	}
@@ -312,6 +321,45 @@ func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers 
 	}
 	if len(targets) > manualHealthCheckMaxItems {
 		return nil, fmt.Errorf("health check expands to more than %d models", manualHealthCheckMaxItems)
+	}
+	if len(providerKeyIDs) > 0 {
+		allowed := make(map[int64]bool, len(providerKeyIDs))
+		matched := make(map[int64]bool, len(providerKeyIDs))
+		for _, id := range providerKeyIDs {
+			if id < 1 {
+				return nil, errors.New("provider_key_ids must contain positive integers")
+			}
+			allowed[id] = true
+		}
+		expanded := make([]healthCheckTarget, 0)
+		for _, target := range targets {
+			rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint FROM provider_api_keys k WHERE k.provider_id=? AND k.enabled=1 AND (k.model<>'' AND lower(k.model)=lower(?) OR k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?))) ORDER BY k.sort_order,k.id`, target.ProviderID, target.UpstreamModel, target.UpstreamModel)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				item := target
+				if err := rows.Scan(&item.ProviderKeyID, &item.ProviderKeyName, &item.ProviderKeyHint); err != nil {
+					_ = rows.Close()
+					return nil, err
+				}
+				if allowed[item.ProviderKeyID] {
+					expanded = append(expanded, item)
+					matched[item.ProviderKeyID] = true
+				}
+			}
+			_ = rows.Close()
+		}
+		if len(matched) != len(allowed) {
+			return nil, errors.New("one or more selected keys are disabled, missing, or do not support the selected models")
+		}
+		targets = expanded
+		if len(targets) == 0 {
+			return nil, errors.New("the selected keys do not support the selected models")
+		}
+		if len(targets) > manualHealthCheckMaxItems {
+			return nil, fmt.Errorf("health check expands to more than %d key/model combinations", manualHealthCheckMaxItems)
+		}
 	}
 	return targets, nil
 }
@@ -408,6 +456,7 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 		}
 		m.finishItem(jobID, index, healthCheckItemResult{
 			ProviderID: item.ProviderID, ProviderName: item.ProviderName, Mode: mode,
+			ProviderKeyID: item.ProviderKeyID, ProviderKeyName: item.ProviderKeyName, ProviderKeyHint: item.ProviderKeyHint,
 			RouteID: item.RouteID, PublicName: item.PublicName, Model: item.Model,
 			Status: "cancelled", Error: "health check cancelled",
 		})
@@ -418,17 +467,26 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 	probeCtx, cancel := context.WithTimeout(ctx, manualGenerationTimeout)
 	var result healthCheckResult
 	var err error
-	target := healthCheckTarget{ProviderID: item.ProviderID, ProviderName: item.ProviderName, RouteID: item.RouteID, PublicName: item.PublicName, UpstreamModel: item.Model}
+	target := healthCheckTarget{ProviderID: item.ProviderID, ProviderName: item.ProviderName, ProviderKeyID: item.ProviderKeyID, ProviderKeyName: item.ProviderKeyName, ProviderKeyHint: item.ProviderKeyHint, RouteID: item.RouteID, PublicName: item.PublicName, UpstreamModel: item.Model}
 	if loadErr := m.app.db.QueryRowContext(probeCtx, `SELECT capabilities FROM model_routes WHERE id=? AND provider_id=?`, item.RouteID, item.ProviderID).Scan(&target.Capabilities); loadErr != nil {
 		err = errors.New("model route no longer exists")
 	} else {
 		checker := NewHealthChecker(m.app, 15*time.Minute, 1)
 		result = checker.probeRoute(probeCtx, target)
-		checker.updateRouteHealthStatus(item.RouteID, result)
+		if item.ProviderKeyID > 0 {
+			status, message := result.Status, result.Error
+			if status == "healthy" {
+				message = ""
+			}
+			_, _ = m.app.db.ExecContext(probeCtx, `UPDATE provider_api_keys SET status=?,last_error=?,last_tested_at=?,last_test_latency_ms=?,updated_at=? WHERE id=? AND provider_id=?`, status, message, now(), result.LatencyMS, now(), item.ProviderKeyID, item.ProviderID)
+		} else {
+			checker.updateRouteHealthStatus(item.RouteID, result)
+		}
 	}
 	cancel()
 	finished := healthCheckItemResult{
 		ProviderID: item.ProviderID, ProviderName: item.ProviderName,
+		ProviderKeyID: item.ProviderKeyID, ProviderKeyName: item.ProviderKeyName, ProviderKeyHint: item.ProviderKeyHint,
 		RouteID: item.RouteID, PublicName: item.PublicName,
 		Status: result.Status, Mode: mode, LatencyMS: result.LatencyMS,
 		FirstByteMS: result.FirstByteMS, Model: result.Model,

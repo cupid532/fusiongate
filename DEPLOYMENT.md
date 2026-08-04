@@ -2,6 +2,18 @@
 
 The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and proxies requests to FusionGate over an isolated Docker network; the application container is not published directly on the host.
 
+## Quick navigation
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Operations](#operations)
+- [OAuth production notes](#oauth-production-notes)
+- [Firewall](#firewall)
+- [Restore](#restore)
+- [Post-install checklist](#post-install-checklist)
+
+> Production rule: expose only HTTPS through Caddy. Keep FusionGate port `8787`, SQLite data, and secret source files private.
+
 ## Requirements
 
 - Debian 12 or Ubuntu 22.04/24.04
@@ -56,6 +68,14 @@ sudo fusiongatectl backup
 ```
 
 An update downloads the configured repository and Git ref, replaces only the managed application source, rebuilds the image, and preserves configuration, secrets, database files, and Caddy state.
+
+After every update, verify both process readiness and the public TLS endpoint:
+
+```bash
+fusiongatectl health
+curl -fsS https://ai.example.com/readyz
+sudo fusiongatectl logs 100
+```
 
 Backups briefly stop the FusionGate application container to produce a consistent archive. The archive contains the database and encryption key and must be protected like production credentials.
 

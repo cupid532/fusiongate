@@ -17,7 +17,6 @@ type providerRuntime struct {
 	ConsecutiveFailures int
 	CircuitOpenUntil    time.Time
 	HalfOpenProbe       bool
-	AutoDisabled        bool
 	EWMALatencyMS       float64
 	EWMAFirstByteMS     float64
 }
@@ -268,12 +267,6 @@ func providerStatus(result attemptResult) string {
 	return "healthy"
 }
 
-// autoDisableAfterConsecutiveFailures is deliberately independent from the
-// temporary circuit-breaker threshold: a channel that repeatedly has permanent
-// failures across cooldown probes is taken out of rotation until an administrator
-// enables it. Transient rate limiting remains a temporary circuit condition.
-const autoDisableAfterConsecutiveFailures = 5
-
 func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.Duration, firstByte ...time.Duration) {
 	a.routeMu.Lock()
 	state := a.stateForLocked(z.Provider)
@@ -281,12 +274,6 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		state.Inflight--
 	}
 	state.HalfOpenProbe = false
-	// Requests already in flight may finish after this channel has been
-	// auto-disabled. They must not reopen it or overwrite its failure history.
-	if state.AutoDisabled {
-		a.routeMu.Unlock()
-		return
-	}
 	if isNeutralResult(result) {
 		a.routeMu.Unlock()
 		return
@@ -320,7 +307,6 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	lastSuccessAt := ""
 	lastFailureAt := ""
 	openUntil := ""
-	autoDisabled := false
 	if providerFailure {
 		state.ConsecutiveFailures++
 		lastFailureAt = now()
@@ -334,15 +320,7 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		}
 		immediate := result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden ||
 			result.Status == http.StatusTooManyRequests
-		autoDisableEligible := result.Status != http.StatusTooManyRequests
-		if autoDisableEligible && state.ConsecutiveFailures >= autoDisableAfterConsecutiveFailures {
-			// Closing, rather than deleting, preserves the channel and its
-			// diagnostics while excluding it from every new route resolution.
-			state.AutoDisabled = true
-			state.CircuitOpenUntil = time.Time{}
-			autoDisabled = true
-			status = "disabled"
-		} else if immediate || state.ConsecutiveFailures >= threshold {
+		if immediate || state.ConsecutiveFailures >= threshold {
 			cooldown := time.Duration(z.Provider.CooldownSeconds) * time.Second
 			if cooldown <= 0 {
 				cooldown = 30 * time.Second
@@ -389,9 +367,57 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	}
 	a.routeMu.Unlock()
 
-	_, err := a.db.Exec(`UPDATE providers SET enabled=CASE WHEN ? THEN 0 ELSE enabled END,status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_first_byte_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=? WHERE id=?`, boolInt(autoDisabled), status, failures, nullableTime(openUntil), lastError, ewma, ewmaFirstByte, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), z.Provider.ID)
+	_, err := a.db.Exec(`UPDATE providers SET status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_first_byte_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=? WHERE id=?`, status, failures, nullableTime(openUntil), lastError, ewma, ewmaFirstByte, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), z.Provider.ID)
 	if err != nil {
 		a.log.Error("provider health update", "provider_id", z.Provider.ID, "error", err)
+	}
+}
+
+const circuitRecoveryInterval = 30 * time.Second
+
+func (a *App) runCircuitRecoveryLoop(ctx context.Context) {
+	ticker := time.NewTicker(circuitRecoveryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.probeOpenCircuits(ctx)
+		}
+	}
+}
+
+func (a *App) probeOpenCircuits(parent context.Context) {
+	rows, err := a.db.QueryContext(parent, `SELECT id FROM providers WHERE enabled=1 AND circuit_open_until IS NOT NULL ORDER BY id LIMIT 100`)
+	if err != nil {
+		a.log.Error("circuit recovery query", "error", err)
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	_ = rows.Close()
+	for _, id := range ids {
+		if parent.Err() != nil || !a.beginHealthProbe(id) {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+		result := a.healthChecker.probeProviderMode(ctx, id, healthCheckModeConnectivity)
+		cancel()
+		a.endHealthProbe(id)
+		a.healthChecker.updateHealthStatus(id, result)
+		if result.Status != "healthy" {
+			continue
+		}
+		a.resetProviderRuntime(id)
+		if _, err := a.db.ExecContext(parent, `UPDATE providers SET status='healthy',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_success_at=?,updated_at=? WHERE id=? AND enabled=1`, now(), now(), id); err != nil {
+			a.log.Error("circuit recovery update", "provider_id", id, "error", err)
+		}
 	}
 }
 

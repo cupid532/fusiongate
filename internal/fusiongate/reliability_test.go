@@ -599,7 +599,8 @@ func TestRepeatedRateLimitsDoNotAutoDisableProvider(t *testing.T) {
 		Provider: Provider{ID: providerID, FailureThreshold: 1, CooldownSeconds: 30},
 	}
 	limited := attemptResult{Status: http.StatusTooManyRequests, Retryable: true, Reason: "upstream_rate_limited"}
-	for range autoDisableAfterConsecutiveFailures + 2 {
+	const attempts = 7
+	for range attempts {
 		a.completeRoute(z, limited, time.Millisecond)
 	}
 
@@ -609,14 +610,14 @@ func TestRepeatedRateLimitsDoNotAutoDisableProvider(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError, &circuitOpenUntil); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 1 || failures != autoDisableAfterConsecutiveFailures+2 || status != "rate_limited" || lastError != "upstream_rate_limited" || circuitOpenUntil == nil {
+	if enabled != 1 || failures != attempts || status != "rate_limited" || lastError != "upstream_rate_limited" || circuitOpenUntil == nil {
 		t.Fatalf("rate-limited provider enabled=%d failures=%d status=%q last_error=%q circuit_open_until=%v", enabled, failures, status, lastError, circuitOpenUntil)
 	}
 	a.routeMu.Lock()
 	state := a.stateForLocked(z.Provider)
-	if state.AutoDisabled || state.CircuitOpenUntil.IsZero() {
+	if state.CircuitOpenUntil.IsZero() {
 		a.routeMu.Unlock()
-		t.Fatalf("rate-limited runtime state auto_disabled=%v open_until=%s", state.AutoDisabled, state.CircuitOpenUntil)
+		t.Fatal("rate-limited runtime circuit was not opened")
 	}
 	a.routeMu.Unlock()
 
@@ -801,21 +802,21 @@ func TestStreamingHeartbeatDoesNotHideStalledModel(t *testing.T) {
 	}
 }
 
-func TestProviderAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
+func TestProviderFailuresOpenCircuitWithoutChangingManualToggle(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
 
-	providerID := insertTestProvider(t, a, "auto-close", "openai_compatible", "http://provider.test", "secret", 1, 1, "normalized", "any", 0, 10, 30)
+	providerID := insertTestProvider(t, a, "temporary-circuit", "openai_compatible", "http://provider.test", "secret", 1, 1, "normalized", "any", 0, 5, 30)
 	insertTestRoute(t, a, providerID, "model", "upstream", "chat", 1)
 	z := resolvedRoute{
 		Route:    Route{ID: 1, ProviderID: providerID, PublicName: "model", UpstreamModel: "upstream"},
-		Provider: Provider{ID: providerID, FailureThreshold: 10, CooldownSeconds: 30},
+		Provider: Provider{ID: providerID, FailureThreshold: 5, CooldownSeconds: 30},
 	}
 	failure := attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_server_error"}
-	for range autoDisableAfterConsecutiveFailures {
+	for range 5 {
 		a.completeRoute(z, failure, time.Millisecond)
 	}
 
@@ -824,27 +825,21 @@ func TestProviderAutoDisablesAfterFiveConsecutiveFailures(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 0 || failures != autoDisableAfterConsecutiveFailures || status != "disabled" || lastError != "upstream_server_error" {
-		t.Fatalf("auto-closed provider enabled=%d failures=%d status=%q last_error=%q", enabled, failures, status, lastError)
+	if enabled != 1 || failures != 5 || status != "circuit_open" || lastError != "upstream_server_error" {
+		t.Fatalf("circuit provider enabled=%d failures=%d status=%q last_error=%q", enabled, failures, status, lastError)
 	}
-	if _, err := a.resolve(context.Background(), "model", "chat"); err == nil {
-		t.Fatal("automatically closed provider remained routable")
+	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}, StrategyPriorityFailover); ok {
+		t.Fatal("circuit-open provider remained selectable")
 	}
-
-	reenable := httptest.NewRequest(http.MethodPatch, "/api/admin/providers/"+intString(providerID), strings.NewReader(`{"enabled":true}`))
-	rec := httptest.NewRecorder()
-	a.providerByID(rec, reenable, adminCtx{})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("re-enable status=%d body=%s", rec.Code, rec.Body.String())
-	}
+	a.completeRoute(z, attemptResult{Status: http.StatusOK, Handled: true}, time.Millisecond)
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 1 || failures != 0 || status != "unknown" || lastError != "" {
-		t.Fatalf("re-enabled provider enabled=%d failures=%d status=%q last_error=%q", enabled, failures, status, lastError)
+	if enabled != 1 || failures != 0 || status != "healthy" || lastError != "" {
+		t.Fatalf("recovered provider enabled=%d failures=%d status=%q last_error=%q", enabled, failures, status, lastError)
 	}
-	if _, err := a.resolve(context.Background(), "model", "chat"); err != nil {
-		t.Fatalf("re-enabled provider did not return to routing: %v", err)
+	if _, _, ok := a.acquireRoute([]resolvedRoute{z}, map[int64]bool{}, StrategyPriorityFailover); !ok {
+		t.Fatal("recovered provider did not return to routing")
 	}
 }
 

@@ -529,6 +529,13 @@ func codexResponsesBodyFromChat(raw []byte, upstreamModel string) ([]byte, error
 		}
 	}
 	body := map[string]any{"model": upstreamModel, "input": input, "store": false, "stream": true}
+	if effort := strings.TrimSpace(asString(chat["reasoning_effort"])); effort != "" {
+		body["reasoning"] = map[string]any{"effort": effort}
+	} else if reasoning := asMap(chat["reasoning"]); reasoning != nil {
+		if effort := strings.TrimSpace(asString(reasoning["effort"])); effort != "" {
+			body["reasoning"] = map[string]any{"effort": effort}
+		}
+	}
 	if tools := anySlice(chat["tools"]); len(tools) > 0 {
 		converted := make([]any, 0, len(tools))
 		for _, value := range tools {

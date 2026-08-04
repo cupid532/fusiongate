@@ -71,7 +71,7 @@ func TestNormalizedCodexResponsesBody(t *testing.T) {
 }
 
 func TestCodexChatRequestAndResponseConversion(t *testing.T) {
-	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"system","content":"Be concise"},{"role":"user","content":"Hello"},{"role":"assistant","content":"Checking","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},{"role":"tool","tool_call_id":"call-1","content":"found"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup","parameters":{"type":"object"}}}],"stream":false}`), "upstream")
+	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"system","content":"Be concise"},{"role":"user","content":"Hello"},{"role":"assistant","content":"Checking","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},{"role":"tool","tool_call_id":"call-1","content":"found"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup","parameters":{"type":"object"}}}],"reasoning_effort":"low","stream":false}`), "upstream")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,6 +81,9 @@ func TestCodexChatRequestAndResponseConversion(t *testing.T) {
 	}
 	if request["model"] != "upstream" || request["stream"] != true || request["store"] != false {
 		t.Fatalf("request=%#v", request)
+	}
+	if reasoning := asMap(request["reasoning"]); reasoning["effort"] != "low" {
+		t.Fatalf("reasoning=%#v", request["reasoning"])
 	}
 	input := anySlice(request["input"])
 	if len(input) != 5 || asMap(input[4])["type"] != "function_call_output" {
@@ -107,6 +110,20 @@ func TestCodexChatRequestAndResponseConversion(t *testing.T) {
 	message := asMap(choice["message"])
 	if message["content"] != "Done" || choice["finish_reason"] != "tool_calls" || len(anySlice(message["tool_calls"])) != 1 {
 		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestCodexChatRequestAcceptsResponsesReasoningShape(t *testing.T) {
+	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":"Hello"}],"reasoning":{"effort":"xhigh"}}`), "upstream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(encoded, &request); err != nil {
+		t.Fatal(err)
+	}
+	if reasoning := asMap(request["reasoning"]); reasoning["effort"] != "xhigh" {
+		t.Fatalf("reasoning=%#v", request["reasoning"])
 	}
 }
 

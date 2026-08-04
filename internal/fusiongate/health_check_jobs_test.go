@@ -58,7 +58,7 @@ func TestManualHealthCheckJobCompletesSelectedProviders(t *testing.T) {
 		ids = append(ids, providerID)
 	}
 
-	job, err := a.healthCheckJobs.StartModels(context.Background(), []int64{ids[0], ids[1], ids[0]}, nil, "all")
+	job, err := a.healthCheckJobs.StartModels(context.Background(), []int64{ids[0], ids[1], ids[0]}, nil, nil, "all")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +79,49 @@ func TestManualHealthCheckJobCompletesSelectedProviders(t *testing.T) {
 		}
 		if status != "healthy" {
 			t.Fatalf("route %d status=%q", result.RouteID, status)
+		}
+	}
+}
+
+func TestManualHealthCheckExpandsSelectedKeysPerModel(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "multi-key-health", "openai_compatible", "https://example.test", "legacy", 1, 1, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	routeID := insertTestRoute(t, a, providerID, "shared-model", "upstream-model", "chat,stream", 1)
+	first := insertProviderKeyForTest(t, a, providerID, "key-one", "Key One", "", "inherit", nil, 1, 0)
+	second := insertProviderKeyForTest(t, a, providerID, "key-two", "Key Two", "", "inherit", nil, 1, 1)
+	for _, keyID := range []int64{first, second} {
+		if _, err := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,1)`, keyID, "upstream-model", "Shared", "chat,stream", now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	providers, err := a.healthCheckJobs.loadTargets(context.Background(), []int64{providerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	targets, err := a.healthCheckJobs.loadModelTargets(context.Background(), providers, []int64{routeID}, []int64{first, second}, "selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 || targets[0].ProviderKeyID != first || targets[1].ProviderKeyID != second {
+		t.Fatalf("targets=%+v", targets)
+	}
+	for i, target := range targets {
+		p, err := a.loadDiscoveryProvider(context.Background(), providerID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.applyProviderKeyByID(context.Background(), &p, target.ProviderKeyID, target.UpstreamModel); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{"key-one", "key-two"}[i]; p.Credential != want {
+			t.Fatalf("credential=%q want %q", p.Credential, want)
 		}
 	}
 }
@@ -120,11 +163,11 @@ func TestManualHealthCheckRejectsOverlappingJob(t *testing.T) {
 	}
 	insertTestRoute(t, a, providerID, "health-overlap", "gpt-health", "chat,stream", 1)
 
-	job, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, "all")
+	job, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, nil, "all")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, "all"); !errors.Is(err, errHealthCheckAlreadyRunning) {
+	if _, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, nil, "all"); !errors.Is(err, errHealthCheckAlreadyRunning) {
 		t.Fatalf("second start error=%v", err)
 	}
 	if _, err := a.healthCheckJobs.Cancel(job.ID); err != nil {
