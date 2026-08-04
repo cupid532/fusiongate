@@ -66,6 +66,9 @@ type tokenUsageResponse struct {
 		APIKeyID   int64  `json:"api_key_id,omitempty"`
 		ProviderID int64  `json:"provider_id,omitempty"`
 		Model      string `json:"model,omitempty"`
+		Status     string `json:"status,omitempty"`
+		Protocol   string `json:"protocol,omitempty"`
+		Stream     string `json:"stream,omitempty"`
 	} `json:"filters"`
 	Totals      tokenUsageMetrics       `json:"totals"`
 	Series      []tokenUsageSeriesPoint `json:"series"`
@@ -151,7 +154,7 @@ func tokenUsageRange(days int) (time.Time, time.Time) {
 }
 
 func tokenUsageFilters(r *http.Request, from, to time.Time) (string, []any, int64, int64, string, error) {
-	where := []string{"l.created_at>=?", "l.created_at<=?", "l.completed_at IS NOT NULL"}
+	where := []string{"l.created_at>=?", "l.created_at<=?", "l.completed_at IS NOT NULL", "EXISTS (SELECT 1 FROM api_keys active_key WHERE active_key.id=l.api_key_id)"}
 	args := []any{from.Format(time.RFC3339Nano), to.Format(time.RFC3339Nano)}
 	var apiKeyID, providerID int64
 	var err error
@@ -176,7 +179,40 @@ func tokenUsageFilters(r *http.Request, from, to time.Time) (string, []any, int6
 		where = append(where, "(LOWER(l.public_model)=? OR LOWER(l.upstream_model)=?)")
 		args = append(args, model, model)
 	}
+	switch status := strings.TrimSpace(r.URL.Query().Get("status")); status {
+	case "", "all":
+	case "success":
+		where = append(where, "l.success=1")
+	case "failed":
+		where = append(where, "l.success=0")
+	default:
+		return "", nil, 0, 0, "", errInvalidTokenUsageFilter
+	}
+	if protocol := strings.TrimSpace(r.URL.Query().Get("protocol")); protocol != "" {
+		where = append(where, "l.protocol=?")
+		args = append(args, protocol)
+	}
+	switch stream := strings.TrimSpace(r.URL.Query().Get("stream")); stream {
+	case "":
+	case "true":
+		where = append(where, "l.stream=1")
+	case "false":
+		where = append(where, "l.stream=0")
+	default:
+		return "", nil, 0, 0, "", errInvalidTokenUsageFilter
+	}
 	return strings.Join(where, " AND "), args, apiKeyID, providerID, model, nil
+}
+
+func tokenUsageTime(raw string, fallback time.Time) (time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	value, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, errInvalidTokenUsageFilter
+	}
+	return value.UTC(), nil
 }
 
 var errInvalidTokenUsageFilter = &tokenUsageInputError{"invalid token usage filter"}
@@ -217,6 +253,17 @@ func (a *App) tokenUsage(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 	from, to := tokenUsageRange(days)
+	from, err = tokenUsageTime(r.URL.Query().Get("from"), from)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "invalid_filter", "from must be an RFC3339 timestamp")
+		return
+	}
+	to, err = tokenUsageTime(r.URL.Query().Get("to"), to)
+	if err != nil || to.Before(from) || to.Sub(from) > 366*24*time.Hour {
+		fail(w, http.StatusBadRequest, "invalid_filter", "to must be after from and the range cannot exceed one year")
+		return
+	}
+	days = int(time.Date(to.Year(), to.Month(), to.Day(), 0, 0, 0, 0, time.UTC).Sub(time.Date(from.Year(), from.Month(), from.Day(), 0, 0, 0, 0, time.UTC))/(24*time.Hour)) + 1
 	where, args, apiKeyID, providerID, model, err := tokenUsageFilters(r, from, to)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "invalid_filter", "invalid Key, provider, or model filter")
@@ -232,6 +279,9 @@ func (a *App) tokenUsage(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	response.Filters.APIKeyID = apiKeyID
 	response.Filters.ProviderID = providerID
 	response.Filters.Model = model
+	response.Filters.Status = strings.TrimSpace(r.URL.Query().Get("status"))
+	response.Filters.Protocol = strings.TrimSpace(r.URL.Query().Get("protocol"))
+	response.Filters.Stream = strings.TrimSpace(r.URL.Query().Get("stream"))
 
 	if err := scanTokenMetrics(a.db.QueryRow(`SELECT `+tokenMetricsSQL("l")+` FROM request_ledger l WHERE `+where, args...), &response.Totals); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())

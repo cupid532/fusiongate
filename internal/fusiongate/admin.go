@@ -1495,7 +1495,7 @@ func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE request_ledger SET api_key_id=NULL WHERE api_key_id=?`, parts[0]); err != nil {
+	if _, err := tx.Exec(`DELETE FROM request_ledger WHERE api_key_id=?`, parts[0]); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
@@ -1621,13 +1621,13 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 	if query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))); query != "" {
 		like := "%" + query + "%"
-		where = append(where, `(LOWER(l.public_model) LIKE ? OR LOWER(l.upstream_model) LIKE ? OR LOWER(l.protocol) LIKE ? OR LOWER(l.request_id) LIKE ? OR LOWER(l.gateway_request_id) LIKE ? OR LOWER(COALESCE(NULLIF(l.provider_name,''),p.name,'')) LIKE ? OR LOWER(l.error_type) LIKE ? OR LOWER(l.retry_reason) LIKE ?)`)
-		for range 8 {
+		where = append(where, `(LOWER(l.public_model) LIKE ? OR LOWER(l.upstream_model) LIKE ? OR LOWER(l.protocol) LIKE ? OR LOWER(l.request_id) LIKE ? OR LOWER(l.gateway_request_id) LIKE ? OR LOWER(l.client_ip) LIKE ? OR LOWER(COALESCE(NULLIF(l.provider_name,''),p.name,'')) LIKE ? OR LOWER(l.error_type) LIKE ? OR LOWER(l.retry_reason) LIKE ?)`)
+		for range 9 {
 			args = append(args, like)
 		}
 	}
 	args = append(args, limit)
-	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id DESC LIMIT ?`
+	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id DESC LIMIT ?`
 	rows, err := a.db.Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
@@ -1637,10 +1637,10 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency, usageReported int
-		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName string
+		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, clientIP string
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName); err != nil {
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &clientIP); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -1648,7 +1648,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if firstByte.Valid {
 			firstByteMS = firstByte.Int64
 		}
-		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported)})
+		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported)})
 	}
 	writeJSON(w, 200, out)
 }

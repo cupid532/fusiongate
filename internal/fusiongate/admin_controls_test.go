@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestDeleteKeyRemovesItAndPreservesLedgerWithoutKeyReference(t *testing.T) {
+func TestDeleteKeyRemovesItAndItsLedger(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -43,12 +43,12 @@ func TestDeleteKeyRemovesItAndPreservesLedgerWithoutKeyReference(t *testing.T) {
 	if keyCount != 0 {
 		t.Fatalf("deleted key remains in database: %d", keyCount)
 	}
-	var ledgerKeyID any
-	if err := a.db.QueryRow(`SELECT api_key_id FROM request_ledger WHERE request_id='key-delete-ledger'`).Scan(&ledgerKeyID); err != nil {
+	var ledgerCount int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE request_id='key-delete-ledger'`).Scan(&ledgerCount); err != nil {
 		t.Fatal(err)
 	}
-	if ledgerKeyID != nil {
-		t.Fatalf("ledger retained deleted key reference: %#v", ledgerKeyID)
+	if ledgerCount != 0 {
+		t.Fatalf("deleted key ledger remains: %d", ledgerCount)
 	}
 
 	list := httptest.NewRecorder()

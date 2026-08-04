@@ -58,7 +58,7 @@ CREATE TABLE request_ledger (
 		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id"},
 		"model_routes":   {"sort_order"},
 		"api_keys":       {"encrypted_key"},
-		"request_ledger": {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms", "usage_reported", "api_key_name", "api_key_prefix", "provider_name"},
+		"request_ledger": {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms", "usage_reported", "api_key_name", "api_key_prefix", "provider_name", "client_ip"},
 	} {
 		rows, err := a.db.Query("PRAGMA table_info(" + table + ")")
 		if err != nil {

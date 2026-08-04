@@ -388,7 +388,7 @@ func (a *App) migrate(ctx context.Context) error {
     output_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
     cost_micros INTEGER NOT NULL DEFAULT 0, cost_type TEXT NOT NULL DEFAULT 'unknown',
     gateway_request_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 1, retry_reason TEXT NOT NULL DEFAULT '',
-    first_byte_ms INTEGER, usage_reported INTEGER NOT NULL DEFAULT 0,
+    first_byte_ms INTEGER, usage_reported INTEGER NOT NULL DEFAULT 0, client_ip TEXT NOT NULL DEFAULT '',
     api_key_name TEXT NOT NULL DEFAULT '', api_key_prefix TEXT NOT NULL DEFAULT '', provider_name TEXT NOT NULL DEFAULT '');
   CREATE INDEX IF NOT EXISTS idx_ledger_created ON request_ledger(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
@@ -446,6 +446,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "api_key_name", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "api_key_prefix", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "provider_name", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "client_ip", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "encrypted_key", "BLOB"},
 		{"api_keys", "budget_micros", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "sort_order", "INTEGER NOT NULL DEFAULT 0"},

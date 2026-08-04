@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -317,12 +318,27 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 
 func requestID() string { return "req_" + hex.EncodeToString(randomBytes(12)) }
 
-func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, gatewayID string, attempt int, retryReason string) (int64, string) {
+func requestClientIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if parsed, err := netip.ParseAddrPort(host); err == nil {
+		host = parsed.Addr().String()
+	}
+	if addr, err := netip.ParseAddr(host); err == nil && (addr.IsLoopback() || addr.IsPrivate()) {
+		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+			if parsed, err := netip.ParseAddr(forwarded); err == nil {
+				host = parsed.String()
+			}
+		}
+	}
+	return host
+}
+
+func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID string, attempt int, retryReason string) (int64, string) {
 	if err := a.pruneRequestLedger(context.Background(), false); err != nil {
 		a.log.Error("request ledger retention cleanup", "error", err)
 	}
 	attemptID := gatewayID + "_a" + strconv.Itoa(attempt)
-	res, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,api_key_name,api_key_prefix,provider_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), k.Name, k.Prefix, z.Provider.Name)
+	res, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name)
 	if err != nil {
 		a.log.Error("ledger insert", "error", err)
 		return 0, attemptID
@@ -538,6 +554,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 	strategy := a.globalRoutingStrategy()
 	routes = a.prepareRoutes(routes, strategy)
 	gatewayID := requestID()
+	clientIP := requestClientIP(r)
 	tried := map[int64]bool{}
 	previousReason := ""
 	lastStatus := http.StatusBadGateway
@@ -568,7 +585,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		}
 		tried[z.Route.ID] = true
 		started := time.Now()
-		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, gatewayID, attempt, previousReason)
+		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, clientIP, gatewayID, attempt, previousReason)
 		var observedFirstByteMS atomic.Int64
 		result := execute(z, attemptID, func() {
 			elapsed := time.Since(started).Milliseconds()

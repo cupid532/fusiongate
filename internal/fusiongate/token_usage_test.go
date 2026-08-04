@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -32,6 +33,9 @@ func TestTokenUsageBreaksDownByDateKeyProviderAndModel(t *testing.T) {
 	defer a.Close()
 
 	created := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	if _, err := a.db.Exec(`INSERT INTO api_keys(id,name,key_prefix,key_hash,created_at) VALUES(11,'desktop','fg_live_a','hash-a',?),(12,'automation','fg_live_b','hash-b',?)`, created, created); err != nil {
+		t.Fatal(err)
+	}
 	insertUsageFixture(t, a, "r1", "g1", created, 11, 21, "desktop", "fg_live_a", "primary", "smart", "upstream-smart", 100, 20, 10, 5, true)
 	insertUsageFixture(t, a, "r2", "g2", created, 11, 21, "desktop", "fg_live_a", "primary", "smart", "upstream-smart", 50, 10, 4, 2, true)
 	insertUsageFixture(t, a, "r3", "g3", created, 12, 22, "automation", "fg_live_b", "backup", "fast", "upstream-fast", 40, 30, 0, 8, true)
@@ -79,6 +83,41 @@ func TestTokenUsageBreaksDownByDateKeyProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestTokenUsageSupportsRequestTypeFilters(t *testing.T) {
+	from := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
+	to := from.Add(time.Hour)
+	r := httptest.NewRequest(http.MethodGet, "/api/admin/token-usage?status=success&protocol=openai_chat&stream=true", nil)
+	where, args, _, _, _, err := tokenUsageFilters(r, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, clause := range []string{"l.success=1", "l.protocol=?", "l.stream=1"} {
+		if !strings.Contains(where, clause) {
+			t.Fatalf("where %q missing %q", where, clause)
+		}
+	}
+	if got := args[len(args)-1]; got != "openai_chat" {
+		t.Fatalf("protocol argument=%v", got)
+	}
+}
+
+func TestRequestClientIPTrustsOnlyLoopbackProxy(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("X-Forwarded-For", "203.0.113.8, 127.0.0.1")
+	if got := requestClientIP(r); got != "203.0.113.8" {
+		t.Fatalf("proxied IP=%q", got)
+	}
+	r.RemoteAddr = "172.25.0.1:4321"
+	if got := requestClientIP(r); got != "203.0.113.8" {
+		t.Fatalf("docker proxy IP=%q", got)
+	}
+	r.RemoteAddr = "198.51.100.7:4321"
+	if got := requestClientIP(r); got != "198.51.100.7" {
+		t.Fatalf("direct IP=%q", got)
+	}
+}
+
 func TestRequestLedgerRetentionKeepsOnlyOneYear(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
@@ -107,7 +146,7 @@ func TestRequestLedgerRetentionKeepsOnlyOneYear(t *testing.T) {
 	}
 }
 
-func TestLedgerSnapshotsSurviveKeyAndProviderDeletion(t *testing.T) {
+func TestTokenUsageExcludesDeletedKeys(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -126,8 +165,8 @@ func TestLedgerSnapshotsSurviveKeyAndProviderDeletion(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Details) != 1 || response.Details[0].APIKeyName != "deleted-client" || response.Details[0].APIKeyPrefix != "fg_snap" || response.Details[0].ProviderName != "deleted-provider" {
-		t.Fatalf("snapshots were not preserved: %+v", response.Details)
+	if response.Totals.Requests != 0 || len(response.Details) != 0 {
+		t.Fatalf("deleted key usage was included: totals=%+v details=%+v", response.Totals, response.Details)
 	}
 }
 
