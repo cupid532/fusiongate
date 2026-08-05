@@ -161,18 +161,22 @@ func (a *App) migrateProviderAPIKeys(ctx context.Context) error {
 }
 
 func (a *App) selectProviderKey(ctx context.Context, providerID int64, upstreamModel string, providerNodeID *int64, legacyCredential []byte, initialized bool) (selectedProviderKey, error) {
+	keys, err := a.selectProviderKeys(ctx, providerID, upstreamModel, providerNodeID, legacyCredential, initialized)
+	if err != nil {
+		return selectedProviderKey{}, err
+	}
+	return keys[0], nil
+}
+
+func (a *App) selectProviderKeys(ctx context.Context, providerID int64, upstreamModel string, providerNodeID *int64, legacyCredential []byte, initialized bool) ([]selectedProviderKey, error) {
 	if !initialized {
 		raw, err := a.decrypt(legacyCredential)
 		if err != nil {
-			return selectedProviderKey{}, err
+			return nil, err
 		}
-		return selectedProviderKey{Credential: raw, Hint: providerKeyHint(raw), IPPoolNodeID: providerNodeID}, nil
+		return []selectedProviderKey{{Credential: raw, Hint: providerKeyHint(raw), IPPoolNodeID: providerNodeID}}, nil
 	}
-	var selected selectedProviderKey
-	var encrypted []byte
-	var keyNodeID sql.NullInt64
-	var egressMode string
-	err := a.db.QueryRowContext(ctx, `
+	rows, err := a.db.QueryContext(ctx, `
 SELECT k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id
 FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id
 WHERE k.provider_id=? AND k.enabled=1
@@ -181,23 +185,38 @@ WHERE k.provider_id=? AND k.enabled=1
     OR (k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?)))
     OR (k.model='' AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id) AND (p.default_model='' OR lower(p.default_model)=lower(?)))
   )
-ORDER BY k.sort_order,k.id LIMIT 1`, providerID, upstreamModel, upstreamModel, upstreamModel).Scan(&selected.ID, &encrypted, &selected.Name, &selected.Hint, &selected.Model, &egressMode, &keyNodeID)
+ORDER BY k.sort_order,k.id`, providerID, upstreamModel, upstreamModel, upstreamModel)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return selectedProviderKey{}, errors.New("no enabled API key supports this model")
-		}
-		return selectedProviderKey{}, err
+		return nil, err
 	}
-	raw, err := a.decrypt(encrypted)
-	if err != nil {
-		return selectedProviderKey{}, err
-	}
-	selected.Credential = raw
+	defer rows.Close()
 	var providerNode sql.NullInt64
 	if providerNodeID != nil {
 		providerNode = sql.NullInt64{Int64: *providerNodeID, Valid: true}
 	}
-	selected.IPPoolNodeID, _ = effectiveProviderKeyNode(egressMode, keyNodeID, providerNode)
+	selected := make([]selectedProviderKey, 0)
+	for rows.Next() {
+		var key selectedProviderKey
+		var encrypted []byte
+		var keyNodeID sql.NullInt64
+		var egressMode string
+		if err := rows.Scan(&key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID); err != nil {
+			return nil, err
+		}
+		raw, err := a.decrypt(encrypted)
+		if err != nil {
+			return nil, err
+		}
+		key.Credential = raw
+		key.IPPoolNodeID, _ = effectiveProviderKeyNode(egressMode, keyNodeID, providerNode)
+		selected = append(selected, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(selected) == 0 {
+		return nil, errors.New("no enabled API key supports this model")
+	}
 	return selected, nil
 }
 

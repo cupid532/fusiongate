@@ -37,6 +37,8 @@ type authKey struct {
 type resolvedRoute struct {
 	Route          Route
 	Provider       Provider
+	ProviderKeyID  int64
+	AttemptID      int64
 	Credential     string
 	AuthCredential *ProviderCredential
 }
@@ -289,13 +291,17 @@ ORDER BY p.priority DESC,p.id,r.id`, model)
 	for _, candidate := range pending {
 		z := candidate.resolved
 		if candidate.authKind == "api_key" {
-			selected, selectErr := a.selectProviderKey(ctx, z.Provider.ID, z.Route.UpstreamModel, z.Provider.IPPoolNodeID, candidate.credential, candidate.multiKeyInitialized)
+			selectedKeys, selectErr := a.selectProviderKeys(ctx, z.Provider.ID, z.Route.UpstreamModel, z.Provider.IPPoolNodeID, candidate.credential, candidate.multiKeyInitialized)
 			if selectErr != nil {
 				continue
 			}
-			z.Credential = selected.Credential
-			z.Provider.IPPoolNodeID = selected.IPPoolNodeID
-			out = append(out, z)
+			for _, selected := range selectedKeys {
+				keyRoute := z
+				keyRoute.ProviderKeyID = selected.ID
+				keyRoute.Credential = selected.Credential
+				keyRoute.Provider.IPPoolNodeID = selected.IPPoolNodeID
+				out = append(out, keyRoute)
+			}
 			continue
 		}
 		plaintext, decryptErr := a.decrypt(candidate.credential)
@@ -553,6 +559,9 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 	}
 	strategy := a.globalRoutingStrategy()
 	routes = a.prepareRoutes(routes, strategy)
+	for i := range routes {
+		routes[i].AttemptID = int64(i + 1)
+	}
 	gatewayID := requestID()
 	clientIP := requestClientIP(r)
 	tried := map[int64]bool{}
@@ -583,7 +592,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			fail(w, status, "upstream_unavailable", message)
 			return
 		}
-		tried[z.Route.ID] = true
+		tried[z.AttemptID] = true
 		started := time.Now()
 		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, clientIP, gatewayID, attempt, previousReason)
 		var observedFirstByteMS atomic.Int64

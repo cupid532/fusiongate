@@ -224,29 +224,60 @@ func TestProviderKeyPatchPreservesSecretAndSupportsReorder(t *testing.T) {
 	}
 }
 
-func TestProviderKeySelectionDoesNotTrySecondKeyAfterUpstreamFailure(t *testing.T) {
+func TestProviderKeyFailoverTriesSecondKeyAfterAuthFailure(t *testing.T) {
+	var credentials []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		credentials = append(credentials, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if len(credentials) == 1 {
+			http.Error(w, "expired", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": "backup key"}}},
+		})
+	}))
+	defer upstream.Close()
+
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	providerID := insertTestProvider(t, a, "single-selection-provider", "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	providerID := insertTestProvider(t, a, "multi-key-failover", "openai_compatible", upstream.URL, "legacy", 1, 100, "normalized", "any", 0, 1, 30)
 	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
 		t.Fatal(err)
 	}
-	insertProviderKeyForTest(t, a, providerID, "sk-first", "first", "", providerKeyEgressInherit, nil, 1, 0)
-	insertProviderKeyForTest(t, a, providerID, "sk-second", "second", "", providerKeyEgressInherit, nil, 1, 1)
-	selected, err := a.selectProviderKey(context.Background(), providerID, "model", nil, nil, true)
-	if err != nil || selected.Credential != "sk-first" {
-		t.Fatalf("selected=%#v err=%v", selected, err)
+	firstID := insertProviderKeyForTest(t, a, providerID, "sk-first", "first", "", providerKeyEgressInherit, nil, 1, 0)
+	secondID := insertProviderKeyForTest(t, a, providerID, "sk-second", "second", "", providerKeyEgressInherit, nil, 1, 1)
+	insertTestRoute(t, a, providerID, "multi-key-model", "upstream-model", "chat,stream", 1)
+
+	key := insertTestKey(t, a, false)
+	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"multi-key-model","messages":[{"role":"user","content":"ping"}]}`, "test-client/1")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "backup key") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	// Selection is performed once while resolving the provider route. There is
-	// no key iterator or retry cursor in resolvedRoute/runRoutes.
-	if selected.ID == 0 {
-		t.Fatal("selected card ID was not retained")
+	if got := strings.Join(credentials, ","); got != "sk-first,sk-second" {
+		t.Fatalf("credentials=%q, want first key then second key", got)
+	}
+	var firstStatus, secondStatus string
+	if err := a.db.QueryRow(`SELECT status FROM provider_api_keys WHERE id=?`, firstID).Scan(&firstStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT status FROM provider_api_keys WHERE id=?`, secondID).Scan(&secondStatus); err != nil {
+		t.Fatal(err)
+	}
+	if firstStatus != "auth_expired" || secondStatus == "auth_expired" {
+		t.Fatalf("key statuses first=%q second=%q", firstStatus, secondStatus)
+	}
+	var providerFailures int
+	if err := a.db.QueryRow(`SELECT consecutive_failures FROM providers WHERE id=?`, providerID).Scan(&providerFailures); err != nil {
+		t.Fatal(err)
+	}
+	if providerFailures != 0 {
+		t.Fatalf("key-specific auth failure opened provider circuit: failures=%d", providerFailures)
 	}
 }
 

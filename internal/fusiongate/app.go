@@ -32,39 +32,40 @@ type Config struct {
 }
 
 type App struct {
-	db                 *sql.DB
-	cfg                Config
-	aead               cipher.AEAD
-	client             *http.Client
-	log                *slog.Logger
-	mu                 sync.Mutex
-	rate               map[string]*rateWindow
-	routeMu            sync.Mutex
-	providerStates     map[int64]*providerRuntime
-	roundRobinCursor   map[string]int
-	authMu             sync.Mutex
-	refreshMu          sync.Mutex
-	oauthSessions      map[string]oauthSession
-	authImports        map[string]credentialImportSession
-	ledgerCleanupMu    sync.Mutex
-	lastLedgerCleanup  time.Time
-	healthChecker      *HealthChecker
-	healthCheckJobs    *healthCheckJobManager
-	healthProbeMu      sync.Mutex
-	healthProbes       map[int64]struct{}
-	balanceMu          sync.Mutex
-	balanceCache       map[int64]ProviderUpstreamBalance
-	loginMu            sync.Mutex
-	loginAttempts      map[string]*rateWindow
-	loginVerifiers     chan struct{}
-	sessionMu          sync.Mutex
-	adminSessions      map[string]adminSession
-	ready              atomic.Bool
-	budgetMu           sync.Mutex
-	budgetInflight     map[int64]bool
-	pricingSyncMu      sync.Mutex
-	pricingSyncTrigger chan struct{}
-	ipPool             *ipPoolManager
+	db                   *sql.DB
+	cfg                  Config
+	aead                 cipher.AEAD
+	client               *http.Client
+	log                  *slog.Logger
+	mu                   sync.Mutex
+	rate                 map[string]*rateWindow
+	routeMu              sync.Mutex
+	providerStates       map[int64]*providerRuntime
+	providerKeyCooldowns map[int64]time.Time
+	roundRobinCursor     map[string]int
+	authMu               sync.Mutex
+	refreshMu            sync.Mutex
+	oauthSessions        map[string]oauthSession
+	authImports          map[string]credentialImportSession
+	ledgerCleanupMu      sync.Mutex
+	lastLedgerCleanup    time.Time
+	healthChecker        *HealthChecker
+	healthCheckJobs      *healthCheckJobManager
+	healthProbeMu        sync.Mutex
+	healthProbes         map[int64]struct{}
+	balanceMu            sync.Mutex
+	balanceCache         map[int64]ProviderUpstreamBalance
+	loginMu              sync.Mutex
+	loginAttempts        map[string]*rateWindow
+	loginVerifiers       chan struct{}
+	sessionMu            sync.Mutex
+	adminSessions        map[string]adminSession
+	ready                atomic.Bool
+	budgetMu             sync.Mutex
+	budgetInflight       map[int64]bool
+	pricingSyncMu        sync.Mutex
+	pricingSyncTrigger   chan struct{}
+	ipPool               *ipPoolManager
 }
 type rateWindow struct {
 	At    time.Time
@@ -234,7 +235,7 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{}, loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4), adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{}, pricingSyncTrigger: make(chan struct{}, 1)}
+	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, providerKeyCooldowns: map[int64]time.Time{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{}, loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4), adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{}, pricingSyncTrigger: make(chan struct{}, 1)}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err

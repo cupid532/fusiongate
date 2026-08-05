@@ -166,3 +166,16 @@ func TestRequestLedgerHasServerSideDetailedTimeFilters(t *testing.T) {
 		}
 	}
 }
+
+func TestCompletedHealthCheckPanelStaysHidden(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		`terminal=['completed','cancelled'].includes(job?.status)`,
+		`$(id)!==panel||terminal`,
+		`if(!panel||!job||terminal||!results.some`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("completed health check panel hiding is missing %q", required)
+		}
+	}
+}

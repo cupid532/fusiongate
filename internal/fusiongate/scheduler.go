@@ -134,6 +134,17 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 }
 
 func (a *App) routeSelectableLocked(z resolvedRoute, state *providerRuntime, nowTime time.Time, availability *routeAvailability) bool {
+	if z.ProviderKeyID > 0 {
+		if openUntil := a.providerKeyCooldowns[z.ProviderKeyID]; openUntil.After(nowTime) {
+			wait := time.Until(openUntil)
+			if availability.RetryAfter == 0 || wait < availability.RetryAfter {
+				availability.RetryAfter = wait
+			}
+			availability.Reason = "provider_key_cooldown"
+			return false
+		}
+		delete(a.providerKeyCooldowns, z.ProviderKeyID)
+	}
 	if state.CircuitOpenUntil.After(nowTime) {
 		wait := time.Until(state.CircuitOpenUntil)
 		if availability.RetryAfter == 0 || wait < availability.RetryAfter {
@@ -171,7 +182,11 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 	availability := routeAvailability{Reason: "no_eligible_route"}
 	if strategy != StrategyAdaptive {
 		for _, z := range routes {
-			if tried[z.Route.ID] {
+			attemptID := z.AttemptID
+			if attemptID == 0 {
+				attemptID = z.Route.ID
+			}
+			if tried[attemptID] {
 				continue
 			}
 			state := a.stateForLocked(z.Provider)
@@ -188,7 +203,11 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 	best := -math.MaxFloat64
 	total := 0.0
 	for _, z := range routes {
-		if tried[z.Route.ID] {
+		attemptID := z.AttemptID
+		if attemptID == 0 {
+			attemptID = z.Route.ID
+		}
+		if tried[attemptID] {
 			continue
 		}
 		state := a.stateForLocked(z.Provider)
@@ -274,6 +293,23 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		state.Inflight--
 	}
 	state.HalfOpenProbe = false
+	keyFailure := z.ProviderKeyID > 0 && (result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden || result.Status == http.StatusTooManyRequests)
+	if keyFailure {
+		cooldown := 5 * time.Minute
+		if result.RetryAfter > cooldown {
+			cooldown = result.RetryAfter
+		}
+		a.providerKeyCooldowns[z.ProviderKeyID] = time.Now().Add(cooldown)
+		a.routeMu.Unlock()
+		_, err := a.db.Exec(`UPDATE provider_api_keys SET status=?,last_error=?,updated_at=? WHERE id=?`, providerStatus(result), result.Reason, now(), z.ProviderKeyID)
+		if err != nil {
+			a.log.Error("provider key health update", "provider_key_id", z.ProviderKeyID, "error", err)
+		}
+		return
+	}
+	if z.ProviderKeyID > 0 && !isProviderFailure(result) {
+		delete(a.providerKeyCooldowns, z.ProviderKeyID)
+	}
 	if isNeutralResult(result) {
 		a.routeMu.Unlock()
 		return
