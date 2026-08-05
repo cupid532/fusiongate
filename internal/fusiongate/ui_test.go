@@ -215,3 +215,18 @@ func TestProvidersPageSupportsPersistentGlobalReordering(t *testing.T) {
 		t.Fatal("priority editing still overwrites the persisted provider order")
 	}
 }
+
+func TestProvidersPageSupportsArchiveFilter(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		"['all','enabled','disabled','circuit','archived']",
+		"['all','全部渠道'],['enabled','已开启'],['disabled','已停用'],['circuit','熔断冷却'],['archived','归档']",
+		"余额耗尽但是优秀的站点",
+		"toggleProviderArchive",
+		"provider.archived&&providerStatusFilter==='all'",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("provider archive behavior is missing %q", required)
+		}
+	}
+}

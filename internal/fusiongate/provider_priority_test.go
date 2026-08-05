@@ -137,3 +137,24 @@ func TestProviderCreationAcceptsExplicitZeroPriority(t *testing.T) {
 		t.Fatalf("explicit provider priority=%d, want 0", priority)
 	}
 }
+
+func TestProviderArchiveTogglePersists(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "archive-me", "openai_compatible", "http://archive.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	recorder := httptest.NewRecorder()
+	a.providerByID(recorder, httptest.NewRequest(http.MethodPatch, "/api/admin/providers/"+intString(providerID), strings.NewReader(`{"archived":true}`)), adminCtx{})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("archive status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var archived int
+	if err := a.db.QueryRow(`SELECT archived FROM providers WHERE id=?`, providerID).Scan(&archived); err != nil {
+		t.Fatal(err)
+	}
+	if archived != 1 {
+		t.Fatalf("archived=%d, want 1", archived)
+	}
+}

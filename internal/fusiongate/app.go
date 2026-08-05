@@ -87,6 +87,7 @@ type Provider struct {
 	Status                  string  `json:"status"`
 	Notes                   string  `json:"notes"`
 	Enabled                 bool    `json:"enabled"`
+	Archived                bool    `json:"archived"`
 	Priority                int     `json:"priority"`
 	SortOrder               int     `json:"sort_order"`
 	Weight                  int     `json:"weight"`
@@ -339,7 +340,7 @@ func (a *App) migrate(ctx context.Context) error {
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS providers (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, base_url TEXT NOT NULL,
-    credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 1,
+     credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, archived INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0,
     weight INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'unknown', notes TEXT NOT NULL DEFAULT '',
     passthrough_mode TEXT NOT NULL DEFAULT 'normalized', client_policy TEXT NOT NULL DEFAULT 'any',
@@ -445,6 +446,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "default_model", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "multi_key_initialized", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
+		{"providers", "archived", "INTEGER NOT NULL DEFAULT 0"},
 		{"provider_api_key_models", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},

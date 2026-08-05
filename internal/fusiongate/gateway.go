@@ -225,12 +225,12 @@ func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
        r.input_price_micros,r.cached_price_micros,r.output_price_micros,r.long_context_threshold,
        r.long_input_price_micros,r.long_cached_price_micros,r.long_output_price_micros,
-       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.weight,p.status,p.notes,
+	       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.sort_order,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
        p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id,p.multi_key_initialized,p.default_model
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
-WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1
+WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1 AND p.archived=0
 ORDER BY r.sort_order,r.id`, model)
 	if err != nil {
 		return nil, err
@@ -254,7 +254,7 @@ ORDER BY r.sort_order,r.id`, model)
 			&z.Route.Priority, &z.Route.SortOrder, &z.Route.InputPriceMicros, &z.Route.CachedPriceMicros, &z.Route.OutputPriceMicros,
 			&z.Route.LongContextThreshold, &z.Route.LongInputPriceMicros, &z.Route.LongCachedPriceMicros, &z.Route.LongOutputPriceMicros,
 			&z.Provider.ID, &z.Provider.Name, &z.Provider.Type, &z.Provider.BaseURL, &credential, &authKind, &providerEnabled,
-			&z.Provider.Priority, &z.Provider.Weight, &z.Provider.Status, &z.Provider.Notes,
+			&z.Provider.Priority, &z.Provider.SortOrder, &z.Provider.Weight, &z.Provider.Status, &z.Provider.Notes,
 			&z.Provider.PassthroughMode, &z.Provider.ClientPolicy, &z.Provider.MaxConcurrency, &z.Provider.RequestTimeoutMS,
 			&z.Provider.FailureThreshold, &z.Provider.CooldownSeconds, &z.Provider.ConsecutiveFailures,
 			&z.Provider.CircuitOpenUntil, &z.Provider.LastError, &z.Provider.LastLatencyMS, &z.Provider.LastFirstByteMS,
