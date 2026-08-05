@@ -231,7 +231,7 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id,p.multi_key_initialized,p.default_model
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
 WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1
-ORDER BY p.priority DESC,p.id,r.id`, model)
+ORDER BY r.sort_order,r.id`, model)
 	if err != nil {
 		return nil, err
 	}

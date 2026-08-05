@@ -969,7 +969,7 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
 	       r.health_check_latency_ms,r.health_check_first_byte_ms
 FROM model_routes r
 JOIN providers p ON p.id=r.provider_id
-ORDER BY r.public_name,p.priority DESC,p.id,r.id`)
+ORDER BY r.public_name,r.sort_order,r.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return

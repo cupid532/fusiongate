@@ -108,8 +108,8 @@ func routeStrategy(routes []resolvedRoute) RoutingStrategy {
 }
 
 // prepareRoutes builds a deterministic request-local failover plan. Priority mode
-// sorts channels by provider priority from high to low. Ordered mode always starts
-// from the first configured channel. Smart round robin advances the starting channel
+// sorts channels by provider priority from high to low, then by configured position.
+// Ordered mode always starts from the first configured channel. Smart round robin advances the starting channel
 // for every new request while retaining request-local seamless failover.
 func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []resolvedRoute {
 	planned := append([]resolvedRoute(nil), routes...)
@@ -117,8 +117,8 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 		if strategy == StrategyPriorityFailover && planned[i].Provider.Priority != planned[j].Provider.Priority {
 			return planned[i].Provider.Priority > planned[j].Provider.Priority
 		}
-		if planned[i].Provider.ID != planned[j].Provider.ID {
-			return planned[i].Provider.ID < planned[j].Provider.ID
+		if planned[i].Route.SortOrder != planned[j].Route.SortOrder {
+			return planned[i].Route.SortOrder < planned[j].Route.SortOrder
 		}
 		return planned[i].Route.ID < planned[j].Route.ID
 	})

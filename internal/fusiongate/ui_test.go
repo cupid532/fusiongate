@@ -179,3 +179,19 @@ func TestCompletedHealthCheckPanelStaysHidden(t *testing.T) {
 		}
 	}
 }
+
+func TestRoutesPageSupportsPersistentChannelReordering(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		`draggable="true"`,
+		"function routeDrop(event,targetId)",
+		"function moveRoute(id,direction)",
+		"/api/admin/routes/reorder",
+		"route_ids:ids",
+		"sort_order",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("routes page reordering is missing %q", required)
+		}
+	}
+}

@@ -25,16 +25,16 @@ func schedulerRoute(id, providerID int64, model string, priority, order int) res
 	}
 }
 
-func TestPriorityFailoverUsesProviderPriorityThenCreationOrder(t *testing.T) {
+func TestPriorityFailoverUsesProviderPriorityThenConfiguredPosition(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
 	routes := []resolvedRoute{
-		schedulerRoute(3, 3, "model", 4, 0),
-		schedulerRoute(2, 2, "model", 5, 1),
-		schedulerRoute(1, 1, "model", 5, 0),
+		schedulerRoute(1, 3, "model", 4, 0),
+		schedulerRoute(2, 2, "model", 5, 0),
+		schedulerRoute(3, 1, "model", 5, 1),
 	}
 	plan := a.prepareRoutes(routes, StrategyPriorityFailover)
 	tried := map[int64]bool{}
@@ -48,7 +48,7 @@ func TestPriorityFailoverUsesProviderPriorityThenCreationOrder(t *testing.T) {
 		tried[z.Route.ID] = true
 		releaseSelectedRoute(a, z)
 	}
-	want := []int64{1, 2, 3}
+	want := []int64{2, 3, 1}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("priority failover order = %v, want %v", got, want)

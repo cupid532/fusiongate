@@ -691,6 +691,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/provider-groups", a.admin(a.providerGroups))
 	mux.HandleFunc("/api/admin/provider-groups/", a.admin(a.providerGroupByID))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
+	mux.HandleFunc("/api/admin/routes/reorder", a.admin(a.reorderRoutes))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))
 	mux.HandleFunc("/api/admin/models", a.admin(a.adminModels))
 	mux.HandleFunc("/api/admin/models/", a.admin(a.modelByName))

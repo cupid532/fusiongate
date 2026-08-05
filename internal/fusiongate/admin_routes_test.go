@@ -103,3 +103,43 @@ func TestRouteMappingRejectsExactDuplicateInTargetGroup(t *testing.T) {
 		t.Fatalf("conflicting route changed to %q", publicName)
 	}
 }
+
+func TestReorderRoutesPersistsAndListsConfiguredPosition(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "ordered", "openai_compatible", "https://example.invalid/v1", "secret", 100, 100, "normalized", "any", 0, 3, 30)
+	stamp := now()
+	first, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "model", providerID, "first", 0, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "model", providerID, "second", 1, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, _ := first.LastInsertId()
+	secondID, _ := second.LastInsertId()
+
+	recorder := httptest.NewRecorder()
+	body := `{"public_name":"MODEL","route_ids":[` + intString(secondID) + `,` + intString(firstID) + `]}`
+	a.reorderRoutes(recorder, httptest.NewRequest(http.MethodPatch, "/api/admin/routes/reorder", strings.NewReader(body)), adminCtx{})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	list := httptest.NewRecorder()
+	a.routes(list, httptest.NewRequest(http.MethodGet, "/api/admin/routes", nil), adminCtx{})
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+	var routes []Route
+	if err := json.Unmarshal(list.Body.Bytes(), &routes); err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 2 || routes[0].ID != secondID || routes[0].SortOrder != 0 || routes[1].ID != firstID || routes[1].SortOrder != 1 {
+		t.Fatalf("routes = %#v, want IDs [%d %d] with sequential positions", routes, secondID, firstID)
+	}
+}
