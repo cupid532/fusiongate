@@ -267,6 +267,11 @@ func modelMetadata(name, routeCapabilities, providerTypes, upstreamModels string
 			reasoning = true
 		}
 	}
+	if reasoning && len(reasoningEfforts) == 0 {
+		for _, effort := range []string{"low", "medium", "high", "xhigh"} {
+			reasoningEfforts[effort] = true
+		}
+	}
 	if chat {
 		metadata["input_modalities"] = []string{"text"}
 		metadata["output_modalities"] = []string{"text"}

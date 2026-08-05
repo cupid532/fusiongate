@@ -330,3 +330,11 @@ func TestModelMetadataUsesDiscoveredReasoningEfforts(t *testing.T) {
 		t.Fatalf("model metadata=%#v", model)
 	}
 }
+
+func TestModelMetadataFallsBackForGPT5Aliases(t *testing.T) {
+	model := modelMetadata("gpt-5.6-sol", "chat,stream", "openai_compatible", "gpt-5.6-sol")
+	efforts, _ := model["supported_reasoning_efforts"].([]string)
+	if len(efforts) != 4 || efforts[0] != "low" || efforts[3] != "xhigh" {
+		t.Fatalf("model metadata=%#v", model)
+	}
+}
