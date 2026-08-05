@@ -1,12 +1,15 @@
 package fusiongate
 
 import (
+	"bytes"
 	_ "embed"
 	"net/http"
 )
 
 //go:embed ui/index.html
-var adminHTML []byte
+var adminTemplate []byte
+
+var adminHTML = bytes.ReplaceAll(adminTemplate, []byte("{{FUSIONGATE_VERSION}}"), []byte(Version))
 
 func (a *App) ui(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {

@@ -1,5 +1,7 @@
 # FusionGate
 
+当前版本以 [`internal/fusiongate/version.go`](internal/fusiongate/version.go) 为准。所有 Agent 和贡献者在更新前必须遵循 [AGENTS.md](AGENTS.md) 中的版本递增规则。
+
 面向个人和小型可信团队的**自托管 AI 账号与 API 聚合网关**。它将多个上游渠道映射成统一模型名，并通过一把下游 API Key 提供 OpenAI 兼容访问和完整请求账本。
 
 已实现 API Key 渠道与基础协议适配，并支持 Codex、Claude 与 Grok 的官方 OAuth 授权及常见 OAuth JSON 迁移。FusionGate 只接收用户主动完成的官方授权或用户主动导出的凭据文件，不保存账号密码、不抓取 Cookie，也不绕过服务商访问控制。

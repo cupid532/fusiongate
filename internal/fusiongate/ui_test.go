@@ -5,6 +5,16 @@ import (
 	"testing"
 )
 
+func TestAdminUIRendersVersion(t *testing.T) {
+	html := string(adminHTML)
+	if !strings.Contains(html, "FusionGate "+Version) {
+		t.Fatalf("admin UI does not contain version %q", Version)
+	}
+	if strings.Contains(html, "{{FUSIONGATE_VERSION}}") {
+		t.Fatal("admin UI contains unresolved version placeholder")
+	}
+}
+
 func TestModelSelectionToolbarReceivesVisibleModels(t *testing.T) {
 	html := string(adminHTML)
 	if !strings.Contains(html, "updateModelSelectionToolbar(visible.map(([name])=>name))") {
