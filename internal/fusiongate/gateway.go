@@ -199,7 +199,7 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	rows, err := a.db.Query(`SELECT r.public_name,MIN(r.created_at) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 GROUP BY r.public_name ORDER BY r.public_name`)
+	rows, err := a.db.Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 GROUP BY r.public_name ORDER BY r.public_name`)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -207,17 +207,96 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 	defer rows.Close()
 	data := []map[string]any{}
 	for rows.Next() {
-		var name, created string
-		if rows.Scan(&name, &created) == nil && allowed(k, name) {
+		var name, created, routeCapabilities, providerTypes, upstreamModels string
+		if rows.Scan(&name, &created, &routeCapabilities, &providerTypes, &upstreamModels) == nil && allowed(k, name) {
 			createdAt := parseTime(created)
 			var unix int64
 			if createdAt != nil {
 				unix = createdAt.Unix()
 			}
-			data = append(data, map[string]any{"id": name, "object": "model", "created": unix, "owned_by": "fusiongate"})
+			metadata := modelMetadata(name, routeCapabilities, providerTypes, upstreamModels)
+			metadata["object"] = "model"
+			metadata["created"] = unix
+			metadata["owned_by"] = "fusiongate"
+			data = append(data, metadata)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+var reasoningEffortOrder = []string{"none", "minimal", "low", "medium", "high", "xhigh"}
+
+func modelMetadata(name, routeCapabilities, providerTypes, upstreamModels string) map[string]any {
+	metadata := map[string]any{"id": name}
+	capabilities := map[string]bool{}
+	reasoningEfforts := map[string]bool{}
+	defaultReasoningEffort := ""
+	for _, group := range strings.Split(routeCapabilities, "|") {
+		for _, capability := range strings.Split(group, ",") {
+			if capability = strings.TrimSpace(capability); capability != "" {
+				capabilities[capability] = true
+				if strings.HasPrefix(capability, "reasoning:") {
+					reasoningEfforts[strings.TrimPrefix(capability, "reasoning:")] = true
+				}
+				if strings.HasPrefix(capability, "reasoning_default:") && defaultReasoningEffort == "" {
+					defaultReasoningEffort = strings.TrimPrefix(capability, "reasoning_default:")
+				}
+			}
+		}
+	}
+	chat := capabilities["chat"]
+	imageInput := capabilities["image_input"] || capabilities["vision"]
+	reasoning := capabilities["reasoning"]
+	for _, providerType := range strings.Split(providerTypes, "|") {
+		if providerType == "codex_oauth" {
+			reasoning = true
+			imageInput = true
+			if len(reasoningEfforts) == 0 {
+				for _, effort := range []string{"low", "medium", "high", "xhigh"} {
+					reasoningEfforts[effort] = true
+				}
+			}
+		}
+	}
+	for _, model := range append([]string{name}, strings.Split(upstreamModels, "|")...) {
+		lower := strings.ToLower(model)
+		if strings.Contains(lower, "vision") || strings.Contains(lower, "gpt-4o") || strings.Contains(lower, "gpt-5") || strings.Contains(lower, "claude-3") || strings.Contains(lower, "claude-4") || strings.Contains(lower, "gemini-") || strings.Contains(lower, "grok-4") {
+			imageInput = true
+		}
+		if strings.Contains(lower, "gpt-5") || strings.HasPrefix(lower, "o1") || strings.HasPrefix(lower, "o3") || strings.HasPrefix(lower, "o4") || strings.Contains(lower, "reasoning") || strings.Contains(lower, "thinking") || strings.Contains(lower, "grok-4") {
+			reasoning = true
+		}
+	}
+	if chat {
+		metadata["input_modalities"] = []string{"text"}
+		metadata["output_modalities"] = []string{"text"}
+	}
+	if imageInput {
+		metadata["input_modalities"] = []string{"text", "image"}
+	}
+	if reasoning || len(reasoningEfforts) > 0 {
+		metadata["reasoning"] = true
+		ordered := make([]string, 0, len(reasoningEfforts))
+		for _, effort := range reasoningEffortOrder {
+			if reasoningEfforts[effort] {
+				ordered = append(ordered, effort)
+				delete(reasoningEfforts, effort)
+			}
+		}
+		for effort := range reasoningEfforts {
+			ordered = append(ordered, effort)
+		}
+		if len(ordered) > 0 {
+			metadata["supported_reasoning_efforts"] = ordered
+		}
+		if defaultReasoningEffort != "" {
+			metadata["default_reasoning_effort"] = defaultReasoningEffort
+		}
+	}
+	if capabilities["image"] {
+		metadata["output_modalities"] = []string{"image"}
+	}
+	return metadata
 }
 
 func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]resolvedRoute, error) {

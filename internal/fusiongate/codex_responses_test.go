@@ -127,6 +127,33 @@ func TestCodexChatRequestAcceptsResponsesReasoningShape(t *testing.T) {
 	}
 }
 
+func TestCodexChatRequestPreservesImageInput(t *testing.T) {
+	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":[{"type":"text","text":"What is shown?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8=","detail":"high"}}]}]}`), "upstream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(encoded, &request); err != nil {
+		t.Fatal(err)
+	}
+	input := anySlice(request["input"])
+	content := anySlice(asMap(input[0])["content"])
+	if len(content) != 2 {
+		t.Fatalf("content=%#v", content)
+	}
+	image := asMap(content[1])
+	if image["type"] != "input_image" || image["image_url"] != "data:image/png;base64,aGVsbG8=" || image["detail"] != "high" {
+		t.Fatalf("image=%#v", image)
+	}
+}
+
+func TestCodexChatRequestRejectsMalformedImageInput(t *testing.T) {
+	_, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":[{"type":"image_url","image_url":{}}]}]}`), "upstream")
+	if err == nil || !strings.Contains(err.Error(), "image_url.url") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

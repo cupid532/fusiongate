@@ -513,9 +513,31 @@ func codexResponsesBodyFromChat(raw []byte, upstreamModel string) ([]byte, error
 		case []any:
 			for _, partValue := range source {
 				part, _ := partValue.(map[string]any)
-				text := textContent(part)
-				if text != "" {
-					content = append(content, map[string]any{"type": partType, "text": text})
+				switch asString(part["type"]) {
+				case "text", "input_text", "output_text", "":
+					if text := asString(part["text"]); text != "" {
+						content = append(content, map[string]any{"type": partType, "text": text})
+					}
+				case "image_url", "input_image":
+					if role != "user" {
+						return nil, errors.New("Codex image input is supported only in user messages")
+					}
+					imageURL := strings.TrimSpace(asString(part["image_url"]))
+					if nested := asMap(part["image_url"]); nested != nil {
+						imageURL = strings.TrimSpace(asString(nested["url"]))
+					}
+					if imageURL == "" {
+						return nil, errors.New("image_url.url is required")
+					}
+					image := map[string]any{"type": "input_image", "image_url": imageURL}
+					if detail := strings.TrimSpace(asString(part["detail"])); detail != "" {
+						image["detail"] = detail
+					} else if nested := asMap(part["image_url"]); nested != nil {
+						if detail := strings.TrimSpace(asString(nested["detail"])); detail != "" {
+							image["detail"] = detail
+						}
+					}
+					content = append(content, image)
 				}
 			}
 		}

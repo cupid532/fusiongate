@@ -2,6 +2,7 @@ package fusiongate
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -294,5 +295,38 @@ func TestModelsHideRoutesWhoseProviderIsDisabled(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "available-model") || strings.Contains(body, "hidden-model") {
 		t.Fatalf("models response = %s", body)
+	}
+}
+
+func TestModelsAdvertiseReasoningAndImageInput(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "codex", "codex_oauth", "http://codex.test", "token", 1, 1, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "gpt-5.4", "gpt-5.4", "chat,stream", 0)
+	rec := httptest.NewRecorder()
+	a.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil), authKey{AllowAll: true})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("models status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	model := asMap(anySlice(response["data"])[0])
+	modalities := anySlice(model["input_modalities"])
+	efforts := anySlice(model["supported_reasoning_efforts"])
+	if model["reasoning"] != true || len(modalities) != 2 || len(efforts) != 4 || efforts[len(efforts)-1] != "xhigh" {
+		t.Fatalf("model metadata=%#v", model)
+	}
+}
+
+func TestModelMetadataUsesDiscoveredReasoningEfforts(t *testing.T) {
+	model := modelMetadata("custom", "chat,stream,reasoning:minimal,reasoning:high,reasoning_default:high", "openai_compatible", "custom")
+	efforts, _ := model["supported_reasoning_efforts"].([]string)
+	if len(efforts) != 2 || efforts[0] != "minimal" || efforts[1] != "high" || model["default_reasoning_effort"] != "high" {
+		t.Fatalf("model metadata=%#v", model)
 	}
 }

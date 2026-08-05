@@ -107,6 +107,13 @@ type discoveryModelEntry struct {
 	DisplayName                string   `json:"display_name"`
 	DisplayNameCamel           string   `json:"displayName"`
 	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
+	SupportedReasoningEfforts  []string `json:"supported_reasoning_efforts"`
+	SupportedReasoningLevels   []struct {
+		Effort string `json:"effort"`
+	} `json:"supported_reasoning_levels"`
+	DefaultReasoningEffort string   `json:"default_reasoning_effort"`
+	DefaultReasoningLevel  string   `json:"default_reasoning_level"`
+	InputModalities        []string `json:"input_modalities"`
 }
 
 type discoveryCandidate struct {
@@ -477,6 +484,9 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 		var upstreamID string
 		var displayName string
 		var methods []string
+		var reasoningEfforts []string
+		var defaultReasoningEffort string
+		var inputModalities []string
 		var stringEntry string
 		if json.Unmarshal(rawEntry, &stringEntry) == nil {
 			upstreamID = stringEntry
@@ -500,6 +510,12 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 				displayName = entry.DisplayNameCamel
 			}
 			methods = entry.SupportedGenerationMethods
+			reasoningEfforts = append(reasoningEfforts, entry.SupportedReasoningEfforts...)
+			for _, level := range entry.SupportedReasoningLevels {
+				reasoningEfforts = append(reasoningEfforts, level.Effort)
+			}
+			defaultReasoningEffort = firstNonEmpty(entry.DefaultReasoningEffort, entry.DefaultReasoningLevel)
+			inputModalities = entry.InputModalities
 		}
 		upstreamID = strings.TrimSpace(strings.TrimPrefix(upstreamID, "models/"))
 		publicID := strings.ToLower(upstreamID)
@@ -509,12 +525,43 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 		capabilities, importable := discoveredCapabilities(upstreamID, providerType, methods)
 		if !importable {
 			capabilities = "unsupported"
+		} else {
+			capabilities = discoveredModelCapabilities(capabilities, reasoningEfforts, defaultReasoningEffort, inputModalities)
 		}
 		seen[publicID] = true
 		out = append(out, discoveredModel{ID: publicID, UpstreamID: upstreamID, DisplayName: strings.TrimSpace(displayName), Capabilities: capabilities, SupportedGenerationAPIs: methods})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, envelope.NextPageToken, nil
+}
+
+func discoveredModelCapabilities(base string, reasoningEfforts []string, defaultReasoningEffort string, inputModalities []string) string {
+	capabilities := strings.Split(base, ",")
+	seen := map[string]bool{}
+	for _, capability := range capabilities {
+		seen[capability] = true
+	}
+	for _, modality := range inputModalities {
+		if strings.EqualFold(strings.TrimSpace(modality), "image") && !seen["image_input"] {
+			capabilities = append(capabilities, "image_input")
+			seen["image_input"] = true
+		}
+	}
+	for _, effort := range reasoningEfforts {
+		effort = strings.ToLower(strings.TrimSpace(effort))
+		if effort == "" {
+			continue
+		}
+		capability := "reasoning:" + effort
+		if !seen[capability] {
+			capabilities = append(capabilities, capability)
+			seen[capability] = true
+		}
+	}
+	if effort := strings.ToLower(strings.TrimSpace(defaultReasoningEffort)); effort != "" {
+		capabilities = append(capabilities, "reasoning_default:"+effort)
+	}
+	return strings.Join(capabilities, ",")
 }
 
 func discoveredCapabilities(id, providerType string, methods []string) (string, bool) {

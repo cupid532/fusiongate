@@ -360,6 +360,17 @@ func TestParseGeminiModelsStripsPrefixAndSkipsEmbeddingOnlyModels(t *testing.T) 
 	}
 }
 
+func TestParseCodexModelCapabilities(t *testing.T) {
+	raw := []byte(`{"models":[{"slug":"gpt-5.4","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"default_reasoning_level":"medium","input_modalities":["text","image"]}]}`)
+	models, _, err := parseDiscoveryModels(raw, "codex_oauth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].Capabilities != "chat,stream,image_input,reasoning:low,reasoning:medium,reasoning:high,reasoning:xhigh,reasoning_default:medium" {
+		t.Fatalf("models=%#v", models)
+	}
+}
+
 func TestModelDiscoveryErrorsRedactGeminiCredential(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	baseURL := upstream.URL
