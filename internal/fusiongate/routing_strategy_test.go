@@ -123,6 +123,22 @@ func TestOrderedRoundRobinAlwaysStartsFromFirstAndFailsOverInOrder(t *testing.T)
 	}
 }
 
+func TestOrderedRoundRobinUsesGlobalProviderPositionBeforeRoutePosition(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routes := []resolvedRoute{
+		{Route: Route{ID: 1, ProviderID: 1, PublicName: "model", SortOrder: 0}, Provider: Provider{ID: 1, SortOrder: 1, Weight: 100, FailureThreshold: 3, CooldownSeconds: 30}},
+		{Route: Route{ID: 2, ProviderID: 2, PublicName: "model", SortOrder: 9}, Provider: Provider{ID: 2, SortOrder: 0, Weight: 100, FailureThreshold: 3, CooldownSeconds: 30}},
+	}
+	plan := a.prepareRoutes(routes, StrategyOrderedRoundRobin)
+	if plan[0].Provider.ID != 2 {
+		t.Fatalf("first provider=%d, want globally first provider 2", plan[0].Provider.ID)
+	}
+}
+
 func TestAdaptivePrefersStableLowLatencyRoute(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

@@ -195,3 +195,23 @@ func TestRoutesPageSupportsPersistentChannelReordering(t *testing.T) {
 		}
 	}
 }
+
+func TestProvidersPageSupportsPersistentGlobalReordering(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		"function providerDragStart(event,id)",
+		"function providerDrop(event,targetId)",
+		"function moveProvider(id,direction)",
+		"/api/admin/providers/reorder",
+		"provider_ids:ids",
+		"decorateProviderOrder()",
+		"清除搜索和状态筛选",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("provider reordering is missing %q", required)
+		}
+	}
+	if strings.Contains(html, "cache.providers.sort((a,b)=>(b.priority-a.priority)") {
+		t.Fatal("priority editing still overwrites the persisted provider order")
+	}
+}

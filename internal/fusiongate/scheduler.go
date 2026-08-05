@@ -117,6 +117,9 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 		if strategy == StrategyPriorityFailover && planned[i].Provider.Priority != planned[j].Provider.Priority {
 			return planned[i].Provider.Priority > planned[j].Provider.Priority
 		}
+		if planned[i].Provider.SortOrder != planned[j].Provider.SortOrder {
+			return planned[i].Provider.SortOrder < planned[j].Provider.SortOrder
+		}
 		if planned[i].Route.SortOrder != planned[j].Route.SortOrder {
 			return planned[i].Route.SortOrder < planned[j].Route.SortOrder
 		}
@@ -235,7 +238,7 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 		effective := weight * latencyFactor * failureFactor * loadFactor
 		state.Current += effective
 		total += effective
-		if state.Current > best || (state.Current == best && (z.Route.SortOrder < selected.Route.SortOrder || selectedState == nil)) {
+		if state.Current > best || (state.Current == best && (selectedState == nil || z.Provider.SortOrder < selected.Provider.SortOrder || (z.Provider.SortOrder == selected.Provider.SortOrder && z.Route.SortOrder < selected.Route.SortOrder))) {
 			best = state.Current
 			selected = z
 			selectedState = state

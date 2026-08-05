@@ -88,6 +88,7 @@ type Provider struct {
 	Notes                   string  `json:"notes"`
 	Enabled                 bool    `json:"enabled"`
 	Priority                int     `json:"priority"`
+	SortOrder               int     `json:"sort_order"`
 	Weight                  int     `json:"weight"`
 	PassthroughMode         string  `json:"passthrough_mode"`
 	ClientPolicy            string  `json:"client_policy"`
@@ -339,6 +340,7 @@ func (a *App) migrate(ctx context.Context) error {
   CREATE TABLE IF NOT EXISTS providers (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, base_url TEXT NOT NULL,
     credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
     weight INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'unknown', notes TEXT NOT NULL DEFAULT '',
     passthrough_mode TEXT NOT NULL DEFAULT 'normalized', client_policy TEXT NOT NULL DEFAULT 'any',
     max_concurrency INTEGER NOT NULL DEFAULT 0, request_timeout_ms INTEGER NOT NULL DEFAULT 120000,
@@ -405,6 +407,10 @@ func (a *App) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	hadProviderSortOrder, err := hasColumn(ctx, a.db, "providers", "sort_order")
+	if err != nil {
+		return err
+	}
 	for _, column := range []struct{ table, name, ddl string }{
 		{"providers", "passthrough_mode", "TEXT NOT NULL DEFAULT 'normalized'"},
 		{"providers", "client_policy", "TEXT NOT NULL DEFAULT 'any'"},
@@ -438,6 +444,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "ip_pool_node_id", "INTEGER REFERENCES ip_pool_nodes(id) ON DELETE SET NULL"},
 		{"providers", "default_model", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "multi_key_initialized", "INTEGER NOT NULL DEFAULT 0"},
+		{"providers", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 		{"provider_api_key_models", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
@@ -473,6 +480,11 @@ func (a *App) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if !hadProviderSortOrder {
+		if _, err := a.db.ExecContext(ctx, `UPDATE providers SET sort_order=id`); err != nil {
+			return err
+		}
+	}
 	// Older builds permanently disabled a provider after five failures. Those
 	// rows are distinguishable from an administrator toggle by their status.
 	if _, err := a.db.ExecContext(ctx, `UPDATE providers SET enabled=1,status='circuit_open',circuit_open_until=COALESCE(circuit_open_until,?),updated_at=? WHERE enabled=0 AND status='disabled' AND consecutive_failures>=5`, now(), now()); err != nil {
@@ -485,6 +497,7 @@ CREATE INDEX IF NOT EXISTS idx_ledger_key_created ON request_ledger(api_key_id,c
 CREATE INDEX IF NOT EXISTS idx_ledger_provider_created ON request_ledger(provider_id,created_at);
 CREATE INDEX IF NOT EXISTS idx_ledger_model_created ON request_ledger(public_model,created_at);
 CREATE INDEX IF NOT EXISTS idx_routes_order ON model_routes(public_name, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_providers_order ON providers(sort_order, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_auth_fingerprint ON providers(auth_fingerprint) WHERE auth_fingerprint <> '';
 CREATE INDEX IF NOT EXISTS idx_providers_ip_pool_node ON providers(ip_pool_node_id);
 CREATE INDEX IF NOT EXISTS idx_ip_pool_nodes_enabled ON ip_pool_nodes(enabled,id);
@@ -680,6 +693,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/logout", a.logout)
 	mux.HandleFunc("/api/admin/session", a.admin(a.session))
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
+	mux.HandleFunc("/api/admin/providers/reorder", a.admin(a.reorderProviders))
 	mux.HandleFunc("/api/admin/providers/export", a.admin(a.providerBackupExport))
 	mux.HandleFunc("/api/admin/providers/import", a.admin(a.providerBackupImport))
 	mux.HandleFunc("/api/admin/providers/batch", a.admin(a.providerBatch))
