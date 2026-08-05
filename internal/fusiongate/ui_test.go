@@ -224,6 +224,7 @@ func TestProvidersPageSupportsArchiveFilter(t *testing.T) {
 		"余额耗尽但是优秀的站点",
 		"toggleProviderArchive",
 		"provider.archived&&providerStatusFilter==='all'",
+		"provider.archived?'已归档':'未归档'",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("provider archive behavior is missing %q", required)
