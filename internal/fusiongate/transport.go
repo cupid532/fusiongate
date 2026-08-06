@@ -19,7 +19,9 @@ func newUpstreamHTTPTransport(cfg Config) *http.Transport {
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		// Provider request contexts enforce the configured timeout. A fixed
+		// response-header limit breaks long-running Responses-to-Chat bridges.
+		ResponseHeaderTimeout: 0,
 	}
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(address)

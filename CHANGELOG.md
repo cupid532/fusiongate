@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.13
+
+- Remove the fixed 30-second upstream response-header timeout so long-running Codex Responses requests honor each provider's configured timeout.
+
 ## V1.12
 
 - Filter Codex's internal `X-OpenAI-Internal-Codex-Responses-Lite` header before forwarding non-transparent OpenAI-compatible requests.
