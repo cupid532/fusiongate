@@ -137,6 +137,10 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 }
 
 func (a *App) routeSelectableLocked(z resolvedRoute, state *providerRuntime, nowTime time.Time, availability *routeAvailability) bool {
+	if z.ProviderKeyID == 0 && strings.EqualFold(strings.TrimSpace(z.Provider.Status), "auth_expired") {
+		availability.Reason = "provider_auth_expired"
+		return false
+	}
 	if z.ProviderKeyID > 0 {
 		if openUntil := a.providerKeyCooldowns[z.ProviderKeyID]; openUntil.After(nowTime) {
 			wait := time.Until(openUntil)
@@ -165,6 +169,27 @@ func (a *App) routeSelectableLocked(z resolvedRoute, state *providerRuntime, now
 		return false
 	}
 	return true
+}
+
+func providerHealthFactor(p Provider) float64 {
+	factor := 1.0
+	switch strings.ToLower(strings.TrimSpace(p.Status)) {
+	case "auth_expired":
+		factor = 0.05
+	case "rate_limited":
+		factor = 0.15
+	case "degraded":
+		factor = 0.55
+	}
+	switch strings.ToLower(strings.TrimSpace(p.HealthCheckStatus)) {
+	case "config_error", "unreachable", "failed":
+		factor *= 0.35
+	case "pending":
+		factor *= 0.9
+	case "reachable":
+		factor *= 0.95
+	}
+	return factor
 }
 
 func reserveRouteLocked(z resolvedRoute, state *providerRuntime) resolvedRoute {
@@ -235,7 +260,7 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 		}
 		failureFactor := math.Pow(0.55, float64(state.ConsecutiveFailures))
 		loadFactor := 1.0 / float64(state.Inflight+1)
-		effective := weight * latencyFactor * failureFactor * loadFactor
+		effective := weight * latencyFactor * failureFactor * loadFactor * providerHealthFactor(z.Provider)
 		state.Current += effective
 		total += effective
 		if state.Current > best || (state.Current == best && (selectedState == nil || z.Provider.SortOrder < selected.Provider.SortOrder || (z.Provider.SortOrder == selected.Provider.SortOrder && z.Route.SortOrder < selected.Route.SortOrder))) {

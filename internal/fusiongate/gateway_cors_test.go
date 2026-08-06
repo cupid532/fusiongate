@@ -48,6 +48,33 @@ func TestGatewayCORSPreflightDoesNotRequireAPIKey(t *testing.T) {
 	}
 }
 
+func TestGatewayCORSAllowlistRejectsUnlistedOrigins(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.CORSOrigins = "https://allowed.example, https://also-allowed.example"
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	for _, tc := range []struct {
+		origin string
+		want   string
+	}{
+		{origin: "https://allowed.example", want: "https://allowed.example"},
+		{origin: "https://blocked.example", want: ""},
+	} {
+		req := httptest.NewRequest(http.MethodOptions, "/v1/models", nil)
+		req.Header.Set("Origin", tc.origin)
+		req.Header.Set("Access-Control-Request-Method", http.MethodGet)
+		rec := httptest.NewRecorder()
+		a.Router().ServeHTTP(rec, req)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != tc.want {
+			t.Errorf("origin %q allow origin=%q, want %q", tc.origin, got, tc.want)
+		}
+	}
+}
+
 func TestGatewayCORSAppliesToAuthenticationErrorsButNotAdmin(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

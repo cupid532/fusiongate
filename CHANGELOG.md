@@ -1,5 +1,14 @@
 # Changelog
 
+## V1.1
+
+- Bound upstream failover attempts to prevent retry storms and expose the attempt count on bounded failures.
+- Add a global request admission limit with `Retry-After` overload responses.
+- Make streaming start and idle timeouts configurable.
+- Add adaptive routing penalties for provider and health-check failures.
+- Rate-limit API key `last_used_at` writes to reduce SQLite write contention.
+- Add optional CORS origin allowlisting and an authenticated admin runtime metrics endpoint.
+
 ## V1.09 - 2026-08-06
 
 ### Health and failover

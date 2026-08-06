@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -16,6 +17,30 @@ import (
 )
 
 func envBool(k string) bool { return os.Getenv(k) == "1" || os.Getenv(k) == "true" }
+
+func envInt(k string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(k))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
+
+func envDuration(k string, fallback time.Duration) time.Duration {
+	value := strings.TrimSpace(os.Getenv(k))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return fallback
+	}
+	return parsed
+}
 
 const defaultListenAddr = "127.0.0.1:8787"
 
@@ -51,7 +76,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cfg := fusiongate.Config{Addr: listenAddr(os.Getenv("FUSIONGATE_ADDR")), DataDir: os.Getenv("FUSIONGATE_DATA_DIR"), MasterKey: masterKey, AdminPassword: adminPassword, AllowInsecureUpstreams: envBool("FUSIONGATE_ALLOW_INSECURE_UPSTREAMS"), AllowPrivateUpstreams: envBool("FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS")}
+	cfg := fusiongate.Config{
+		Addr:                   listenAddr(os.Getenv("FUSIONGATE_ADDR")),
+		DataDir:                os.Getenv("FUSIONGATE_DATA_DIR"),
+		MasterKey:              masterKey,
+		AdminPassword:          adminPassword,
+		AllowInsecureUpstreams: envBool("FUSIONGATE_ALLOW_INSECURE_UPSTREAMS"),
+		AllowPrivateUpstreams:  envBool("FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS"),
+		MaxFailoverAttempts:    envInt("FUSIONGATE_MAX_FAILOVER_ATTEMPTS", 8),
+		MaxConcurrentRequests:  envInt("FUSIONGATE_MAX_CONCURRENT_REQUESTS", 64),
+		StreamStartTimeout:     envDuration("FUSIONGATE_STREAM_START_TIMEOUT", 12*time.Second),
+		StreamIdleTimeout:      envDuration("FUSIONGATE_STREAM_IDLE_TIMEOUT", 5*time.Minute),
+		CORSOrigins:            strings.TrimSpace(os.Getenv("FUSIONGATE_CORS_ORIGINS")),
+	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = filepath.Join(".", "data")
 	}

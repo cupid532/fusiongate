@@ -46,7 +46,7 @@ type resolvedRoute struct {
 
 func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		setGatewayCORS(w, r)
+		setGatewayCORS(w, r, a.cfg.CORSOrigins)
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -73,6 +73,16 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 			}
 			k = refreshed
 		}
+		if !a.tryAcquireRequestSlot() {
+			a.metrics.overloaded.Add(1)
+			w.Header().Set("Retry-After", "1")
+			fail(w, http.StatusServiceUnavailable, "gateway_overloaded", "gateway concurrency limit reached")
+			return
+		}
+		defer a.releaseRequestSlot()
+		a.metrics.requests.Add(1)
+		a.metrics.active.Add(1)
+		defer a.metrics.active.Add(-1)
 		fn(w, r, k)
 	}
 }
@@ -93,12 +103,17 @@ func (a *App) releaseBudgetKey(id int64) {
 	a.budgetMu.Unlock()
 }
 
-func setGatewayCORS(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Origin") == "" {
+func setGatewayCORS(w http.ResponseWriter, r *http.Request, allowlist string) {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" || !corsOriginAllowed(origin, allowlist) {
 		return
 	}
 	h := w.Header()
-	h.Set("Access-Control-Allow-Origin", "*")
+	if strings.TrimSpace(allowlist) == "" || strings.TrimSpace(allowlist) == "*" {
+		h.Set("Access-Control-Allow-Origin", "*")
+	} else {
+		h.Set("Access-Control-Allow-Origin", origin)
+	}
 	h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	requestedHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers"))
 	if requestedHeaders == "" {
@@ -113,6 +128,19 @@ func setGatewayCORS(w http.ResponseWriter, r *http.Request) {
 	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Access-Control-Request-Private-Network")), "true") {
 		h.Set("Access-Control-Allow-Private-Network", "true")
 	}
+}
+
+func corsOriginAllowed(origin, allowlist string) bool {
+	allowlist = strings.TrimSpace(allowlist)
+	if allowlist == "" || allowlist == "*" {
+		return true
+	}
+	for _, candidate := range strings.Split(allowlist, ",") {
+		if strings.EqualFold(strings.TrimSpace(candidate), origin) {
+			return true
+		}
+	}
+	return false
 }
 
 func bearer(r *http.Request) string {
@@ -146,8 +174,21 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	if x.Revoked || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) || (x.BudgetMicros > 0 && x.SpentMicros >= x.BudgetMicros) {
 		return authKey{}, false
 	}
-	_, _ = a.db.Exec(`UPDATE api_keys SET last_used_at=? WHERE id=?`, now(), x.ID)
+	a.markAPIKeyUsed(x.ID)
 	return x, true
+}
+
+func (a *App) markAPIKeyUsed(id int64) {
+	current := time.Now()
+	a.lastUsedMu.Lock()
+	last := a.lastUsedAt[id]
+	if !last.IsZero() && current.Sub(last) < 30*time.Second {
+		a.lastUsedMu.Unlock()
+		return
+	}
+	a.lastUsedAt[id] = current
+	a.lastUsedMu.Unlock()
+	_, _ = a.db.Exec(`UPDATE api_keys SET last_used_at=? WHERE id=?`, current.UTC().Format(time.RFC3339Nano), id)
 }
 
 func (a *App) allowRate(k authKey) bool {
@@ -318,7 +359,8 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
 	       p.id,p.name,p.type,p.base_url,p.credential,p.auth_kind,p.enabled,p.priority,p.sort_order,p.weight,p.status,p.notes,
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
        p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
-       COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id,p.multi_key_initialized,p.default_model
+       COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id,p.multi_key_initialized,p.default_model,
+       COALESCE(p.health_check_status,''),COALESCE(p.health_check_error,'')
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
 WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1 AND p.archived=0
 ORDER BY r.sort_order,r.id`, model)
@@ -349,6 +391,7 @@ ORDER BY r.sort_order,r.id`, model)
 			&z.Provider.FailureThreshold, &z.Provider.CooldownSeconds, &z.Provider.ConsecutiveFailures,
 			&z.Provider.CircuitOpenUntil, &z.Provider.LastError, &z.Provider.LastLatencyMS, &z.Provider.LastFirstByteMS,
 			&z.Provider.LastSuccessAt, &z.Provider.LastFailureAt, &ipPoolNodeID, &multiKeyInitialized, &z.Provider.DefaultModel,
+			&z.Provider.HealthCheckStatus, &z.Provider.HealthCheckError,
 		); err != nil {
 			_ = rows.Close()
 			return nil, err
@@ -642,8 +685,22 @@ func textContent(value any) string {
 type routeExecutor func(resolvedRoute, string, func()) attemptResult
 
 func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, routes []resolvedRoute, protocol string, stream bool, execute routeExecutor) {
+	finalStatus := 0
+	finalSuccess := false
+	defer func() {
+		if finalStatus == 0 {
+			return
+		}
+		a.metrics.completed.Add(1)
+		if finalSuccess {
+			a.metrics.successes.Add(1)
+		} else {
+			a.metrics.failures.Add(1)
+		}
+	}()
 	routes = filterClientRoutes(routes, r)
 	if len(routes) == 0 {
+		finalStatus = http.StatusForbidden
 		fail(w, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
 		return
 	}
@@ -659,6 +716,16 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 	lastStatus := http.StatusBadGateway
 	var retryAfter time.Duration
 	for attempt := 1; ; attempt++ {
+		if a.cfg.MaxFailoverAttempts > 0 && attempt > a.cfg.MaxFailoverAttempts {
+			status := lastStatus
+			if status < http.StatusBadRequest {
+				status = http.StatusBadGateway
+			}
+			w.Header().Set("X-FusionGate-Attempts", strconv.Itoa(attempt-1))
+			finalStatus = status
+			fail(w, status, "upstream_attempt_limit", "maximum upstream failover attempts reached")
+			return
+		}
 		z, availability, ok := a.acquireRoute(routes, tried, strategy)
 		if !ok {
 			if availability.RetryAfter > retryAfter {
@@ -679,10 +746,15 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			if previousReason != "" {
 				message = "all eligible providers failed (" + previousReason + ")"
 			}
+			finalStatus = status
 			fail(w, status, "upstream_unavailable", message)
 			return
 		}
 		tried[z.AttemptID] = true
+		a.metrics.attempts.Add(1)
+		if attempt > 1 {
+			a.metrics.failovers.Add(1)
+		}
 		started := time.Now()
 		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, clientIP, gatewayID, attempt, previousReason)
 		var observedFirstByteMS atomic.Int64
@@ -692,6 +764,8 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 				elapsed = 1
 			}
 			observedFirstByteMS.CompareAndSwap(0, elapsed)
+			a.metrics.firstByteCount.Add(1)
+			a.metrics.firstByteMillis.Add(elapsed)
 			a.recordFirstByte(ledgerID, started)
 		})
 		latency := time.Since(started)
@@ -707,9 +781,12 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		}
 		a.endLedger(ledgerID, result.Handled && status < 400 && result.Err == nil, status, reason, started, result.Usage)
 		if result.Handled {
+			finalStatus = status
+			finalSuccess = status < 400 && result.Err == nil
 			return
 		}
 		if !result.Retryable {
+			finalStatus = status
 			fail(w, status, reason, "upstream request failed and is not safe to retry")
 			return
 		}

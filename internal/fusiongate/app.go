@@ -29,6 +29,11 @@ import (
 type Config struct {
 	Addr, DataDir, MasterKey, AdminPassword       string
 	AllowInsecureUpstreams, AllowPrivateUpstreams bool
+	MaxFailoverAttempts                           int
+	MaxConcurrentRequests                         int
+	StreamStartTimeout                            time.Duration
+	StreamIdleTimeout                             time.Duration
+	CORSOrigins                                   string
 }
 
 type App struct {
@@ -66,6 +71,10 @@ type App struct {
 	pricingSyncMu        sync.Mutex
 	pricingSyncTrigger   chan struct{}
 	ipPool               *ipPoolManager
+	requestSlots         chan struct{}
+	lastUsedMu           sync.Mutex
+	lastUsedAt           map[int64]time.Time
+	metrics              gatewayMetrics
 }
 type rateWindow struct {
 	At    time.Time
@@ -218,6 +227,18 @@ func New(cfg Config) (*App, error) {
 	if cfg.Addr == "" {
 		cfg.Addr = "127.0.0.1:8787"
 	}
+	if cfg.MaxFailoverAttempts <= 0 {
+		cfg.MaxFailoverAttempts = 8
+	}
+	if cfg.MaxConcurrentRequests <= 0 {
+		cfg.MaxConcurrentRequests = 64
+	}
+	if cfg.StreamStartTimeout <= 0 {
+		cfg.StreamStartTimeout = 12 * time.Second
+	}
+	if cfg.StreamIdleTimeout <= 0 {
+		cfg.StreamIdleTimeout = 5 * time.Minute
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return nil, err
 	}
@@ -238,7 +259,18 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	a := &App{db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), log: slog.New(slog.NewJSONHandler(os.Stdout, nil)), rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{}, providerKeyCooldowns: map[int64]time.Time{}, roundRobinCursor: map[string]int{}, oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{}, healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{}, loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4), adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{}, pricingSyncTrigger: make(chan struct{}, 1)}
+	a := &App{
+		db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg),
+		log:  slog.New(slog.NewJSONHandler(os.Stdout, nil)),
+		rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{},
+		providerKeyCooldowns: map[int64]time.Time{}, roundRobinCursor: map[string]int{},
+		oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{},
+		healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{},
+		loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4),
+		adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{},
+		pricingSyncTrigger: make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
+		lastUsedAt: map[int64]time.Time{}, metrics: newGatewayMetrics(),
+	}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
 		return nil, err
@@ -721,6 +753,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/keys", a.admin(a.keys))
 	mux.HandleFunc("/api/admin/keys/", a.admin(a.keyByID))
 	mux.HandleFunc("/api/admin/dashboard", a.admin(a.dashboard))
+	mux.HandleFunc("/api/admin/metrics", a.admin(a.runtimeMetrics))
 	mux.HandleFunc("/api/admin/routing", a.admin(a.routing))
 	mux.HandleFunc("/api/admin/requests", a.admin(a.requests))
 	mux.HandleFunc("/api/admin/token-usage", a.admin(a.tokenUsage))

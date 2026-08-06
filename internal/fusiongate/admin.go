@@ -1620,6 +1620,14 @@ func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+func (a *App) runtimeMetrics(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodGet {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+		return
+	}
+	writeJSON(w, http.StatusOK, a.metrics.snapshot())
+}
+
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var p, m, k, total, today, failures int
 	var input, output, cached, reasoning, costMicros int64

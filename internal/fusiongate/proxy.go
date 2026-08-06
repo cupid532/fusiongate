@@ -742,7 +742,10 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	defer cancelAttempt()
 	startTimeout := options.OutputStartTimeout
 	if startTimeout <= 0 {
-		startTimeout = defaultFailoverStartTimeout
+		startTimeout = a.cfg.StreamStartTimeout
+		if startTimeout <= 0 {
+			startTimeout = defaultFailoverStartTimeout
+		}
 		if !options.Stream && !options.BufferResponsesSSE && z.Provider.RequestTimeoutMS > 0 {
 			// A non-streaming request often does not receive headers until the full
 			// reasoning pass has completed. Honor the provider timeout instead of
@@ -850,7 +853,10 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		}
 		idleTimeout := options.IdleTimeout
 		if idleTimeout <= 0 {
-			idleTimeout = defaultFailoverIdleTimeout
+			idleTimeout = a.cfg.StreamIdleTimeout
+			if idleTimeout <= 0 {
+				idleTimeout = defaultFailoverIdleTimeout
+			}
 		}
 		idleDeadline := time.Now().Add(idleTimeout)
 		for readErr == nil {
@@ -972,7 +978,10 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		if readErr != io.EOF {
 			idleTimeout := options.IdleTimeout
 			if idleTimeout <= 0 {
-				idleTimeout = defaultFailoverIdleTimeout
+				idleTimeout = a.cfg.StreamIdleTimeout
+				if idleTimeout <= 0 {
+					idleTimeout = defaultFailoverIdleTimeout
+				}
 			}
 			observer := semanticStreamObserver{format: options.UsageFormat}
 			observer.observe(pending.Bytes())
