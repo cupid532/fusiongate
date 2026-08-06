@@ -6,6 +6,18 @@ import (
 	"testing"
 )
 
+func TestListenAddrUsesDocumentedDefault(t *testing.T) {
+	if got := listenAddr(""); got != defaultListenAddr {
+		t.Fatalf("listenAddr(\"\") = %q, want %q", got, defaultListenAddr)
+	}
+	if got := listenAddr("  "); got != defaultListenAddr {
+		t.Fatalf("listenAddr(whitespace) = %q, want %q", got, defaultListenAddr)
+	}
+	if got := listenAddr("0.0.0.0:8787"); got != "0.0.0.0:8787" {
+		t.Fatalf("listenAddr(explicit) = %q", got)
+	}
+}
+
 func TestSecretEnvPrefersDirectValue(t *testing.T) {
 	t.Setenv("TEST_SECRET", "direct")
 	t.Setenv("TEST_SECRET_FILE", filepath.Join(t.TempDir(), "missing"))

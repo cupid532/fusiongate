@@ -44,6 +44,9 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 		t.Fatalf("backup=%#v", backup)
 	}
 	provider := backup.Providers[0]
+	if provider.HealthCheckEnabled == nil || !*provider.HealthCheckEnabled {
+		t.Fatal("export did not preserve the default enabled health check")
+	}
 	if provider.Name != "backup-source" || provider.BaseURL != "https://backup.example.com" || len(provider.Keys) != 2 || len(provider.Routes) != 1 {
 		t.Fatalf("provider=%#v", provider)
 	}
@@ -118,6 +121,10 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 	}
 	if providerCount != 1 || keyCount != 2 || routeCount != 1 || inventoryCount != 1 {
 		t.Fatalf("counts provider=%d keys=%d routes=%d inventory=%d", providerCount, keyCount, routeCount, inventoryCount)
+	}
+	var healthCheckEnabled int
+	if err := a.db.QueryRow(`SELECT health_check_enabled FROM providers WHERE id=?`, providerID).Scan(&healthCheckEnabled); err != nil || healthCheckEnabled != 1 {
+		t.Fatalf("old backup default health check=%d err=%v", healthCheckEnabled, err)
 	}
 }
 

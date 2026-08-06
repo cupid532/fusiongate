@@ -17,6 +17,15 @@ import (
 
 func envBool(k string) bool { return os.Getenv(k) == "1" || os.Getenv(k) == "true" }
 
+const defaultListenAddr = "127.0.0.1:8787"
+
+func listenAddr(value string) string {
+	if value = strings.TrimSpace(value); value != "" {
+		return value
+	}
+	return defaultListenAddr
+}
+
 func secretEnv(name string) (string, error) {
 	if value := os.Getenv(name); value != "" {
 		return value, nil
@@ -42,7 +51,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	cfg := fusiongate.Config{Addr: os.Getenv("FUSIONGATE_ADDR"), DataDir: os.Getenv("FUSIONGATE_DATA_DIR"), MasterKey: masterKey, AdminPassword: adminPassword, AllowInsecureUpstreams: envBool("FUSIONGATE_ALLOW_INSECURE_UPSTREAMS"), AllowPrivateUpstreams: envBool("FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS")}
+	cfg := fusiongate.Config{Addr: listenAddr(os.Getenv("FUSIONGATE_ADDR")), DataDir: os.Getenv("FUSIONGATE_DATA_DIR"), MasterKey: masterKey, AdminPassword: adminPassword, AllowInsecureUpstreams: envBool("FUSIONGATE_ALLOW_INSECURE_UPSTREAMS"), AllowPrivateUpstreams: envBool("FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS")}
 	if cfg.DataDir == "" {
 		cfg.DataDir = filepath.Join(".", "data")
 	}

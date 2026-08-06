@@ -11,6 +11,29 @@ import (
 	"time"
 )
 
+func TestPricingSyncIntervalDefaultsAndValidates(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "default", want: time.Hour},
+		{name: "explicit", value: "2h", want: 2 * time.Hour},
+		{name: "minimum", value: "5m", want: 5 * time.Minute},
+		{name: "below minimum", value: "4m", want: time.Hour},
+		{name: "disabled", value: "off", want: 0},
+		{name: "invalid", value: "not-a-duration", want: time.Hour},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("FUSIONGATE_PRICING_SYNC_INTERVAL", tc.value)
+			if got := pricingSyncInterval(); got != tc.want {
+				t.Fatalf("pricingSyncInterval() = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParseXAIPricingSupportsLongContextRates(t *testing.T) {
 	catalog, err := parseXAIPricing([]byte(`
 | Model | Context | Input | Cached | Output |

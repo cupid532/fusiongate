@@ -412,54 +412,6 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	}
 }
 
-const circuitRecoveryInterval = 30 * time.Second
-
-func (a *App) runCircuitRecoveryLoop(ctx context.Context) {
-	ticker := time.NewTicker(circuitRecoveryInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			a.probeOpenCircuits(ctx)
-		}
-	}
-}
-
-func (a *App) probeOpenCircuits(parent context.Context) {
-	rows, err := a.db.QueryContext(parent, `SELECT id FROM providers WHERE enabled=1 AND circuit_open_until IS NOT NULL ORDER BY id LIMIT 100`)
-	if err != nil {
-		a.log.Error("circuit recovery query", "error", err)
-		return
-	}
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
-		}
-	}
-	_ = rows.Close()
-	for _, id := range ids {
-		if parent.Err() != nil || !a.beginHealthProbe(id) {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-		result := a.healthChecker.probeProviderMode(ctx, id, healthCheckModeConnectivity)
-		cancel()
-		a.endHealthProbe(id)
-		a.healthChecker.updateHealthStatus(id, result)
-		if result.Status != "healthy" {
-			continue
-		}
-		a.resetProviderRuntime(id)
-		if _, err := a.db.ExecContext(parent, `UPDATE providers SET status='healthy',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_success_at=?,updated_at=? WHERE id=? AND enabled=1`, now(), now(), id); err != nil {
-			a.log.Error("circuit recovery update", "provider_id", id, "error", err)
-		}
-	}
-}
-
 func nullableTime(v string) any {
 	if v == "" {
 		return nil

@@ -127,6 +127,20 @@ func TestCodexChatRequestAcceptsResponsesReasoningShape(t *testing.T) {
 	}
 }
 
+func TestCodexChatReasoningEffortPrefersExplicitChatField(t *testing.T) {
+	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":"Hello"}],"reasoning_effort":"low","reasoning":{"effort":"high"}}`), "upstream")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(encoded, &request); err != nil {
+		t.Fatal(err)
+	}
+	if reasoning := asMap(request["reasoning"]); reasoning["effort"] != "low" {
+		t.Fatalf("reasoning=%#v", request["reasoning"])
+	}
+}
+
 func TestCodexChatRequestPreservesImageInput(t *testing.T) {
 	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":[{"type":"text","text":"What is shown?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8=","detail":"high"}}]}]}`), "upstream")
 	if err != nil {

@@ -184,3 +184,31 @@ func TestEditProviderValidatesConnectionFields(t *testing.T) {
 		})
 	}
 }
+func TestProviderHealthCheckToggle(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	id := insertTestProvider(t, a, "health-toggle", "openai_compatible", "http://health-toggle.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	if rec := patchProviderForTest(t, a, id, `{"health_check_enabled":false}`); rec.Code != http.StatusOK {
+		t.Fatalf("disable status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var enabled int
+	var status, message string
+	if err := a.db.QueryRow(`SELECT health_check_enabled,health_check_status,health_check_error FROM providers WHERE id=?`, id).Scan(&enabled, &status, &message); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 || status != "disabled" || message == "" {
+		t.Fatalf("disabled state enabled=%d status=%q message=%q", enabled, status, message)
+	}
+	if rec := patchProviderForTest(t, a, id, `{"health_check_enabled":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("enable status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := a.db.QueryRow(`SELECT health_check_enabled,health_check_status,health_check_error FROM providers WHERE id=?`, id).Scan(&enabled, &status, &message); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 1 || status != "pending" || message != "" {
+		t.Fatalf("enabled state enabled=%d status=%q message=%q", enabled, status, message)
+	}
+}

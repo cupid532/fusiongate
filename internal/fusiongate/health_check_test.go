@@ -102,7 +102,7 @@ func TestConnectivityHealthProbeUsesModelListWithoutGeneration(t *testing.T) {
 
 	h := NewHealthChecker(a, time.Minute, 1)
 	result := h.probeProviderMode(context.Background(), providerID, healthCheckModeConnectivity)
-	if result.Status != "healthy" || result.Error != "" || result.Mode != healthCheckModeConnectivity || result.ModelCount != 1 {
+	if result.Status != "reachable" || result.Error != "" || result.Mode != healthCheckModeConnectivity || result.ModelCount != 1 {
 		t.Fatalf("result=%+v", result)
 	}
 	if modelCalls != 1 || generationCalls != 0 {
@@ -120,5 +120,77 @@ func TestCodexHealthProbeDoesNotTreatBadRequestAsHealthy(t *testing.T) {
 	status, message := h.parseCodexProbeResponse(http.StatusBadRequest, []byte(`{"detail":"Store must be set to false"}`))
 	if status != "config_error" || message == "" {
 		t.Fatalf("status=%q message=%q", status, message)
+	}
+}
+func TestGenerationHealthProbeDoesNotTrustModelList(t *testing.T) {
+	var modelCalls, generationCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			modelCalls++
+			writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "probe-model"}}})
+		case "/v1/chat/completions":
+			generationCalls++
+			http.Error(w, "generation unavailable", http.StatusGatewayTimeout)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "probe-provider", "openai_compatible", upstream.URL, "probe-secret", 1, 1, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "probe-model", "probe-model", "chat,stream", 1)
+	h := NewHealthChecker(a, time.Minute, 1)
+
+	connectivity := h.probeProviderMode(context.Background(), providerID, healthCheckModeConnectivity)
+	if connectivity.Status != "reachable" {
+		t.Fatalf("connectivity result=%+v", connectivity)
+	}
+	generation := h.probeProvider(context.Background(), providerID)
+	if generation.Status == "healthy" || generation.Error == "" {
+		t.Fatalf("generation result=%+v", generation)
+	}
+	if modelCalls != 1 || generationCalls != 1 {
+		t.Fatalf("model calls=%d generation calls=%d", modelCalls, generationCalls)
+	}
+}
+
+func TestConnectivityHealthProbeDoesNotRecoverCircuit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "probe-model"}}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "circuit-connectivity", "openai_compatible", upstream.URL, "probe-secret", 1, 1, "normalized", "any", 0, 3, 30)
+	openUntil := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	if _, err := a.db.Exec(`UPDATE providers SET status='circuit_open',consecutive_failures=3,circuit_open_until=? WHERE id=?`, openUntil, providerID); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHealthChecker(a, time.Minute, 1)
+	h.minDelay = 0
+	h.maxDelay = 0
+	h.checkProvider(context.Background(), providerID)
+
+	var status, circuitOpenUntil string
+	if err := a.db.QueryRow(`SELECT status,COALESCE(circuit_open_until,'') FROM providers WHERE id=?`, providerID).Scan(&status, &circuitOpenUntil); err != nil {
+		t.Fatal(err)
+	}
+	if status != "circuit_open" || circuitOpenUntil != openUntil {
+		t.Fatalf("connectivity probe changed business circuit: status=%q circuit_open_until=%q", status, circuitOpenUntil)
 	}
 }

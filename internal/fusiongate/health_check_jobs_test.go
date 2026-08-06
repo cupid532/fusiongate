@@ -283,3 +283,33 @@ func jsonNumber(v int64) string {
 	data, _ := json.Marshal(v)
 	return string(data)
 }
+func TestDisabledHealthCheckSkipsProbeAndManualJob(t *testing.T) {
+	requests := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "fusiongate_oauth", AccessToken: "health-access", AccountID: "disabled-health", ExpiresAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339)}
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "disabled-health", 1, credential, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET base_url=?,health_check_enabled=0 WHERE id=?`, upstream.URL, providerID); err != nil {
+		t.Fatal(err)
+	}
+	insertTestRoute(t, a, providerID, "disabled-health-model", "gpt-health", "chat,stream", 1)
+	checker := NewHealthChecker(a, 0, 1)
+	result := checker.probeProviderMode(context.Background(), providerID, healthCheckModeConnectivity)
+	if result.Status != "disabled" || requests != 0 {
+		t.Fatalf("result=%+v upstream_requests=%d", result, requests)
+	}
+	if _, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, nil, "all"); err == nil || !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("manual health check error=%v", err)
+	}
+}

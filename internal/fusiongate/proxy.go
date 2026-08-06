@@ -63,6 +63,24 @@ func readStreamChunk(body io.Reader, size int, timeout time.Duration) ([]byte, e
 	}
 }
 
+func readBodyWithContext(ctx context.Context, body io.ReadCloser, limit int64) ([]byte, error) {
+	result := make(chan streamReadResult, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(body, limit))
+		result <- streamReadResult{data: data, err: err}
+	}()
+	select {
+	case value := <-result:
+		return value.data, value.err
+	case <-ctx.Done():
+		// Closing an HTTP response body interrupts a blocked read. Wait for the
+		// reader to exit so a slow non-streaming upstream cannot leak a goroutine.
+		_ = body.Close()
+		value := <-result
+		return value.data, value.err
+	}
+}
+
 type firstByteReadCloser struct {
 	io.ReadCloser
 	once        sync.Once
@@ -999,7 +1017,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: resp.StatusCode, Handled: true, Usage: usage}
 	}
 
-	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBufferedUpstreamBody+1))
+	body, readErr := readBodyWithContext(attemptCtx, resp.Body, maxBufferedUpstreamBody+1)
 	startTimer.Stop()
 	if readErr != nil {
 		if downstreamCanceled(incoming) {

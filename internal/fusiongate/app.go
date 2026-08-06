@@ -93,6 +93,7 @@ type Provider struct {
 	Weight                  int     `json:"weight"`
 	PassthroughMode         string  `json:"passthrough_mode"`
 	ClientPolicy            string  `json:"client_policy"`
+	HealthCheckEnabled      bool    `json:"health_check_enabled"`
 	MaxConcurrency          int     `json:"max_concurrency"`
 	RequestTimeoutMS        int     `json:"request_timeout_ms"`
 	FailureThreshold        int     `json:"failure_threshold"`
@@ -289,7 +290,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	}
 	go a.runOAuthRefreshLoop(ctx)
 	go a.runPricingSyncLoop(ctx)
-	go a.runCircuitRecoveryLoop(ctx)
+	// Circuit recovery is performed by the next real request after cooldown.
 }
 
 func healthCheckIntervalFromEnv() time.Duration {
@@ -345,6 +346,7 @@ func (a *App) migrate(ctx context.Context) error {
     weight INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'unknown', notes TEXT NOT NULL DEFAULT '',
     passthrough_mode TEXT NOT NULL DEFAULT 'normalized', client_policy TEXT NOT NULL DEFAULT 'any',
     max_concurrency INTEGER NOT NULL DEFAULT 0, request_timeout_ms INTEGER NOT NULL DEFAULT 120000,
+    health_check_enabled INTEGER NOT NULL DEFAULT 1,
     failure_threshold INTEGER NOT NULL DEFAULT 3, cooldown_seconds INTEGER NOT NULL DEFAULT 30,
     consecutive_failures INTEGER NOT NULL DEFAULT 0, circuit_open_until TEXT, last_error TEXT NOT NULL DEFAULT '',
     last_latency_ms INTEGER NOT NULL DEFAULT 0, last_success_at TEXT, last_failure_at TEXT,
@@ -416,6 +418,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "passthrough_mode", "TEXT NOT NULL DEFAULT 'normalized'"},
 		{"providers", "client_policy", "TEXT NOT NULL DEFAULT 'any'"},
 		{"providers", "max_concurrency", "INTEGER NOT NULL DEFAULT 0"},
+		{"providers", "health_check_enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"providers", "request_timeout_ms", "INTEGER NOT NULL DEFAULT 120000"},
 		{"providers", "failure_threshold", "INTEGER NOT NULL DEFAULT 3"},
 		{"providers", "cooldown_seconds", "INTEGER NOT NULL DEFAULT 30"},
@@ -542,6 +545,9 @@ CREATE INDEX IF NOT EXISTS idx_groups_order ON provider_groups(sort_order, id);`
 		if err := ensureColumn(ctx, a.db, column.table, column.name, column.ddl); err != nil {
 			return err
 		}
+	}
+	if _, err := a.db.ExecContext(ctx, `UPDATE providers SET health_check_status='reachable' WHERE health_check_mode='connectivity' AND health_check_status='healthy'`); err != nil {
+		return err
 	}
 
 	_, err = a.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_providers_group ON providers(group_id, group_sort_order, id);`)

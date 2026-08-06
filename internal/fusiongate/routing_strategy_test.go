@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -328,6 +329,15 @@ func TestModelMetadataUsesDiscoveredReasoningEfforts(t *testing.T) {
 	efforts, _ := model["supported_reasoning_efforts"].([]string)
 	if len(efforts) != 2 || efforts[0] != "minimal" || efforts[1] != "high" || model["default_reasoning_effort"] != "high" {
 		t.Fatalf("model metadata=%#v", model)
+	}
+}
+
+func TestModelMetadataSortsCustomReasoningEfforts(t *testing.T) {
+	model := modelMetadata("custom", "chat,reasoning:zeta,reasoning:alpha,reasoning:beta", "openai_compatible", "custom")
+	efforts, _ := model["supported_reasoning_efforts"].([]string)
+	want := []string{"alpha", "beta", "zeta"}
+	if !reflect.DeepEqual(efforts, want) {
+		t.Fatalf("reasoning efforts=%v, want %v", efforts, want)
 	}
 }
 

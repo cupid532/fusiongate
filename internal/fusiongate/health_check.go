@@ -124,7 +124,7 @@ func (h *HealthChecker) checkBatch(parent context.Context) {
 	// 查询需要检查的 OAuth providers（按上次检查时间排序，优先检查旧的）
 	rows, err := h.app.db.Query(`
 		SELECT id FROM providers 
-		WHERE auth_kind='oauth' AND enabled=1
+		WHERE auth_kind='oauth' AND enabled=1 AND health_check_enabled=1
 		ORDER BY COALESCE(last_health_check_at, '1970-01-01') ASC
 		LIMIT 100
 	`)
@@ -215,6 +215,9 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 	if err != nil {
 		return healthCheckResult{Status: "config_error", Mode: mode, Error: "failed to load provider"}
 	}
+	if !p.HealthCheckEnabled {
+		return healthCheckResult{Status: "disabled", Mode: mode, Error: "health checks disabled for this provider"}
+	}
 
 	// OAuth 凭证：探测前先检查是否需要续签
 	if p.AuthCredential != nil && p.AuthCredential.RefreshToken != "" {
@@ -243,7 +246,7 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 		models, discoveryErr := h.app.fetchDiscoveredModels(ctx, p)
 		latency := time.Since(start).Milliseconds()
 		if discoveryErr == nil {
-			return healthCheckResult{Status: "healthy", Mode: mode, LatencyMS: latency, ModelCount: len(models)}
+			return healthCheckResult{Status: "reachable", Mode: mode, LatencyMS: latency, ModelCount: len(models)}
 		}
 		if ctx.Err() != nil {
 			return healthCheckResult{Status: "timeout", Mode: mode, LatencyMS: latency, Error: "request timeout"}
@@ -318,6 +321,9 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 	p, err := h.app.loadDiscoveryProvider(ctx, target.ProviderID)
 	if err != nil {
 		return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "failed to load provider"}
+	}
+	if !p.HealthCheckEnabled {
+		return healthCheckResult{Status: "disabled", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "health checks disabled for this provider"}
 	}
 	var keyErr error
 	if target.ProviderKeyID > 0 {

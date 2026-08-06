@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -288,7 +289,12 @@ func modelMetadata(name, routeCapabilities, providerTypes, upstreamModels string
 				delete(reasoningEfforts, effort)
 			}
 		}
+		customEfforts := make([]string, 0, len(reasoningEfforts))
 		for effort := range reasoningEfforts {
+			customEfforts = append(customEfforts, effort)
+		}
+		sort.Strings(customEfforts)
+		for _, effort := range customEfforts {
 			ordered = append(ordered, effort)
 		}
 		if len(ordered) > 0 {

@@ -55,7 +55,7 @@ CREATE TABLE request_ledger (
 	}
 	defer a.Close()
 	for table, columns := range map[string][]string{
-		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived"},
+		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "health_check_enabled", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived"},
 		"model_routes":   {"sort_order"},
 		"api_keys":       {"encrypted_key"},
 		"request_ledger": {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms", "usage_reported", "api_key_name", "api_key_prefix", "provider_name", "client_ip"},
@@ -88,6 +88,10 @@ CREATE TABLE request_ledger (
 	var directCount int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE ip_pool_node_id IS NULL`).Scan(&directCount); err != nil || directCount != 1 {
 		t.Fatalf("legacy provider did not remain in direct mode: count=%d err=%v", directCount, err)
+	}
+	var healthCheckEnabled int
+	if err := a.db.QueryRow(`SELECT health_check_enabled FROM providers WHERE id=1`).Scan(&healthCheckEnabled); err != nil || healthCheckEnabled != 1 {
+		t.Fatalf("legacy provider health check default=%d err=%v", healthCheckEnabled, err)
 	}
 	var policyTable string
 	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='route_policies'`).Scan(&policyTable); err != nil {

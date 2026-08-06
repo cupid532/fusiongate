@@ -83,14 +83,15 @@ type modelSelectionResult struct {
 }
 
 type discoveryProvider struct {
-	ID               int64
-	Name             string
-	Type             string
-	BaseURL          string
-	Credential       string
-	AuthCredential   *ProviderCredential
-	RequestTimeoutMS int
-	IPPoolNodeID     *int64
+	ID                 int64
+	Name               string
+	Type               string
+	BaseURL            string
+	Credential         string
+	AuthCredential     *ProviderCredential
+	RequestTimeoutMS   int
+	HealthCheckEnabled bool
+	IPPoolNodeID       *int64
 }
 
 type discoveryEnvelope struct {
@@ -288,7 +289,8 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 	var authKind string
 	var ipPoolNodeID sql.NullInt64
 	var multiKeyInitialized int
-	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,ip_pool_node_id,multi_key_initialized FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS, &ipPoolNodeID, &multiKeyInitialized)
+	var healthCheckEnabled int
+	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,health_check_enabled,ip_pool_node_id,multi_key_initialized FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS, &healthCheckEnabled, &ipPoolNodeID, &multiKeyInitialized)
 	if err != nil {
 		return p, err
 	}
@@ -296,6 +298,7 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 		value := ipPoolNodeID.Int64
 		p.IPPoolNodeID = &value
 	}
+	p.HealthCheckEnabled = strBool(healthCheckEnabled)
 	if authKind == "api_key" {
 		selected, err := a.loadDiscoveryProviderKey(ctx, p.ID, p.IPPoolNodeID, encrypted, strBool(multiKeyInitialized))
 		if err != nil {

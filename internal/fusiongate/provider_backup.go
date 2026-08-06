@@ -27,25 +27,26 @@ type providerBackupFile struct {
 }
 
 type providerBackupProvider struct {
-	Name             string                `json:"name"`
-	Type             string                `json:"type"`
-	BaseURL          string                `json:"base_url"`
-	Notes            string                `json:"notes,omitempty"`
-	Enabled          bool                  `json:"enabled"`
-	Priority         int                   `json:"priority"`
-	Weight           int                   `json:"weight"`
-	PassthroughMode  string                `json:"passthrough_mode"`
-	ClientPolicy     string                `json:"client_policy"`
-	MaxConcurrency   int                   `json:"max_concurrency"`
-	RequestTimeoutMS int                   `json:"request_timeout_ms"`
-	FailureThreshold int                   `json:"failure_threshold"`
-	CooldownSeconds  int                   `json:"cooldown_seconds"`
-	DefaultModel     string                `json:"default_model,omitempty"`
-	GroupName        string                `json:"group_name,omitempty"`
-	GroupSortOrder   int                   `json:"group_sort_order,omitempty"`
-	IPPoolNodeName   string                `json:"ip_pool_node_name,omitempty"`
-	Keys             []providerBackupKey   `json:"keys"`
-	Routes           []providerBackupRoute `json:"routes,omitempty"`
+	Name               string                `json:"name"`
+	Type               string                `json:"type"`
+	BaseURL            string                `json:"base_url"`
+	Notes              string                `json:"notes,omitempty"`
+	Enabled            bool                  `json:"enabled"`
+	Priority           int                   `json:"priority"`
+	Weight             int                   `json:"weight"`
+	PassthroughMode    string                `json:"passthrough_mode"`
+	ClientPolicy       string                `json:"client_policy"`
+	MaxConcurrency     int                   `json:"max_concurrency"`
+	RequestTimeoutMS   int                   `json:"request_timeout_ms"`
+	FailureThreshold   int                   `json:"failure_threshold"`
+	CooldownSeconds    int                   `json:"cooldown_seconds"`
+	HealthCheckEnabled *bool                 `json:"health_check_enabled,omitempty"`
+	DefaultModel       string                `json:"default_model,omitempty"`
+	GroupName          string                `json:"group_name,omitempty"`
+	GroupSortOrder     int                   `json:"group_sort_order,omitempty"`
+	IPPoolNodeName     string                `json:"ip_pool_node_name,omitempty"`
+	Keys               []providerBackupKey   `json:"keys"`
+	Routes             []providerBackupRoute `json:"routes,omitempty"`
 }
 
 type providerBackupKey struct {
@@ -105,7 +106,7 @@ func (a *App) providerBackupExport(w http.ResponseWriter, r *http.Request, _ adm
 	}
 	rows, err := a.db.Query(`
 SELECT p.id,p.name,p.type,p.base_url,p.notes,p.enabled,p.priority,p.weight,p.passthrough_mode,p.client_policy,
-       p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.default_model,p.group_sort_order,
+       p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.default_model,p.group_sort_order,
        COALESCE(g.name,''),COALESCE(n.name,''),p.credential
 FROM providers p
 LEFT JOIN provider_groups g ON g.id=p.group_id
@@ -119,15 +120,16 @@ ORDER BY p.priority DESC,p.id`)
 	pending := make([]providerBackupPending, 0)
 	for rows.Next() {
 		var item providerBackupPending
-		var enabled int
+		var enabled, healthCheckEnabled int
 		if err := rows.Scan(&item.ID, &item.Provider.Name, &item.Provider.Type, &item.Provider.BaseURL, &item.Provider.Notes,
 			&enabled, &item.Provider.Priority, &item.Provider.Weight, &item.Provider.PassthroughMode, &item.Provider.ClientPolicy,
-			&item.Provider.MaxConcurrency, &item.Provider.RequestTimeoutMS, &item.Provider.FailureThreshold, &item.Provider.CooldownSeconds,
+			&item.Provider.MaxConcurrency, &item.Provider.RequestTimeoutMS, &item.Provider.FailureThreshold, &item.Provider.CooldownSeconds, &healthCheckEnabled,
 			&item.Provider.DefaultModel, &item.Provider.GroupSortOrder, &item.Provider.GroupName, &item.Provider.IPPoolNodeName, &item.Credential); err != nil {
 			rows.Close()
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
+		item.Provider.HealthCheckEnabled = boolPtr(strBool(healthCheckEnabled))
 		item.Provider.Enabled = strBool(enabled)
 		pending = append(pending, item)
 	}
@@ -447,6 +449,14 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 			}
 			result.ProvidersUpdated++
 		}
+		healthCheckEnabled := true
+		if provider.HealthCheckEnabled != nil {
+			healthCheckEnabled = *provider.HealthCheckEnabled
+		}
+		if _, updateErr := tx.Exec(`UPDATE providers SET health_check_enabled=?,updated_at=? WHERE id=?`, boolInt(healthCheckEnabled), now(), providerID); updateErr != nil {
+			fail(w, http.StatusInternalServerError, "database_error", updateErr.Error())
+			return
+		}
 		changedProviderIDs = append(changedProviderIDs, providerID)
 
 		for _, key := range provider.Keys {
@@ -548,4 +558,8 @@ func backupNodeID(tx *sql.Tx, name string) (any, error) {
 		return nil, err
 	}
 	return id, nil
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
