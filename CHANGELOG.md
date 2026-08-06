@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.11
+
+- Update provider and model-route ordering immediately after drag, move-up, or move-down actions.
+- Roll back optimistic ordering changes and reload server state when persistence fails.
+- Render ordinary providers from their persisted global `sort_order` so the UI matches the saved order without a refresh.
+
 ## V1.1
 
 - Bound upstream failover attempts to prevent retry storms and expose the attempt count on bounded failures.

@@ -189,6 +189,8 @@ func TestRoutesPageSupportsPersistentChannelReordering(t *testing.T) {
 		"/api/admin/routes/reorder",
 		"route_ids:ids",
 		"sort_order",
+		"saveRouteOrder=async function(name,ids)",
+		"const previous=new Map(routeOrder(name).map(route=>[Number(route.id),route.sort_order]))",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("routes page reordering is missing %q", required)
@@ -205,6 +207,9 @@ func TestProvidersPageSupportsPersistentGlobalReordering(t *testing.T) {
 		"/api/admin/providers/reorder",
 		"provider_ids:ids",
 		"decorateProviderOrder()",
+		"cache.providers=providerOrder()",
+		"saveProviderOrder=async function(ordinaryIDs)",
+		"previous=new Map(cache.providers.map(provider=>[Number(provider.id),provider.sort_order]))",
 		"清除搜索和状态筛选",
 	} {
 		if !strings.Contains(html, required) {
