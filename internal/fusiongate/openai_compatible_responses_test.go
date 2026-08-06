@@ -10,6 +10,23 @@ import (
 	"testing"
 )
 
+func TestCopyUpstreamRequestHeadersDropsCodexInternalResponsesLiteHeader(t *testing.T) {
+	src := http.Header{
+		"X-OpenAI-Internal-Codex-Responses-Lite": []string{"1"},
+		"X-Client-Trace":                         []string{"trace"},
+	}
+	dst := make(http.Header)
+
+	copyUpstreamRequestHeaders(dst, src)
+
+	if got := dst.Get("X-OpenAI-Internal-Codex-Responses-Lite"); got != "" {
+		t.Fatalf("internal Codex header was forwarded: %q", got)
+	}
+	if got := dst.Get("X-Client-Trace"); got != "trace" {
+		t.Fatalf("ordinary client header was not forwarded: %q", got)
+	}
+}
+
 func TestNormalizedCompatibleChatBodyConvertsDeveloperRole(t *testing.T) {
 	encoded, err := normalizedCompatibleChatBody([]byte(`{"model":"m","messages":[{"role":"developer","content":"rules"},{"role":"user","content":"hello"}]}`))
 	if err != nil {

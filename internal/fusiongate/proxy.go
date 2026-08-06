@@ -358,7 +358,7 @@ func copyUpstreamRequestHeaders(dst, src http.Header) {
 			continue
 		}
 		switch strings.ToLower(canonical) {
-		case "authorization", "x-api-key", "cookie", "host", "content-length", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "via":
+		case "authorization", "x-api-key", "cookie", "host", "content-length", "forwarded", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "via", "x-openai-internal-codex-responses-lite":
 			continue
 		}
 		if strings.HasPrefix(strings.ToLower(canonical), "x-fusiongate-") {

@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.12
+
+- Filter Codex's internal `X-OpenAI-Internal-Codex-Responses-Lite` header before forwarding non-transparent OpenAI-compatible requests.
+- Add regression coverage to ensure internal Codex transport metadata is not passed to compatible upstreams.
+
 ## V1.11
 
 - Update provider and model-route ordering immediately after drag, move-up, or move-down actions.
