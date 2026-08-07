@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.14
+
+- Increase the default streaming first-output timeout from 12 seconds to 30 seconds so slow-starting Claude inference requests are not failed over prematurely.
+- Keep the timeout configurable with `FUSIONGATE_STREAM_START_TIMEOUT` and document the new default.
+
 ## V1.13
 
 - Remove the fixed 30-second upstream response-header timeout so long-running Codex Responses requests honor each provider's configured timeout.

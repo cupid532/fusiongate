@@ -36,6 +36,8 @@ type Config struct {
 	CORSOrigins                                   string
 }
 
+const DefaultStreamStartTimeout = 30 * time.Second
+
 type App struct {
 	db                   *sql.DB
 	cfg                  Config
@@ -234,7 +236,7 @@ func New(cfg Config) (*App, error) {
 		cfg.MaxConcurrentRequests = 64
 	}
 	if cfg.StreamStartTimeout <= 0 {
-		cfg.StreamStartTimeout = 12 * time.Second
+		cfg.StreamStartTimeout = DefaultStreamStartTimeout
 	}
 	if cfg.StreamIdleTimeout <= 0 {
 		cfg.StreamIdleTimeout = 5 * time.Minute

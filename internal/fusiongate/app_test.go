@@ -15,6 +15,18 @@ func testConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{DataDir: t.TempDir(), MasterKey: base64.StdEncoding.EncodeToString(randomBytes(32)), AdminPassword: "correct horse battery staple", AllowInsecureUpstreams: true, AllowPrivateUpstreams: true}
 }
+
+func TestDefaultStreamStartTimeout(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if a.cfg.StreamStartTimeout != DefaultStreamStartTimeout {
+		t.Fatalf("stream start timeout = %s, want %s", a.cfg.StreamStartTimeout, DefaultStreamStartTimeout)
+	}
+}
+
 func TestCredentialEncryption(t *testing.T) {
 	a, e := New(testConfig(t))
 	if e != nil {

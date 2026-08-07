@@ -85,7 +85,7 @@ func main() {
 		AllowPrivateUpstreams:  envBool("FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS"),
 		MaxFailoverAttempts:    envInt("FUSIONGATE_MAX_FAILOVER_ATTEMPTS", 8),
 		MaxConcurrentRequests:  envInt("FUSIONGATE_MAX_CONCURRENT_REQUESTS", 64),
-		StreamStartTimeout:     envDuration("FUSIONGATE_STREAM_START_TIMEOUT", 12*time.Second),
+		StreamStartTimeout:     envDuration("FUSIONGATE_STREAM_START_TIMEOUT", fusiongate.DefaultStreamStartTimeout),
 		StreamIdleTimeout:      envDuration("FUSIONGATE_STREAM_IDLE_TIMEOUT", 5*time.Minute),
 		CORSOrigins:            strings.TrimSpace(os.Getenv("FUSIONGATE_CORS_ORIGINS")),
 	}

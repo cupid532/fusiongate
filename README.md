@@ -187,7 +187,7 @@ sudo bash install.sh
 | `FUSIONGATE_DATA_DIR` | SQLite 数据目录，默认 `./data`。 |
 | `FUSIONGATE_MAX_FAILOVER_ATTEMPTS` | 单次请求最多尝试的上游渠道数，默认 `8`，用于避免失效渠道造成重试风暴。 |
 | `FUSIONGATE_MAX_CONCURRENT_REQUESTS` | 网关同时处理的 API 请求上限，默认 `64`；达到上限返回 `503` 并带 `Retry-After`。 |
-| `FUSIONGATE_STREAM_START_TIMEOUT` | 流式响应等待首个有效模型事件的时间，默认 `12s`。 |
+| `FUSIONGATE_STREAM_START_TIMEOUT` | 流式响应等待首个有效模型事件的时间，默认 `30s`；适合首字节较慢的 Claude 等推理渠道。 |
 | `FUSIONGATE_STREAM_IDLE_TIMEOUT` | 流式响应有效事件之间的最大空闲时间，默认 `5m`。 |
 | `FUSIONGATE_CORS_ORIGINS` | 可选的逗号分隔浏览器 Origin 白名单；留空保持兼容的通配行为。 |
 | `FUSIONGATE_PRICING_SYNC_INTERVAL` | 官方价格同步间隔，默认 `1h`，最低 `5m`；低于 `5m` 的值回退为 `1h`，设为 `0`、`off` 或 `false` 可关闭。 |

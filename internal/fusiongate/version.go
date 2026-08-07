@@ -1,4 +1,4 @@
 package fusiongate
 
 // Version is the user-visible FusionGate release version.
-const Version = "V1.13"
+const Version = "V1.14"
