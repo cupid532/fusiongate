@@ -74,7 +74,7 @@ OpenCode / SDK / 应用
 - 请求尝试账本按 `gateway_request_id` 聚合，记录 attempt、Provider、重试来源、状态、Token 与延迟，不记录 prompt / completion 正文。
 - Codex Chat → Responses 桥接保留 OpenCode / OpenAI Compatible 的 `reasoning_effort`，并转换为 `reasoning.effort`，避免推理强度回落为上游默认值。
 - SSRF 默认保护：只接受 HTTPS 上游；解析并校验全部 DNS 地址，阻止 localhost、私网、链路本地、未指定和组播地址，限制重定向且禁止跨主机携带凭据。
-- 默认白色管理主题，并支持一键切换深色主题；主题偏好保存在浏览器本地。
+- 默认白色管理主题，并支持一键切换深色主题；主题偏好保存在浏览器本地。所有随主题变化的颜色、渐变、边框和阴影都集中在 `internal/fusiongate/ui/index.html` 顶部的两个 token 块（`:root` 为深色，`html[data-theme="light"]` 为浅色）。整站换风格只需修改这两个块；新增第三套主题可复制浅色块并改写 `data-theme` 取值，无需改动任何组件规则。
 - Docker Compose 与非 root 容器配置。
 
 ## Codex / Claude / Grok 授权与迁移

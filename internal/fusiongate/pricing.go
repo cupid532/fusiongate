@@ -885,7 +885,7 @@ SELECT provider_id,LOWER(upstream_model),LOWER(upstream_model),? FROM model_rout
 	}
 	a.routeMu.Lock()
 	for _, name := range models {
-		delete(a.roundRobinCursor, name)
+		a.forgetRouteCursorsLocked(name)
 	}
 	a.routeMu.Unlock()
 	return deletedModels, deletedRoutes, nil

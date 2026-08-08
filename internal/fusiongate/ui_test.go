@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -135,7 +136,10 @@ func TestLightThemeUsesHighContrastCoolPalette(t *testing.T) {
 		`/* Crisp visual system: strong hierarchy, compact controls, explicit status. */`,
 		`html[data-theme="light"]{--bg:#f3f6fa;--sidebar:#0d1726;--surface:#fff;--surface-2:#f6f8fb;--surface-3:#e9eef5`,
 		`--text:#172033;--muted:#526176;--muted-2:#758399;--accent:#087f70;--accent-strong:#0a927f`,
-		`html[data-theme="light"] .sidebar{background:linear-gradient(180deg,#0d1726,#101c2e)`,
+		// The light sidebar stays dark, but through a token rather than a
+		// per-component override.
+		`--sidebar-bg:linear-gradient(180deg,#0d1726,#101c2e)`,
+		`background:var(--sidebar-bg)`,
 		`notice(next==='light'?'已切换到高对比日间主题':'已切换到深色主题')`,
 		`<strong>运行正常</strong><small>LOCAL · SQLITE</small>`,
 	} {
@@ -145,6 +149,44 @@ func TestLightThemeUsesHighContrastCoolPalette(t *testing.T) {
 	}
 	if strings.Contains(html, `已切换到奶白主题`) {
 		t.Fatal("the low-contrast cream theme label is still present")
+	}
+	// The abandoned warm palette must not leak back into the light theme.
+	for _, forbidden := range []string{"#fffdf8", "#f4f0e8", "#f2e5da", "#84452f", "#eae4da"} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("warm cream palette value %q is back in the stylesheet", forbidden)
+		}
+	}
+}
+
+// Restyling the console at scale must stay a matter of editing the token blocks.
+// Every themed colour therefore has to resolve through a var(--token); the only
+// per-component theme rules allowed are the ones that toggle behaviour rather than
+// colour.
+func TestThemeIsDrivenBySingleTokenLayer(t *testing.T) {
+	html := string(adminHTML)
+	if !strings.Contains(html, "THEME TOKENS - the single place to restyle the whole console.") {
+		t.Fatal("the theme token layer is no longer documented")
+	}
+	style := html[strings.Index(html, "<style>"):strings.Index(html, "</style>")]
+	allowed := map[string]bool{
+		`html[data-theme="light"] body`: true,
+		`html[data-theme="dark"] body`:  true,
+		`html[data-theme="dark"] .theme-icon-sun,html[data-theme="light"] .theme-icon-moon`: true,
+	}
+	rules := regexp.MustCompile(`html\[data-theme="(?:light|dark)"\][^{]*\{[^}]*\}`).FindAllString(style, -1)
+	for _, rule := range rules {
+		selector := strings.TrimSpace(rule[:strings.Index(rule, "{")])
+		if strings.Contains(rule, "--bg:") || allowed[selector] {
+			continue
+		}
+		t.Fatalf("per-component theme override reintroduced: %q — express it as a token instead", selector)
+	}
+	// Guard the scopes that must not derive their foreground from the flipping
+	// global --text/--muted tokens.
+	for _, token := range []string{"--sidebar-fg", "--nav-fg", "--nav-active-bg", "--sidebar-status-bg", "--topbar-bg", "--modal-bg", "--th-bg", "--toast-bg"} {
+		if strings.Count(style, token+":") < 2 {
+			t.Fatalf("token %s is not declared for both themes", token)
+		}
 	}
 }
 

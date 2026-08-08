@@ -61,17 +61,22 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 			return
 		}
 		if k.BudgetMicros > 0 {
-			if !a.acquireBudgetKey(k.ID) {
-				fail(w, http.StatusTooManyRequests, "budget_request_inflight", "another request is already using this key's budget")
+			spent, err := a.keySpentMicros(k.ID)
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", "cannot evaluate this key's budget")
 				return
 			}
-			defer a.releaseBudgetKey(k.ID)
-			refreshed, valid := a.authenticateKey(r)
-			if !valid || refreshed.SpentMicros >= refreshed.BudgetMicros {
+			if spent >= k.BudgetMicros {
 				fail(w, http.StatusPaymentRequired, "budget_exceeded", "API key budget exhausted")
 				return
 			}
-			k = refreshed
+			release, ok := a.reserveBudgetSlot(k.ID, budgetSlotLimit(spent, k.BudgetMicros))
+			if !ok {
+				w.Header().Set("Retry-After", "1")
+				fail(w, http.StatusTooManyRequests, "budget_request_inflight", "too many concurrent requests for this key's remaining budget")
+				return
+			}
+			defer release()
 		}
 		if !a.tryAcquireRequestSlot() {
 			a.metrics.overloaded.Add(1)
@@ -87,20 +92,55 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 	}
 }
 
-func (a *App) acquireBudgetKey(id int64) bool {
-	a.budgetMu.Lock()
-	defer a.budgetMu.Unlock()
-	if a.budgetInflight[id] {
-		return false
+// budgetGuardConcurrency bounds how many requests may be in flight at once for a
+// single budgeted key while the budget still has comfortable headroom. Cost is only
+// known after the upstream reports usage, so the guard narrows to one in-flight
+// request as spending approaches the budget. That keeps the unavoidable overshoot
+// small without permanently serializing every budgeted key to one request at a time.
+const budgetGuardConcurrency = 8
+
+// budgetGuardTightenRatio is the fraction of the budget after which admission is
+// serialized so the final requests cannot collectively overshoot by much.
+const budgetGuardTightenRatio = 0.9
+
+func budgetSlotLimit(spent, budget int64) int {
+	if budget > 0 && float64(spent) >= float64(budget)*budgetGuardTightenRatio {
+		return 1
 	}
-	a.budgetInflight[id] = true
-	return true
+	return budgetGuardConcurrency
 }
 
-func (a *App) releaseBudgetKey(id int64) {
+func (a *App) keySpentMicros(id int64) (int64, error) {
+	var spent sql.NullInt64
+	if err := a.db.QueryRow(`SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=? AND completed_at IS NOT NULL`, id).Scan(&spent); err != nil {
+		return 0, err
+	}
+	return spent.Int64, nil
+}
+
+// reserveBudgetSlot admits one in-flight request for a budgeted key and returns the
+// matching release function. It reports false when the key already has `limit`
+// requests in flight.
+func (a *App) reserveBudgetSlot(id int64, limit int) (func(), bool) {
+	if limit < 1 {
+		limit = 1
+	}
 	a.budgetMu.Lock()
-	delete(a.budgetInflight, id)
+	if a.budgetInflight[id] >= limit {
+		a.budgetMu.Unlock()
+		return nil, false
+	}
+	a.budgetInflight[id]++
 	a.budgetMu.Unlock()
+	return func() {
+		a.budgetMu.Lock()
+		if a.budgetInflight[id] <= 1 {
+			delete(a.budgetInflight, id)
+		} else {
+			a.budgetInflight[id]--
+		}
+		a.budgetMu.Unlock()
+	}, true
 }
 
 func setGatewayCORS(w http.ResponseWriter, r *http.Request, allowlist string) {
@@ -163,7 +203,7 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	var x authKey
 	var allowAll, allowImages, revoked int
 	var expiresAt, createdAt string
-	err := a.db.QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,budget_micros,COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0) FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt, &x.BudgetMicros, &x.SpentMicros)
+	err := a.db.QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,budget_micros FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt, &x.BudgetMicros)
 	if err != nil {
 		return authKey{}, false
 	}
@@ -171,8 +211,20 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	x.AllowImages = strBool(allowImages)
 	x.Revoked = strBool(revoked)
 	x.ExpiresAt = parseTime(expiresAt)
-	if x.Revoked || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) || (x.BudgetMicros > 0 && x.SpentMicros >= x.BudgetMicros) {
+	if x.Revoked || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) {
 		return authKey{}, false
+	}
+	// Only budgeted keys need the ledger aggregate, which is the most expensive part
+	// of authentication on a single-connection SQLite database.
+	if x.BudgetMicros > 0 {
+		spent, spentErr := a.keySpentMicros(x.ID)
+		if spentErr != nil {
+			return authKey{}, false
+		}
+		x.SpentMicros = spent
+		if x.SpentMicros >= x.BudgetMicros {
+			return authKey{}, false
+		}
 	}
 	a.markAPIKeyUsed(x.ID)
 	return x, true

@@ -50,6 +50,7 @@ type App struct {
 	providerStates       map[int64]*providerRuntime
 	providerKeyCooldowns map[int64]time.Time
 	roundRobinCursor     map[string]int
+	smoothWeights        map[string]map[int64]float64
 	authMu               sync.Mutex
 	refreshMu            sync.Mutex
 	oauthSessions        map[string]oauthSession
@@ -69,7 +70,7 @@ type App struct {
 	adminSessions        map[string]adminSession
 	ready                atomic.Bool
 	budgetMu             sync.Mutex
-	budgetInflight       map[int64]bool
+	budgetInflight       map[int64]int
 	pricingSyncMu        sync.Mutex
 	pricingSyncTrigger   chan struct{}
 	ipPool               *ipPoolManager
@@ -266,10 +267,11 @@ func New(cfg Config) (*App, error) {
 		log:  slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 		rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{},
 		providerKeyCooldowns: map[int64]time.Time{}, roundRobinCursor: map[string]int{},
+		smoothWeights: map[string]map[int64]float64{},
 		oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{},
 		healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{},
 		loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4),
-		adminSessions: map[string]adminSession{}, budgetInflight: map[int64]bool{},
+		adminSessions: map[string]adminSession{}, budgetInflight: map[int64]int{},
 		pricingSyncTrigger: make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
 		lastUsedAt: map[int64]time.Time{}, metrics: newGatewayMetrics(),
 	}

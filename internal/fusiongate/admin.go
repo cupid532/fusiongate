@@ -473,7 +473,7 @@ func (a *App) reorderProviders(w http.ResponseWriter, r *http.Request, _ adminCt
 		return
 	}
 	a.routeMu.Lock()
-	a.roundRobinCursor = map[string]int{}
+	a.resetRouteCursorsLocked()
 	a.routeMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -1286,8 +1286,8 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		a.routeMu.Lock()
-		delete(a.roundRobinCursor, oldPublicName)
-		delete(a.roundRobinCursor, newPublicName)
+		a.forgetRouteCursorsLocked(oldPublicName)
+		a.forgetRouteCursorsLocked(newPublicName)
 		a.routeMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "public_name": newPublicName, "group_routes": groupRoutes})
 	case http.MethodDelete:
@@ -1322,7 +1322,7 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		a.routeMu.Lock()
-		delete(a.roundRobinCursor, strings.ToLower(strings.TrimSpace(publicName)))
+		a.forgetRouteCursorsLocked(strings.ToLower(strings.TrimSpace(publicName)))
 		a.routeMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	default:
@@ -1399,7 +1399,7 @@ func (a *App) reorderRoutes(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		return
 	}
 	a.routeMu.Lock()
-	delete(a.roundRobinCursor, in.PublicName)
+	a.forgetRouteCursorsLocked(in.PublicName)
 	a.routeMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -1437,7 +1437,7 @@ func (a *App) routePolicies(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	}
 	if in.Strategy == string(StrategySmartRoundRobin) {
 		a.routeMu.Lock()
-		delete(a.roundRobinCursor, in.PublicName)
+		a.forgetRouteCursorsLocked(in.PublicName)
 		a.routeMu.Unlock()
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -1669,11 +1669,11 @@ func (a *App) routing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		if in.Strategy == string(StrategySmartRoundRobin) {
-			a.routeMu.Lock()
-			a.roundRobinCursor = map[string]int{}
-			a.routeMu.Unlock()
-		}
+		// Both rotating strategies keep per-model state, so clear it on any change
+		// instead of only when switching to smart round robin.
+		a.routeMu.Lock()
+		a.resetRouteCursorsLocked()
+		a.routeMu.Unlock()
 		writeJSON(w, http.StatusOK, map[string]string{"strategy": in.Strategy})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or PATCH required")

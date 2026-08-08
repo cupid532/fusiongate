@@ -12,7 +12,6 @@ import (
 )
 
 type providerRuntime struct {
-	Current             float64
 	Inflight            int
 	ConsecutiveFailures int
 	CircuitOpenUntil    time.Time
@@ -187,9 +186,71 @@ func providerHealthFactor(p Provider) float64 {
 	case "pending":
 		factor *= 0.9
 	case "reachable":
+		// A confirmed-reachable provider must never score below one whose
+		// reachability has simply never been probed.
+		factor *= 1.0
+	default:
 		factor *= 0.95
 	}
 	return factor
+}
+
+// adaptiveMinFailureFactor keeps a repeatedly failing provider heavily
+// deprioritized without driving its score to zero. Adaptive selection still has to
+// be able to retry such a provider once its cooldown elapses, otherwise a
+// recovered upstream would be starved indefinitely by its healthy peers.
+const adaptiveMinFailureFactor = 0.05
+
+// adaptiveWeight scores one provider for smooth weighted selection. Interactive
+// clients care much more about time-to-first-byte than about total response
+// duration, which is also inflated by output length, so first-byte EWMA is
+// preferred and total latency is only a fallback until a streaming observation
+// exists for this provider.
+func adaptiveWeight(p Provider, state *providerRuntime) float64 {
+	weight := float64(p.Weight)
+	if weight <= 0 {
+		weight = 1
+	}
+	observedLatency := state.EWMAFirstByteMS
+	if observedLatency <= 0 {
+		observedLatency = state.EWMALatencyMS
+	}
+	latencyFactor := 1.0
+	if observedLatency > 0 {
+		latencyFactor = math.Max(0.06, 1500.0/(1500.0+observedLatency))
+	}
+	failureFactor := math.Max(adaptiveMinFailureFactor, math.Pow(0.55, float64(state.ConsecutiveFailures)))
+	loadFactor := 1.0 / float64(state.Inflight+1)
+	return weight * latencyFactor * failureFactor * loadFactor * providerHealthFactor(p)
+}
+
+// smoothWeightsForLocked returns the smooth weighted round-robin accumulator for one
+// public model. The accumulator is scoped per model because the algorithm only
+// distributes traffic correctly while the candidate set it runs over stays stable;
+// a single global accumulator shared by every model lets one model's rotation
+// permanently bias another's.
+func (a *App) smoothWeightsForLocked(model string) map[int64]float64 {
+	weights := a.smoothWeights[model]
+	if weights == nil {
+		weights = map[int64]float64{}
+		a.smoothWeights[model] = weights
+	}
+	return weights
+}
+
+// forgetRouteCursorsLocked drops all rotation state for a public model so a renamed,
+// deleted, or reconfigured model starts from a clean distribution. Callers must hold
+// routeMu.
+func (a *App) forgetRouteCursorsLocked(model string) {
+	delete(a.roundRobinCursor, model)
+	delete(a.smoothWeights, model)
+}
+
+// resetRouteCursorsLocked clears rotation state for every model. Callers must hold
+// routeMu.
+func (a *App) resetRouteCursorsLocked() {
+	a.roundRobinCursor = map[string]int{}
+	a.smoothWeights = map[string]map[int64]float64{}
 }
 
 func reserveRouteLocked(z resolvedRoute, state *providerRuntime) resolvedRoute {
@@ -226,10 +287,16 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 		return resolvedRoute{}, availability, false
 	}
 
-	var selected resolvedRoute
-	var selectedState *providerRuntime
-	best := -math.MaxFloat64
-	total := 0.0
+	// Adaptive selection scores one entry per provider. A provider that exposes
+	// several API keys still resolves to several routes, and accumulating its weight
+	// once per route would make multi-key providers win the rotation purely because
+	// they were counted more often than single-key peers.
+	type adaptiveCandidate struct {
+		route resolvedRoute
+		state *providerRuntime
+	}
+	candidates := make(map[int64]adaptiveCandidate, len(routes))
+	order := make([]int64, 0, len(routes))
 	for _, z := range routes {
 		attemptID := z.AttemptID
 		if attemptID == 0 {
@@ -242,38 +309,53 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 		if !a.routeSelectableLocked(z, state, nowTime, &availability) {
 			continue
 		}
-		weight := float64(z.Provider.Weight)
-		if weight <= 0 {
-			weight = 1
+		// routeSelectableLocked already rejected circuits that are still open, so a
+		// non-zero CircuitOpenUntil here means the cooldown has elapsed and this
+		// route is the pending half-open probe. Send it immediately instead of
+		// waiting for its penalized score to beat a healthy peer, otherwise a
+		// recovered upstream is never rediscovered under adaptive routing.
+		if !state.CircuitOpenUntil.IsZero() {
+			return reserveRouteLocked(z, state), routeAvailability{}, true
 		}
-		// Interactive clients care much more about time-to-first-byte than the
-		// total duration of a response, which is also affected by output length.
-		// Fall back to total latency until a successful streaming observation is
-		// available for this provider.
-		observedLatency := state.EWMAFirstByteMS
-		if observedLatency <= 0 {
-			observedLatency = state.EWMALatencyMS
+		if _, seen := candidates[z.Provider.ID]; seen {
+			continue
 		}
-		latencyFactor := 1.0
-		if observedLatency > 0 {
-			latencyFactor = math.Max(0.06, 1500.0/(1500.0+observedLatency))
-		}
-		failureFactor := math.Pow(0.55, float64(state.ConsecutiveFailures))
-		loadFactor := 1.0 / float64(state.Inflight+1)
-		effective := weight * latencyFactor * failureFactor * loadFactor * providerHealthFactor(z.Provider)
-		state.Current += effective
-		total += effective
-		if state.Current > best || (state.Current == best && (selectedState == nil || z.Provider.SortOrder < selected.Provider.SortOrder || (z.Provider.SortOrder == selected.Provider.SortOrder && z.Route.SortOrder < selected.Route.SortOrder))) {
-			best = state.Current
-			selected = z
-			selectedState = state
-		}
+		candidates[z.Provider.ID] = adaptiveCandidate{route: z, state: state}
+		order = append(order, z.Provider.ID)
 	}
-	if selectedState == nil {
+	if len(order) == 0 {
 		return resolvedRoute{}, availability, false
 	}
-	selectedState.Current -= total
-	return reserveRouteLocked(selected, selectedState), routeAvailability{}, true
+
+	weights := a.smoothWeightsForLocked(routes[0].Route.PublicName)
+	var selected adaptiveCandidate
+	selectedID := int64(0)
+	best := -math.MaxFloat64
+	total := 0.0
+	// `order` already follows the request-local plan order, so a strict comparison
+	// keeps ties resolving to the highest-ranked provider deterministically.
+	for _, id := range order {
+		candidate := candidates[id]
+		effective := adaptiveWeight(candidate.route.Provider, candidate.state)
+		weights[id] += effective
+		total += effective
+		if weights[id] > best {
+			best = weights[id]
+			selected = candidate
+			selectedID = id
+		}
+	}
+	weights[selectedID] -= total
+	// Drop accumulator entries for providers that no longer serve this model so the
+	// map cannot grow without bound as routes are reconfigured.
+	if len(weights) > len(order) {
+		for id := range weights {
+			if _, live := candidates[id]; !live {
+				delete(weights, id)
+			}
+		}
+	}
+	return reserveRouteLocked(selected.route, selected.state), routeAvailability{}, true
 }
 
 func isNeutralResult(result attemptResult) bool {
