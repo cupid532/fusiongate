@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.25
+
+- Never limit concurrency for a budgeted API key. A budget is an accounting limit, so requests are admitted whenever the budget still has headroom regardless of how many are already in flight, and `budget_request_inflight` is gone. Only an exhausted budget stops a key.
+
 ## V1.24
 
 ### Routing and scheduling
@@ -13,7 +17,7 @@
 
 ### API keys and budgets
 
-- Serve concurrent requests for a budgeted API key. A budget is an accounting limit, but admission held a per-key lock for the whole request, so every budgeted key was effectively limited to one in-flight request and the second concurrent request was rejected with `budget_request_inflight`. Admission now allows up to eight in-flight requests per key and narrows to one only after 90% of the budget is spent, which keeps the unavoidable overshoot small.
+- Serve concurrent requests for a budgeted API key. A budget is an accounting limit, but admission held a per-key lock for the whole request, so every budgeted key was effectively limited to one in-flight request and the second concurrent request was rejected with `budget_request_inflight`. (V1.25 removes the remaining concurrency cap entirely.)
 - Skip the request-ledger cost aggregate during authentication for keys without a budget, and stop authenticating budgeted keys twice per request. Both queries ran on the single SQLite connection shared by all traffic.
 
 ### Admin console theming

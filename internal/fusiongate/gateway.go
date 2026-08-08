@@ -60,6 +60,11 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 			fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "API key rate limit exceeded")
 			return
 		}
+		// A budget is an accounting limit, never a concurrency limit. Requests are
+		// admitted whenever the budget still has headroom, no matter how many are
+		// already in flight for this key. Cost is only known once the upstream
+		// reports usage, so requests already running when the budget is reached
+		// still settle and may take the total slightly past the limit.
 		if k.BudgetMicros > 0 {
 			spent, err := a.keySpentMicros(k.ID)
 			if err != nil {
@@ -70,13 +75,6 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 				fail(w, http.StatusPaymentRequired, "budget_exceeded", "API key budget exhausted")
 				return
 			}
-			release, ok := a.reserveBudgetSlot(k.ID, budgetSlotLimit(spent, k.BudgetMicros))
-			if !ok {
-				w.Header().Set("Retry-After", "1")
-				fail(w, http.StatusTooManyRequests, "budget_request_inflight", "too many concurrent requests for this key's remaining budget")
-				return
-			}
-			defer release()
 		}
 		if !a.tryAcquireRequestSlot() {
 			a.metrics.overloaded.Add(1)
@@ -92,55 +90,12 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 	}
 }
 
-// budgetGuardConcurrency bounds how many requests may be in flight at once for a
-// single budgeted key while the budget still has comfortable headroom. Cost is only
-// known after the upstream reports usage, so the guard narrows to one in-flight
-// request as spending approaches the budget. That keeps the unavoidable overshoot
-// small without permanently serializing every budgeted key to one request at a time.
-const budgetGuardConcurrency = 8
-
-// budgetGuardTightenRatio is the fraction of the budget after which admission is
-// serialized so the final requests cannot collectively overshoot by much.
-const budgetGuardTightenRatio = 0.9
-
-func budgetSlotLimit(spent, budget int64) int {
-	if budget > 0 && float64(spent) >= float64(budget)*budgetGuardTightenRatio {
-		return 1
-	}
-	return budgetGuardConcurrency
-}
-
 func (a *App) keySpentMicros(id int64) (int64, error) {
 	var spent sql.NullInt64
 	if err := a.db.QueryRow(`SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=? AND completed_at IS NOT NULL`, id).Scan(&spent); err != nil {
 		return 0, err
 	}
 	return spent.Int64, nil
-}
-
-// reserveBudgetSlot admits one in-flight request for a budgeted key and returns the
-// matching release function. It reports false when the key already has `limit`
-// requests in flight.
-func (a *App) reserveBudgetSlot(id int64, limit int) (func(), bool) {
-	if limit < 1 {
-		limit = 1
-	}
-	a.budgetMu.Lock()
-	if a.budgetInflight[id] >= limit {
-		a.budgetMu.Unlock()
-		return nil, false
-	}
-	a.budgetInflight[id]++
-	a.budgetMu.Unlock()
-	return func() {
-		a.budgetMu.Lock()
-		if a.budgetInflight[id] <= 1 {
-			delete(a.budgetInflight, id)
-		} else {
-			a.budgetInflight[id]--
-		}
-		a.budgetMu.Unlock()
-	}, true
 }
 
 func setGatewayCORS(w http.ResponseWriter, r *http.Request, allowlist string) {

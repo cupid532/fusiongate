@@ -65,7 +65,7 @@ OpenCode / SDK / 应用
   - Codex OAuth Plus 生图兼容：发现到 `gpt-5.5` 时自动提供 `gpt-image-1` 与 `gpt-image-2` 图像别名；标准 `POST /v1/images/generations` 会转换成 Codex Responses 的 `image_generation` 内置工具调用，并把 SSE 中的真实图片结果转换回 OpenAI `b64_json` 响应。Codex OAuth 路径每次只支持 `n=1`（ChatGPT 账号侧工具一次只出一张，且并发 fan-out 易被限流/拖垮）；需要多图时请对 OpenAI Compatible 生图渠道传 `n`，或对 Codex 路径发起多次请求。支持上游接受的 `size`、`output_format`、`output_compression`、`background`、`moderation` 与 `partial_images` 参数；不伪造 URL 或透明背景能力。Codex 生图默认至少 180s 超时下限。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
   - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 支持原生代理，也可安全转换到 OpenAI / OpenRouter / OpenAI Compatible / Grok Chat，覆盖文本、图片、工具调用、工具结果以及 Anthropic SSE 流。
-- 下游 API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限、到期时间、USD 费用预算与安全再次复制；到期或累计估算费用达到预算后会停止接受新请求。费用在上游返回 usage 后结算，因此最后一个并发或在途请求可能产生少量超额；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。
+- 下游 API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限、到期时间、USD 费用预算与安全再次复制；到期或累计估算费用达到预算后会停止接受新请求。预算只是记账上限，**不会限制并发**：只要预算还有余额，任意数量的并发请求都会被放行。费用在上游返回 usage 后结算，因此预算用尽时仍在途的请求会照常结算，可能产生少量超额；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。
 - 请求账本实时显示进行中请求、动态运行时间、每次故障转移尝试及上游首字节耗时。
 - 请求账本支持精确到秒的本地日期时间范围、状态、渠道、模型/协议/请求 ID/错误关键词与 50/100/200 条返回数量组合筛选；筛选在服务端执行，实时轮询保持当前条件。
 - 官方价格同步：默认每 1 小时读取 OpenAI、xAI、Gemini、Claude 官方定价页面与 OpenRouter 兜底目录，并按公开模型和上游模型 ID 更新非手动价格路由；管理台可随时手动同步。可通过 `FUSIONGATE_PRICING_SYNC_INTERVAL` 调整周期，设为 `0`、`off` 或 `false` 可关闭后台自动同步。支持缓存输入价格和长上下文分档。费用是基于上游 usage 的估算值，最终账单仍以上游服务商为准。

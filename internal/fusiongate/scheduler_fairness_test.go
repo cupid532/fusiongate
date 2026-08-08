@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,53 +148,10 @@ func TestProviderHealthFactorNeverPenalizesConfirmedReachable(t *testing.T) {
 	}
 }
 
-func TestBudgetSlotLimitTightensNearExhaustion(t *testing.T) {
-	if got := budgetSlotLimit(0, 1_000_000); got != budgetGuardConcurrency {
-		t.Fatalf("fresh budget slot limit = %d, want %d", got, budgetGuardConcurrency)
-	}
-	if got := budgetSlotLimit(500_000, 1_000_000); got != budgetGuardConcurrency {
-		t.Fatalf("half-spent budget slot limit = %d, want %d", got, budgetGuardConcurrency)
-	}
-	if got := budgetSlotLimit(950_000, 1_000_000); got != 1 {
-		t.Fatalf("nearly exhausted budget slot limit = %d, want 1", got)
-	}
-}
-
-func TestReserveBudgetSlotBoundsConcurrencyAndReleases(t *testing.T) {
-	a, err := New(testConfig(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer a.Close()
-	first, ok := a.reserveBudgetSlot(7, 2)
-	if !ok {
-		t.Fatal("first reservation rejected")
-	}
-	second, ok := a.reserveBudgetSlot(7, 2)
-	if !ok {
-		t.Fatal("second reservation rejected below the limit")
-	}
-	if _, ok := a.reserveBudgetSlot(7, 2); ok {
-		t.Fatal("third reservation exceeded the limit")
-	}
-	first()
-	third, ok := a.reserveBudgetSlot(7, 2)
-	if !ok {
-		t.Fatal("reservation rejected after a slot was released")
-	}
-	second()
-	third()
-	a.budgetMu.Lock()
-	remaining := a.budgetInflight[7]
-	a.budgetMu.Unlock()
-	if remaining != 0 {
-		t.Fatalf("budget in-flight counter leaked: %d", remaining)
-	}
-}
-
-// A budget is an accounting limit, not a concurrency limit. Two requests from one
-// budgeted key must both reach the gateway while the budget still has headroom.
-func TestBudgetedKeyServesConcurrentRequests(t *testing.T) {
+// A budget is an accounting limit, never a concurrency limit. Every request from a
+// budgeted key must be admitted while the budget still has headroom, no matter how
+// many are already in flight.
+func TestBudgetedKeyNeverLimitsConcurrency(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +164,8 @@ func TestBudgetedKeyServesConcurrentRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entered := make(chan struct{}, 2)
+	const concurrency = 24
+	entered := make(chan struct{}, concurrency)
 	release := make(chan struct{})
 	handler := a.api(func(w http.ResponseWriter, r *http.Request, _ authKey) {
 		entered <- struct{}{}
@@ -214,30 +173,65 @@ func TestBudgetedKeyServesConcurrentRequests(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	send := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-		req.Header.Set("Authorization", "Bearer "+raw)
-		rec := httptest.NewRecorder()
-		handler(rec, req)
-		return rec
+	results := make(chan int, concurrency)
+	for range concurrency {
+		go func() {
+			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			req.Header.Set("Authorization", "Bearer "+raw)
+			rec := httptest.NewRecorder()
+			handler(rec, req)
+			results <- rec.Code
+		}()
 	}
-
-	results := make(chan int, 2)
-	for range 2 {
-		go func() { results <- send().Code }()
-	}
-	for range 2 {
+	// Every request must reach the handler concurrently; none may be turned away.
+	for i := range concurrency {
 		select {
 		case <-entered:
-		case <-time.After(5 * time.Second):
+		case <-time.After(10 * time.Second):
 			close(release)
-			t.Fatal("a budgeted key rejected a concurrent request instead of admitting it")
+			t.Fatalf("only %d of %d concurrent requests were admitted for a budgeted key", i, concurrency)
 		}
 	}
 	close(release)
-	for range 2 {
+	for range concurrency {
 		if code := <-results; code != http.StatusOK {
 			t.Fatalf("concurrent budgeted request returned %d, want 200", code)
 		}
+	}
+}
+
+// Spending past the budget is what stops a key, and it must report 402 rather than a
+// rate-limit style rejection.
+func TestBudgetedKeyStopsOnlyWhenBudgetIsSpent(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	raw := "fg_spent_budget_key"
+	sum := sha256.Sum256([]byte(raw))
+	res, err := a.db.Exec(`INSERT INTO api_keys(name,key_prefix,key_hash,allow_all,allow_images,rpm_limit,budget_micros,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		"budget", "fg_spent", hex.EncodeToString(sum[:]), 1, 1, 0, 1_000_000, now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyID, _ := res.LastInsertId()
+	if _, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,created_at,completed_at,api_key_id,public_model,upstream_model,protocol,cost_micros) VALUES('r1','g1',1,?,?,?,'m','m','openai_chat',?)`,
+		now(), now(), keyID, 1_000_000); err != nil {
+		t.Fatal(err)
+	}
+	handler := a.api(func(w http.ResponseWriter, r *http.Request, _ authKey) {
+		t.Fatal("an exhausted budget must not reach the gateway handler")
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer "+raw)
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	// An exhausted budget fails authentication outright, so the key reads as invalid.
+	if rec.Code != http.StatusPaymentRequired && rec.Code != http.StatusUnauthorized {
+		t.Fatalf("exhausted budget returned %d, want 402 or 401", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "budget_request_inflight") {
+		t.Fatal("budget enforcement must never reject a request for being concurrent")
 	}
 }

@@ -69,8 +69,6 @@ type App struct {
 	sessionMu            sync.Mutex
 	adminSessions        map[string]adminSession
 	ready                atomic.Bool
-	budgetMu             sync.Mutex
-	budgetInflight       map[int64]int
 	pricingSyncMu        sync.Mutex
 	pricingSyncTrigger   chan struct{}
 	ipPool               *ipPoolManager
@@ -271,7 +269,7 @@ func New(cfg Config) (*App, error) {
 		oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{},
 		healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{},
 		loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4),
-		adminSessions: map[string]adminSession{}, budgetInflight: map[int64]int{},
+		adminSessions:      map[string]adminSession{},
 		pricingSyncTrigger: make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
 		lastUsedAt: map[int64]time.Time{}, metrics: newGatewayMetrics(),
 	}
