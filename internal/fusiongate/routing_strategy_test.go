@@ -348,3 +348,30 @@ func TestModelMetadataFallsBackForGPT5Aliases(t *testing.T) {
 		t.Fatalf("model metadata=%#v", model)
 	}
 }
+
+func TestSmartRoundRobinRotatesProvidersNotAPIKeys(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routes := []resolvedRoute{
+		{Route: Route{ID: 1, ProviderID: 1, PublicName: "model", SortOrder: 0}, Provider: Provider{ID: 1, SortOrder: 0, Weight: 100}, ProviderKeyID: 101},
+		{Route: Route{ID: 1, ProviderID: 1, PublicName: "model", SortOrder: 0}, Provider: Provider{ID: 1, SortOrder: 0, Weight: 100}, ProviderKeyID: 102},
+		{Route: Route{ID: 1, ProviderID: 1, PublicName: "model", SortOrder: 0}, Provider: Provider{ID: 1, SortOrder: 0, Weight: 100}, ProviderKeyID: 103},
+		{Route: Route{ID: 2, ProviderID: 2, PublicName: "model", SortOrder: 1}, Provider: Provider{ID: 2, SortOrder: 1, Weight: 100}, ProviderKeyID: 201},
+	}
+	var starts []int64
+	for range 6 {
+		plan := a.prepareRoutes(routes, StrategySmartRoundRobin)
+		starts = append(starts, plan[0].Provider.ID)
+	}
+	want := []int64{1, 2, 1, 2, 1, 2}
+	if !reflect.DeepEqual(starts, want) {
+		t.Fatalf("provider rotation = %v, want %v; key count must not weight a channel", starts, want)
+	}
+	plan := a.prepareRoutes(routes, StrategySmartRoundRobin)
+	if plan[0].Provider.ID != 1 || plan[1].Provider.ID != 1 || plan[2].Provider.ID != 1 || plan[3].Provider.ID != 2 {
+		t.Fatalf("provider keys did not stay grouped for failover: %#v", plan)
+	}
+}

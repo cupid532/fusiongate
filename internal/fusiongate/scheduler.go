@@ -120,12 +120,34 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 	if strategy != StrategySmartRoundRobin || len(planned) < 2 {
 		return planned
 	}
+	// Rotate channels, not resolved key routes. A provider with several API keys must
+	// not receive proportionally more first attempts merely because it expands to
+	// several candidates. Keep every provider's key routes together so request-local
+	// failover can still try the remaining keys before moving to the next channel.
+	groups := make([][]resolvedRoute, 0, len(planned))
+	groupIndex := make(map[int64]int, len(planned))
+	for _, route := range planned {
+		index, ok := groupIndex[route.Provider.ID]
+		if !ok {
+			index = len(groups)
+			groupIndex[route.Provider.ID] = index
+			groups = append(groups, nil)
+		}
+		groups[index] = append(groups[index], route)
+	}
+	if len(groups) < 2 {
+		return planned
+	}
 	model := planned[0].Route.PublicName
 	a.routeMu.Lock()
-	start := a.roundRobinCursor[model] % len(planned)
-	a.roundRobinCursor[model] = (start + 1) % len(planned)
+	start := a.roundRobinCursor[model] % len(groups)
+	a.roundRobinCursor[model] = (start + 1) % len(groups)
 	a.routeMu.Unlock()
-	return append(append([]resolvedRoute(nil), planned[start:]...), planned[:start]...)
+	rotated := make([]resolvedRoute, 0, len(planned))
+	for offset := range groups {
+		rotated = append(rotated, groups[(start+offset)%len(groups)]...)
+	}
+	return rotated
 }
 
 func (a *App) routeSelectableLocked(z resolvedRoute, state *providerRuntime, nowTime time.Time, availability *routeAvailability) bool {
@@ -588,4 +610,37 @@ func (a *App) resetProviderRuntime(id int64) {
 	a.routeMu.Lock()
 	delete(a.providerStates, id)
 	a.routeMu.Unlock()
+}
+
+// resetProviderKeyRuntime makes an edited, re-enabled, successfully tested, or
+// deleted key immediately forget any stale 401/403/429 cooldown.
+func (a *App) resetProviderKeyRuntime(id int64) {
+	a.routeMu.Lock()
+	delete(a.providerKeyCooldowns, id)
+	a.routeMu.Unlock()
+}
+
+func (a *App) resetProviderKeysRuntime(ids []int64) {
+	a.routeMu.Lock()
+	for _, id := range ids {
+		delete(a.providerKeyCooldowns, id)
+	}
+	a.routeMu.Unlock()
+}
+
+func (a *App) providerKeyIDs(providerID int64) []int64 {
+	rows, err := a.reader().Query(`SELECT id FROM provider_api_keys WHERE provider_id=?`, providerID)
+	if err != nil {
+		a.log.Error("list provider keys for runtime reset", "provider_id", providerID, "error", err)
+		return nil
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }

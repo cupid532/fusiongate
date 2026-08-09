@@ -654,6 +654,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "api_key_name", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "api_key_prefix", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "provider_name", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "reasoning_effort", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "client_ip", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "encrypted_key", "BLOB"},
 		{"api_keys", "budget_micros", "INTEGER NOT NULL DEFAULT 0"},
@@ -949,6 +950,13 @@ func (a *App) security(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
+		// The console assembles its markup client-side from data that upstreams
+		// partially control (model IDs, error strings). script-src still needs
+		// 'unsafe-inline' for the pre-paint theme script and inline handlers, but
+		// connect-src/img-src/form-action 'self' cut off the exfiltration channels
+		// an injected fragment would need, and frame-ancestors/base-uri/object-src
+		// close the remaining embedding vectors.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 		next.ServeHTTP(w, r)
 	})
 }

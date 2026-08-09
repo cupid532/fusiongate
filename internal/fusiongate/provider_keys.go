@@ -569,6 +569,10 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			fail(w, http.StatusNotFound, "not_found", "API key card not found")
 			return
 		}
+		runtimeChanged := encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil || (in.Enabled != nil && *in.Enabled)
+		if runtimeChanged {
+			a.resetProviderKeyRuntime(keyID)
+		}
 		if encryptedArg != nil {
 			_, _ = a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
 		}
@@ -628,6 +632,7 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
+		a.resetProviderKeyRuntime(keyID)
 		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")
@@ -691,6 +696,7 @@ func (a *App) discoverProviderKeyModels(w http.ResponseWriter, r *http.Request, 
 	sort.Slice(available, func(i, j int) bool { return available[i].ID < available[j].ID })
 	result.Discovered = len(available)
 	result.LastDiscoveredAt = now()
+	a.resetProviderKeyRuntime(keyID)
 	writeJSON(w, http.StatusOK, map[string]any{"key": result, "models": available})
 }
 
@@ -748,6 +754,7 @@ func (a *App) testProviderKey(w http.ResponseWriter, r *http.Request, providerID
 		fail(w, http.StatusBadGateway, "provider_key_test_failed", message)
 		return
 	}
+	a.resetProviderKeyRuntime(keyID)
 	writeJSON(w, http.StatusOK, map[string]any{"status": status, "latency_ms": latency, "model_count": len(models), "effective_model": effectiveModel})
 }
 

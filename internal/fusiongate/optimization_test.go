@@ -24,7 +24,7 @@ func TestFailoverAttemptLimit(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
 	calls := 0
-	a.runRoutes(rec, req, authKey{}, routes, "test", false, func(resolvedRoute, string, func()) attemptResult {
+	a.runRoutes(rec, req, authKey{}, routes, "test", "", false, func(resolvedRoute, string, func()) attemptResult {
 		calls++
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_server_error"}
 	})

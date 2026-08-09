@@ -117,19 +117,12 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "csrf_token": a.setAdminCookies(w, r)})
 }
 
+// loginClientID keys the per-client login rate limiter. It shares requestClientIP's
+// right-to-left X-Forwarded-For resolution: trusting the first entry let an attacker
+// behind the reverse proxy mint a fresh rate-limit bucket per attempt by forging the
+// header, reducing brute-force protection to the global limiter alone.
 func loginClientID(r *http.Request) string {
-	host := r.RemoteAddr
-	if parsed, err := netip.ParseAddrPort(host); err == nil {
-		host = parsed.Addr().String()
-	}
-	if addr, err := netip.ParseAddr(host); err == nil && addr.IsLoopback() {
-		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
-			if parsed, err := netip.ParseAddr(forwarded); err == nil {
-				host = parsed.String()
-			}
-		}
-	}
-	return host
+	return requestClientIP(r)
 }
 
 func (a *App) allowAdminLogin(clientID string) bool {
@@ -772,6 +765,7 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 
 // providerDelete removes one provider and forgets the scheduler state that referenced it.
 func (a *App) providerDelete(w http.ResponseWriter, id int64) {
+	keyIDs := a.providerKeyIDs(id)
 	res, err := a.db.Exec(`DELETE FROM providers WHERE id=?`, id)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -783,6 +777,7 @@ func (a *App) providerDelete(w http.ResponseWriter, id int64) {
 		return
 	}
 	a.resetProviderRuntime(id)
+	a.resetProviderKeysRuntime(keyIDs)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -986,6 +981,7 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 			return
 		}
 		a.resetProviderRuntime(id)
+		a.resetProviderKeysRuntime(a.providerKeyIDs(id))
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true, "credential_updated": credentialUpdated})
 }
@@ -1711,7 +1707,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		}
 	}
 	args = append(args, limit)
-	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id DESC LIMIT ?`
+	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip,l.reasoning_effort FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id DESC LIMIT ?`
 	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
@@ -1721,10 +1717,10 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency, usageReported int
-		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, clientIP string
+		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, clientIP, reasoningEffort string
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &clientIP); err != nil {
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &clientIP, &reasoningEffort); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -1732,7 +1728,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if firstByte.Valid {
 			firstByteMS = firstByte.Int64
 		}
-		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported)})
+		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported), "reasoning_effort": reasoningEffort})
 	}
 	writeJSON(w, 200, out)
 }

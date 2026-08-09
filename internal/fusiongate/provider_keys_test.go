@@ -504,3 +504,46 @@ func TestProviderDiscoveryKeepsSuccessfulKeysWhenAnotherKeyFails(t *testing.T) {
 		t.Fatalf("good=%q bad=%q", goodStatus, badStatus)
 	}
 }
+
+func TestProviderKeyEditAndDeleteClearRuntimeCooldown(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "cooldown-reset", "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	keyID := insertProviderKeyForTest(t, a, providerID, "sk-old", "primary", "", providerKeyEgressInherit, nil, 0, 0)
+	a.routeMu.Lock()
+	a.providerKeyCooldowns[keyID] = time.Now().Add(5 * time.Minute)
+	a.routeMu.Unlock()
+
+	patch := httptest.NewRecorder()
+	a.providerKeyByID(patch, httptest.NewRequest(http.MethodPatch, "/api/admin/providers/1/keys/"+intString(keyID), strings.NewReader(`{"api_key":"sk-corrected","enabled":true}`)), providerID, keyID, "")
+	if patch.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", patch.Code, patch.Body.String())
+	}
+	a.routeMu.Lock()
+	_, cooling := a.providerKeyCooldowns[keyID]
+	a.routeMu.Unlock()
+	if cooling {
+		t.Fatal("corrected and re-enabled key retained its stale cooldown")
+	}
+
+	a.routeMu.Lock()
+	a.providerKeyCooldowns[keyID] = time.Now().Add(5 * time.Minute)
+	a.routeMu.Unlock()
+	deleted := httptest.NewRecorder()
+	a.providerKeyByID(deleted, httptest.NewRequest(http.MethodDelete, "/api/admin/providers/1/keys/"+intString(keyID), nil), providerID, keyID, "")
+	if deleted.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	a.routeMu.Lock()
+	_, cooling = a.providerKeyCooldowns[keyID]
+	a.routeMu.Unlock()
+	if cooling {
+		t.Fatal("deleted key leaked its runtime cooldown")
+	}
+}

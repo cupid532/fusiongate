@@ -21,7 +21,7 @@ func budgetTestKey(t *testing.T, a *App, raw string, budget int64) int64 {
 
 func settleSpend(a *App, keyID int64, requestID string, cost int64) {
 	route := resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "m"}, Provider: Provider{ID: 1}}
-	attemptID := a.startLedger(authKey{ID: keyID}, route, "openai_chat", false, "127.0.0.1", requestID, 1, "")
+	attemptID := a.startLedger(authKey{ID: keyID}, route, "openai_chat", false, "127.0.0.1", requestID, "", 1, "")
 	a.endLedger(attemptID, keyID, true, 200, "", time.Now(), Usage{CostMicros: cost, CostType: "estimated", Reported: true})
 	a.flushLedgerWrites()
 }

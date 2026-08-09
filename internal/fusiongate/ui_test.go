@@ -268,6 +268,16 @@ func TestProvidersPageSupportsPersistentGlobalReordering(t *testing.T) {
 	if strings.Contains(html, "cache.providers.sort((a,b)=>(b.priority-a.priority)") {
 		t.Fatal("priority editing still overwrites the persisted provider order")
 	}
+	for _, forbidden := range []string{`provider-link-ext`, `>↗</span>`, `>•••</button>`, `>↑</button>`, `>↓</button>`} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("raw provider or route reorder decoration remains: %q", forbidden)
+		}
+	}
+	for _, required := range []string{`icon('i-grip')`, `icon('i-caret-up')`, `icon('i-caret-down')`, `aria-modal="true"`, `aria-labelledby="providerPanelTitle"`, `event.target===providerPanel`, `event.key!=='Escape'`} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("provider UI polish is missing %q", required)
+		}
+	}
 }
 
 func TestProvidersPageSupportsArchiveFilter(t *testing.T) {

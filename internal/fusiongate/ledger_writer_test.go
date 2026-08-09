@@ -22,7 +22,7 @@ func TestLedgerWritesAreQueuedOffTheRequestPath(t *testing.T) {
 		Route:    Route{ID: 1, PublicName: "model", UpstreamModel: "upstream"},
 		Provider: Provider{ID: 1, Name: "provider"},
 	}
-	attemptID := a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_queued", 1, "")
+	attemptID := a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_queued", "", 1, "")
 	a.recordFirstByte(attemptID, time.Now().Add(-30*time.Millisecond))
 	a.endLedger(attemptID, key.ID, true, 200, "", time.Now().Add(-50*time.Millisecond), Usage{Input: 7, Output: 11, Reported: true})
 
@@ -62,7 +62,7 @@ func TestLedgerWriterPreservesOrderPerAttempt(t *testing.T) {
 	key := authKey{ID: 1}
 	route := resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "u"}, Provider: Provider{ID: 1}}
 	for i := range 50 {
-		id := a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_order", i+1, "")
+		id := a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_order", "", i+1, "")
 		a.endLedger(id, key.ID, true, 200, "", time.Now(), Usage{Input: int64(i), Reported: true})
 	}
 	a.flushLedgerWrites()
@@ -110,7 +110,7 @@ func TestCloseDrainsQueuedLedgerWrites(t *testing.T) {
 	key := authKey{ID: 1}
 	route := resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "u"}, Provider: Provider{ID: 1}}
 	for i := range 20 {
-		a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_close", i+1, "")
+		a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_close", "", i+1, "")
 	}
 	if err := a.Close(); err != nil {
 		t.Fatal(err)

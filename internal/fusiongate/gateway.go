@@ -487,11 +487,15 @@ ORDER BY r.sort_order,r.id`, model)
 		}
 		plaintext, decryptErr := a.decrypt(candidate.credential)
 		if decryptErr != nil {
-			return nil, fmt.Errorf("cannot decrypt provider %s credential: %w", z.Provider.Name, decryptErr)
+			// Credential faults are an operator problem; the API caller only learns
+			// that the route is unavailable, not which provider or why.
+			a.log.Error("provider credential decrypt", "provider_id", z.Provider.ID, "provider", z.Provider.Name, "error", decryptErr)
+			continue
 		}
 		authCredential, accessToken, decodeErr := decodeStoredCredential(candidate.authKind, plaintext)
 		if decodeErr != nil {
-			return nil, fmt.Errorf("cannot load provider %s credential: %w", z.Provider.Name, decodeErr)
+			a.log.Error("provider credential decode", "provider_id", z.Provider.ID, "provider", z.Provider.Name, "error", decodeErr)
+			continue
 		}
 		z.Credential = accessToken
 		z.AuthCredential = &authCredential
@@ -535,12 +539,34 @@ func requestClientIP(r *http.Request) string {
 	return host
 }
 
+// requestReasoningEffort reads the reasoning effort a client asked for, accepting both
+// the flat OpenAI Chat form (`reasoning_effort`) and the nested Responses form
+// (`reasoning.effort`). It is recorded on the ledger so the console can show the
+// intensity next to the model. The value is clamped to a short known vocabulary so a
+// hostile client cannot store arbitrary text through it.
+func requestReasoningEffort(body map[string]any) string {
+	raw := ""
+	if v, ok := body["reasoning_effort"].(string); ok {
+		raw = v
+	} else if reasoning, ok := body["reasoning"].(map[string]any); ok {
+		if v, ok := reasoning["effort"].(string); ok {
+			raw = v
+		}
+	}
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	switch raw {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return raw
+	}
+	return ""
+}
+
 // startLedger records the beginning of one upstream attempt and returns the
 // attempt's stable request_id. The write is queued, so the caller never waits for
 // SQLite before dispatching the upstream request.
-func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID string, attempt int, retryReason string) string {
+func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID, reasoningEffort string, attempt int, retryReason string) string {
 	attemptID := gatewayID + "_a" + strconv.Itoa(attempt)
-	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name)
+	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name, reasoningEffort)
 	return attemptID
 }
 
@@ -743,7 +769,7 @@ func textContent(value any) string {
 
 type routeExecutor func(resolvedRoute, string, func()) attemptResult
 
-func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, routes []resolvedRoute, protocol string, stream bool, execute routeExecutor) {
+func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, routes []resolvedRoute, protocol, reasoningEffort string, stream bool, execute routeExecutor) {
 	finalStatus := 0
 	finalSuccess := false
 	defer func() {
@@ -815,7 +841,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			a.metrics.failovers.Add(1)
 		}
 		started := time.Now()
-		attemptID := a.startLedger(key, z, protocol, stream, clientIP, gatewayID, attempt, previousReason)
+		attemptID := a.startLedger(key, z, protocol, stream, clientIP, gatewayID, reasoningEffort, attempt, previousReason)
 		var observedFirstByteMS atomic.Int64
 		result := execute(z, attemptID, func() {
 			elapsed := time.Since(started).Milliseconds()
@@ -905,7 +931,7 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		fail(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
-	a.runRoutes(w, r, key, routes, "openai_chat", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+	a.runRoutes(w, r, key, routes, "openai_chat", requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		switch z.Provider.Type {
 		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
@@ -1116,7 +1142,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		return
 	}
 	stream, _ := body["stream"].(bool)
-	a.runRoutes(w, r, key, compatible, protocol, stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+	a.runRoutes(w, r, key, compatible, protocol, requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		if protocol == "openai_images" && z.Provider.Type == "codex_oauth" {
 			return a.codexImageProxy(w, r, raw, z, rid, onFirstByte)
 		}
@@ -1163,7 +1189,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 		return
 	}
 	stream, _ := body["stream"].(bool)
-	a.runRoutes(w, r, key, compatible, "anthropic_messages", stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+	a.runRoutes(w, r, key, compatible, "anthropic_messages", requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 		if z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "grok_oauth" {
 			return a.anthropicMessagesOpenAI(w, r, body, z, rid, stream, onFirstByte)
 		}

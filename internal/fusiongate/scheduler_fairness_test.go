@@ -218,7 +218,7 @@ func TestBudgetedKeyStopsOnlyWhenBudgetIsSpent(t *testing.T) {
 	keyID, _ := res.LastInsertId()
 	// Settle the whole budget through the real accounting path.
 	route := resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "m"}, Provider: Provider{ID: 1}}
-	a.endLedger(a.startLedger(authKey{ID: keyID}, route, "openai_chat", false, "127.0.0.1", "req_spent", 1, ""),
+	a.endLedger(a.startLedger(authKey{ID: keyID}, route, "openai_chat", false, "127.0.0.1", "req_spent", "", 1, ""),
 		keyID, true, 200, "", time.Now(), Usage{CostMicros: 1_000_000, CostType: "estimated", Reported: true})
 	a.flushLedgerWrites()
 	handler := a.api(func(w http.ResponseWriter, r *http.Request, _ authKey) {

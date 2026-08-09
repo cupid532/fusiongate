@@ -1,5 +1,16 @@
 # Changelog
 
+## V1.33
+
+- Harden console and authentication boundaries: apply a restrictive Content Security Policy, derive login rate-limit identity from the trusted client-IP parser instead of a forged leading `X-Forwarded-For` value, and keep provider credential/decryption details out of public model-resolution errors.
+- Make smart round-robin fair by rotating provider groups rather than expanded API-key routes. A channel with three keys now receives the same first-attempt share as a channel with one key, while its keys remain contiguous for request-local failover.
+- Clear stale per-key cooldown state after edits, re-enabling, deletion, provider runtime resets, successful model discovery and successful manual tests, so repaired keys return to service immediately.
+- Add deterministic fleet regressions for 40 providers × 3 keys with 32 concurrent schedulers, 30 broken providers before a healthy fallback, 200 independent model cursors, provider-level round-robin fairness and cooldown lifecycle cleanup.
+- Record validated reasoning strength (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) in the request ledger and requests API, and show a compact intensity-tinted chip beside the model in the console.
+- Refine provider and model-route ordering without removing drag or move controls: names now align cleanly as self-describing links without a duplicate domain or external-arrow decoration, while hover/focus reveals consistent SVG grip and caret controls.
+- Move add/edit API-channel configuration into a focused, frosted modal instead of extending the page. Add dialog semantics, Escape/backdrop dismissal and focus restoration, plus spring motion with a reduced-motion fallback.
+- Raise the remaining navigation-label, dark-table-header and light-sidebar-status contrast tokens above WCAG AA while preserving the single semantic theme-token layer, and apply restrained Apple-style spacing, blur and motion polish across both themes.
+
 ## V1.32
 
 - Always render the version with two decimal digits. The old rule dropped insignificant trailing hundredths, so a major bump from `V1.29` displayed as `V1.3` and read like a downgrade in the console sidebar. `V1.30` now stays `V1.30`.
