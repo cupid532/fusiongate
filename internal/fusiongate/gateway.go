@@ -342,9 +342,7 @@ func modelMetadata(name, routeCapabilities, providerTypes, upstreamModels string
 			customEfforts = append(customEfforts, effort)
 		}
 		sort.Strings(customEfforts)
-		for _, effort := range customEfforts {
-			ordered = append(ordered, effort)
-		}
+		ordered = append(ordered, customEfforts...)
 		if len(ordered) > 0 {
 			metadata["supported_reasoning_efforts"] = ordered
 		}

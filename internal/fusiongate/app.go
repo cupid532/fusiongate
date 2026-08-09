@@ -175,7 +175,6 @@ type Route struct {
 	ProviderType           string `json:"provider_type,omitempty"`
 	ProviderEnabled        bool   `json:"provider_enabled"`
 	SortOrder              int    `json:"sort_order"`
-	Strategy               string `json:"strategy,omitempty"`
 	ProviderStatus         string `json:"provider_status,omitempty"`
 	ProviderLatencyMS      int64  `json:"provider_latency_ms"`
 	ProviderFirstByteMS    int64  `json:"provider_first_byte_ms"`

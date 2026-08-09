@@ -1948,10 +1948,6 @@ func setCodexQuotaRequestHeaders(req *http.Request, accessToken, accountID strin
 	req.Header.Set("User-Agent", "Codex Desktop")
 }
 
-func (a *App) doCodexQuotaRequest(ctx context.Context, method, endpoint, accessToken, accountID string, body any) (map[string]any, int, error) {
-	return a.doCodexQuotaRequestViaNode(ctx, method, endpoint, accessToken, accountID, body, nil)
-}
-
 func (a *App) doCodexQuotaRequestViaNode(ctx context.Context, method, endpoint, accessToken, accountID string, body any, nodeID *int64) (map[string]any, int, error) {
 	var reader io.Reader
 	if body != nil {
@@ -2063,10 +2059,6 @@ func parseCodexResetCards(payload map[string]any) (int, []codexResetCard) {
 		count = available
 	}
 	return count, cards
-}
-
-func (a *App) fetchCodexAccountQuota(ctx context.Context, accessToken, accountID string) (*codexAccountQuota, error) {
-	return a.fetchCodexAccountQuotaViaNode(ctx, accessToken, accountID, nil)
 }
 
 func (a *App) fetchCodexAccountQuotaViaNode(ctx context.Context, accessToken, accountID string, nodeID *int64) (*codexAccountQuota, error) {

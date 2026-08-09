@@ -1,5 +1,18 @@
 # Changelog
 
+## V1.26
+
+### Dead code removal
+
+- Remove the unregistered `routePolicies` admin handler, the unused `routeStrategy` helper and the dead `Route.Strategy` field. They were the last Go remnants of the abandoned per-model routing strategy, which the global strategy setting replaced.
+- Remove the `doCodexQuotaRequest` and `fetchCodexAccountQuota` wrappers; every caller already used the `...ViaNode` variants directly.
+- Remove 22 orphaned CSS class groups left behind when the per-model strategy editor and the model-health overview were taken out of the console, plus two unreachable compound selectors.
+- Remove the `openAPIHealthPicker` and `renderProviderSelect` functions, which nothing referenced.
+- Remove 123 stylesheet declarations that a later rule with the identical selector already overrode, the last residue of the two stacked theme generations. Verified by resolving every `(selector, property)` pair before and after: no computed value changes.
+- Replace a manual append loop with a variadic append in `modelMetadata`.
+
+Verified with `gofmt`, `go vet ./...`, `staticcheck ./...`, `go test ./...`, and a syntax check of both embedded scripts. `staticcheck` is clean apart from 11 `ST1005` reports on error strings that begin with proper nouns (`Codex`, `Shadowsocks`, `Trojan`, `Responses`), which Go's convention explicitly permits.
+
 ## V1.25
 
 - Never limit concurrency for a budgeted API key. A budget is an accounting limit, so requests are admitted whenever the budget still has headroom regardless of how many are already in flight, and `budget_request_inflight` is gone. Only an exhausted budget stops a key.

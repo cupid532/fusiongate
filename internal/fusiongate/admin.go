@@ -1404,45 +1404,6 @@ func (a *App) reorderRoutes(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (a *App) routePolicies(w http.ResponseWriter, r *http.Request, _ adminCtx) {
-	if r.Method != http.MethodPut && r.Method != http.MethodPatch {
-		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PUT or PATCH required")
-		return
-	}
-	var in struct {
-		PublicName string `json:"public_name"`
-		Strategy   string `json:"strategy"`
-	}
-	if err := readJSON(r, &in); err != nil {
-		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
-		return
-	}
-	in.PublicName = strings.ToLower(strings.TrimSpace(in.PublicName))
-	if in.PublicName == "" || !validRoutingStrategy(in.Strategy) {
-		fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, smart_round_robin, or adaptive")
-		return
-	}
-	var exists int
-	if err := a.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, in.PublicName).Scan(&exists); err != nil {
-		fail(w, http.StatusInternalServerError, "database_error", err.Error())
-		return
-	}
-	if exists == 0 {
-		fail(w, http.StatusNotFound, "not_found", "public model not found")
-		return
-	}
-	if _, err := a.db.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO UPDATE SET strategy=excluded.strategy,updated_at=excluded.updated_at`, in.PublicName, in.Strategy, now()); err != nil {
-		fail(w, http.StatusInternalServerError, "database_error", err.Error())
-		return
-	}
-	if in.Strategy == string(StrategySmartRoundRobin) {
-		a.routeMu.Lock()
-		a.forgetRouteCursorsLocked(in.PublicName)
-		a.routeMu.Unlock()
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
 func normalizeModelList(value string) string {
 	seen := map[string]bool{}
 	models := make([]string, 0)

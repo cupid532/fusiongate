@@ -99,13 +99,6 @@ func validRoutingStrategy(v string) bool {
 	return false
 }
 
-func routeStrategy(routes []resolvedRoute) RoutingStrategy {
-	if len(routes) > 0 && validRoutingStrategy(routes[0].Route.Strategy) {
-		return RoutingStrategy(routes[0].Route.Strategy)
-	}
-	return StrategyPriorityFailover
-}
-
 // prepareRoutes builds a deterministic request-local failover plan. Priority mode
 // sorts channels by provider priority from high to low, then by configured position.
 // Ordered mode always starts from the first configured channel. Smart round robin advances the starting channel
