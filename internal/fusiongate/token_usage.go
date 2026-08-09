@@ -283,7 +283,7 @@ func (a *App) tokenUsage(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	response.Filters.Protocol = strings.TrimSpace(r.URL.Query().Get("protocol"))
 	response.Filters.Stream = strings.TrimSpace(r.URL.Query().Get("stream"))
 
-	if err := scanTokenMetrics(a.db.QueryRow(`SELECT `+tokenMetricsSQL("l")+` FROM request_ledger l WHERE `+where, args...), &response.Totals); err != nil {
+	if err := scanTokenMetrics(a.reader().QueryRow(`SELECT `+tokenMetricsSQL("l")+` FROM request_ledger l WHERE `+where, args...), &response.Totals); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
@@ -316,7 +316,7 @@ func (a *App) tokenUsage(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 }
 
 func (a *App) tokenUsageSeries(from time.Time, days int, where string, args []any) ([]tokenUsageSeriesPoint, error) {
-	rows, err := a.db.Query(`SELECT substr(l.created_at,1,10),`+tokenMetricsSQL("l")+` FROM request_ledger l WHERE `+where+` GROUP BY substr(l.created_at,1,10) ORDER BY substr(l.created_at,1,10)`, args...)
+	rows, err := a.reader().Query(`SELECT substr(l.created_at,1,10),`+tokenMetricsSQL("l")+` FROM request_ledger l WHERE `+where+` GROUP BY substr(l.created_at,1,10) ORDER BY substr(l.created_at,1,10)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +372,7 @@ func (a *App) tokenUsageModelRanks(where string, args []any) ([]tokenUsageRank, 
 }
 
 func (a *App) scanTokenUsageRanks(query string, args []any, withPrefix, modelRank bool) ([]tokenUsageRank, error) {
-	rows, err := a.db.Query(query, args...)
+	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -412,7 +412,7 @@ func (a *App) tokenUsageDetails(where string, args []any, page, pageSize int) ([
 		ORDER BY substr(l.created_at,1,10) DESC,COALESCE(SUM(l.input_tokens+l.output_tokens),0) DESC,` + keyName + `
 		LIMIT ? OFFSET ?`
 	queryArgs := append(append([]any{}, args...), pageSize+1, (page-1)*pageSize)
-	rows, err := a.db.Query(query, queryArgs...)
+	rows, err := a.reader().Query(query, queryArgs...)
 	if err != nil {
 		return nil, false, err
 	}

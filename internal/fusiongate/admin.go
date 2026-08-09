@@ -229,7 +229,7 @@ func validEditableProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
+		rows, err := a.reader().Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1421,7 +1421,7 @@ func normalizeModelList(value string) string {
 func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL,budget_micros,COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0) FROM api_keys ORDER BY id DESC`)
+		rows, err := a.reader().Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL,budget_micros,COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0) FROM api_keys ORDER BY id DESC`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1592,13 +1592,13 @@ func (a *App) runtimeMetrics(w http.ResponseWriter, r *http.Request, _ adminCtx)
 func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var p, m, k, total, today, failures int
 	var input, output, cached, reasoning, costMicros int64
-	a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE enabled=1`).Scan(&p)
-	a.db.QueryRow(`SELECT COUNT(DISTINCT r.public_name) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1`).Scan(&m)
-	a.db.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0 AND (expires_at IS NULL OR expires_at='' OR expires_at>?) AND (budget_micros=0 OR COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0)<budget_micros)`, now()).Scan(&k)
-	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&total)
-	a.db.QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(reasoning_tokens),0),COALESCE(SUM(cost_micros),0) FROM request_ledger WHERE completed_at IS NOT NULL`).Scan(&input, &output, &cached, &reasoning, &costMicros)
-	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=?`, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&today)
-	a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=? AND completed_at IS NOT NULL AND success=0`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339)).Scan(&failures)
+	a.reader().QueryRow(`SELECT COUNT(*) FROM providers WHERE enabled=1`).Scan(&p)
+	a.reader().QueryRow(`SELECT COUNT(DISTINCT r.public_name) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1`).Scan(&m)
+	a.reader().QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0 AND (expires_at IS NULL OR expires_at='' OR expires_at>?) AND (budget_micros=0 OR COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0)<budget_micros)`, now()).Scan(&k)
+	a.reader().QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&total)
+	a.reader().QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(reasoning_tokens),0),COALESCE(SUM(cost_micros),0) FROM request_ledger WHERE completed_at IS NOT NULL`).Scan(&input, &output, &cached, &reasoning, &costMicros)
+	a.reader().QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=?`, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&today)
+	a.reader().QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=? AND completed_at IS NOT NULL AND success=0`, time.Now().UTC().Add(-24*time.Hour).Format(time.RFC3339)).Scan(&failures)
 	writeJSON(w, 200, map[string]any{"providers": p, "models": m, "keys": k, "requests": total, "today_requests": today, "failures_24h": failures, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": costMicros})
 }
 
@@ -1701,7 +1701,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 	args = append(args, limit)
 	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id DESC LIMIT ?`
-	rows, err := a.db.Query(query, args...)
+	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
 		return

@@ -1,5 +1,17 @@
 # Changelog
 
+## V1.27
+
+### Request-path database work
+
+- Queue request-ledger writes on a single writer goroutine instead of writing them inline. The first-byte callback runs inside the response read path, so its `UPDATE` previously delayed the first byte the client received by however long SQLite took to accept it. Ledger statements are now applied in FIFO order behind the attempt's `INSERT`, addressed by `request_id`.
+- Give reads their own connection pool. WAL allows readers to run concurrently with the writer, but every query shared the one writer connection, so opening the usage and cost dashboard queued its year-wide aggregates ahead of live gateway traffic.
+- Set `synchronous=NORMAL` on the writer. Under WAL a commit still survives a process crash; only host power loss can lose the most recent transactions, and it removes an fsync from every request-path write.
+- Move request-ledger retention off the request path onto a daily loop. It previously re-checked the cutoff on every gateway request.
+- Report `ledger_writes_queued`, `ledger_queue_waits` and `ledger_write_errors` from the admin metrics endpoint.
+
+The ledger is now eventually consistent: a full queue blocks rather than dropping, because a dropped row would also drop the cost it carries, and shutdown drains the queue before closing the database.
+
 ## V1.26
 
 ### Dead code removal

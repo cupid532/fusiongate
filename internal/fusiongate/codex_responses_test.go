@@ -215,6 +215,7 @@ func TestCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
 	if message["content"] != "Hello from Plus" || response["model"] != "gpt-plus" {
 		t.Fatalf("response=%#v", response)
 	}
+	a.flushLedgerWrites()
 	var protocol string
 	var success int
 	if err := a.db.QueryRow(`SELECT protocol,success FROM request_ledger ORDER BY id DESC LIMIT 1`).Scan(&protocol, &success); err != nil {

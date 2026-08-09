@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ const DefaultStreamStartTimeout = 30 * time.Second
 
 type App struct {
 	db                   *sql.DB
+	readDB               *sql.DB
 	cfg                  Config
 	aead                 cipher.AEAD
 	client               *http.Client
@@ -51,6 +53,10 @@ type App struct {
 	providerKeyCooldowns map[int64]time.Time
 	roundRobinCursor     map[string]int
 	smoothWeights        map[string]map[int64]float64
+	ledgerMu             sync.RWMutex
+	ledgerWrites         chan ledgerWrite
+	ledgerWriterDone     chan struct{}
+	ledgerClosed         bool
 	authMu               sync.Mutex
 	refreshMu            sync.Mutex
 	oauthSessions        map[string]oauthSession
@@ -254,7 +260,12 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", path.Join(cfg.DataDir, "fusiongate.db")+"?_busy_timeout=5000&_journal_mode=WAL&_foreign_keys=on")
+	dbPath := path.Join(cfg.DataDir, "fusiongate.db")
+	// A single writer connection keeps SQLite free of write contention. synchronous
+	//=NORMAL is the standard WAL setting: a commit still survives a process crash,
+	// only a host power loss can lose the most recent transactions, and it removes an
+	// fsync from every write on the request path.
+	db, err := sql.Open("sqlite3", dbPath+"?_busy_timeout=5000&_journal_mode=WAL&_foreign_keys=on&_synchronous=NORMAL")
 	if err != nil {
 		return nil, err
 	}
@@ -276,12 +287,24 @@ func New(cfg Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	if err := a.pruneRequestLedger(context.Background(), true); err != nil {
+	// WAL lets readers run concurrently with the writer, so reads get their own pool.
+	// Without it every dashboard aggregate over a year of request ledger would queue
+	// behind live gateway traffic on the one writer connection.
+	readDB, err := sql.Open("sqlite3", dbPath+"?_busy_timeout=5000&_journal_mode=WAL&_foreign_keys=on")
+	if err != nil {
 		db.Close()
 		return nil, err
 	}
+	readDB.SetMaxOpenConns(readPoolSize())
+	readDB.SetMaxIdleConns(readPoolSize())
+	a.readDB = readDB
+	a.startLedgerWriter()
+	if err := a.pruneRequestLedger(context.Background(), true); err != nil {
+		a.closeDatabases()
+		return nil, err
+	}
 	if err := a.ensureAdmin(cfg.AdminPassword); err != nil {
-		db.Close()
+		a.closeDatabases()
 		return nil, err
 	}
 	a.ipPool = newIPPoolManager(a)
@@ -299,6 +322,119 @@ func New(cfg Config) (*App, error) {
 	a.ready.Store(true)
 	return a, nil
 }
+
+// reader returns the read-only pool. Every plain SELECT should use it so that
+// dashboard aggregates and gateway lookups run concurrently instead of queueing
+// behind the single writer connection. Transactions and writes keep using a.db.
+func (a *App) reader() *sql.DB {
+	if a.readDB != nil {
+		return a.readDB
+	}
+	return a.db
+}
+
+// ledgerWrite is one queued request-ledger statement.
+type ledgerWrite struct {
+	query string
+	args  []any
+	done  chan struct{}
+}
+
+// ledgerWriteQueueSize bounds how many ledger statements may wait to be applied.
+const ledgerWriteQueueSize = 4096
+
+func readPoolSize() int {
+	size := runtime.NumCPU()
+	if size < 4 {
+		size = 4
+	}
+	if size > 16 {
+		size = 16
+	}
+	return size
+}
+
+func (a *App) startLedgerWriter() {
+	a.ledgerWrites = make(chan ledgerWrite, ledgerWriteQueueSize)
+	a.ledgerWriterDone = make(chan struct{})
+	go a.runLedgerWriter()
+}
+
+// runLedgerWriter applies queued ledger statements in FIFO order. Order matters:
+// an attempt's INSERT has to land before the UPDATEs that address it by request_id.
+func (a *App) runLedgerWriter() {
+	defer close(a.ledgerWriterDone)
+	for write := range a.ledgerWrites {
+		if write.query != "" {
+			if _, err := a.db.Exec(write.query, write.args...); err != nil {
+				a.metrics.ledgerWriteErrors.Add(1)
+				a.log.Error("request ledger write", "error", err)
+			}
+		}
+		if write.done != nil {
+			close(write.done)
+		}
+	}
+}
+
+// queueLedgerWrite hands one ledger statement to the writer goroutine. The request
+// ledger is observability data that sits on the response hot path, so no caller
+// should wait for SQLite to accept it. A full queue blocks instead of dropping,
+// because a dropped row would also drop the cost it carries.
+func (a *App) queueLedgerWrite(query string, args ...any) {
+	a.ledgerMu.RLock()
+	if a.ledgerWrites == nil || a.ledgerClosed {
+		a.ledgerMu.RUnlock()
+		if _, err := a.db.Exec(query, args...); err != nil {
+			a.metrics.ledgerWriteErrors.Add(1)
+			a.log.Error("request ledger write", "error", err)
+		}
+		return
+	}
+	defer a.ledgerMu.RUnlock()
+	a.metrics.ledgerQueued.Add(1)
+	select {
+	case a.ledgerWrites <- ledgerWrite{query: query, args: args}:
+	default:
+		a.metrics.ledgerQueueWaits.Add(1)
+		a.ledgerWrites <- ledgerWrite{query: query, args: args}
+	}
+}
+
+// flushLedgerWrites blocks until every statement queued so far has been applied.
+// Tests and shutdown use it to read the ledger without racing the writer.
+func (a *App) flushLedgerWrites() {
+	a.ledgerMu.RLock()
+	queue, closed := a.ledgerWrites, a.ledgerClosed
+	if queue == nil || closed {
+		a.ledgerMu.RUnlock()
+		return
+	}
+	done := make(chan struct{})
+	queue <- ledgerWrite{done: done}
+	a.ledgerMu.RUnlock()
+	<-done
+}
+
+func (a *App) closeDatabases() error {
+	a.ledgerMu.Lock()
+	queue := a.ledgerWrites
+	if queue != nil && !a.ledgerClosed {
+		a.ledgerClosed = true
+		close(queue)
+	}
+	a.ledgerMu.Unlock()
+	if a.ledgerWriterDone != nil {
+		<-a.ledgerWriterDone
+	}
+	if a.readDB != nil {
+		if err := a.readDB.Close(); err != nil {
+			a.log.Error("read pool close", "error", err)
+		}
+	}
+	return a.db.Close()
+}
+
 func (a *App) Close() error {
 	a.ready.Store(false)
 	if a.healthChecker != nil {
@@ -310,10 +446,28 @@ func (a *App) Close() error {
 	if a.ipPool != nil {
 		a.ipPool.Close()
 	}
-	return a.db.Close()
+	return a.closeDatabases()
 }
 
 func (a *App) BeginShutdown() { a.ready.Store(false) }
+
+// runLedgerRetentionLoop trims expired ledger rows on a timer. Retention used to be
+// re-checked on every gateway request, which put a DELETE scan behind the request
+// path even though the cutoff only moves once a day.
+func (a *App) runLedgerRetentionLoop(ctx context.Context) {
+	ticker := time.NewTicker(requestLedgerCleanupEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := a.pruneRequestLedger(ctx, false); err != nil {
+				a.log.Error("request ledger retention cleanup", "error", err)
+			}
+		}
+	}
+}
 
 // StartBackgroundTasks starts the health checker and other periodic background
 // jobs. The caller supplies a context that, when canceled, stops all tasks.
@@ -323,6 +477,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	}
 	go a.runOAuthRefreshLoop(ctx)
 	go a.runPricingSyncLoop(ctx)
+	go a.runLedgerRetentionLoop(ctx)
 	// Circuit recovery is performed by the next real request after cooldown.
 }
 

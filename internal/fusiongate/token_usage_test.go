@@ -134,10 +134,12 @@ func TestRequestLedgerRetentionKeepsOnlyOneYear(t *testing.T) {
 	if err := a.pruneRequestLedger(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}
+	a.flushLedgerWrites()
 	var oldCount, recentCount int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE request_id='old'`).Scan(&oldCount); err != nil {
 		t.Fatal(err)
 	}
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE request_id='recent'`).Scan(&recentCount); err != nil {
 		t.Fatal(err)
 	}
@@ -280,11 +282,13 @@ func TestNewPrunesExpiredLedgerRowsOnStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	a.flushLedgerWrites()
 	defer a.Close()
 	var oldCount, recentCount int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE request_id='startup-old'`).Scan(&oldCount); err != nil {
 		t.Fatal(err)
 	}
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE request_id='startup-recent'`).Scan(&recentCount); err != nil {
 		t.Fatal(err)
 	}

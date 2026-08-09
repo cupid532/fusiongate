@@ -6,17 +6,20 @@ import (
 )
 
 type gatewayMetrics struct {
-	startedAt       time.Time
-	active          atomic.Int64
-	requests        atomic.Int64
-	attempts        atomic.Int64
-	failovers       atomic.Int64
-	completed       atomic.Int64
-	successes       atomic.Int64
-	failures        atomic.Int64
-	overloaded      atomic.Int64
-	firstByteCount  atomic.Int64
-	firstByteMillis atomic.Int64
+	startedAt         time.Time
+	active            atomic.Int64
+	requests          atomic.Int64
+	attempts          atomic.Int64
+	failovers         atomic.Int64
+	completed         atomic.Int64
+	successes         atomic.Int64
+	failures          atomic.Int64
+	overloaded        atomic.Int64
+	firstByteCount    atomic.Int64
+	firstByteMillis   atomic.Int64
+	ledgerQueued      atomic.Int64
+	ledgerQueueWaits  atomic.Int64
+	ledgerWriteErrors atomic.Int64
 }
 
 func newGatewayMetrics() gatewayMetrics {
@@ -63,5 +66,8 @@ func (m *gatewayMetrics) snapshot() map[string]any {
 		"overloaded_total":        m.overloaded.Load(),
 		"first_byte_count":        firstByteCount,
 		"average_first_byte_ms":   averageFirstByte,
+		"ledger_writes_queued":    m.ledgerQueued.Load(),
+		"ledger_queue_waits":      m.ledgerQueueWaits.Load(),
+		"ledger_write_errors":     m.ledgerWriteErrors.Load(),
 	}
 }

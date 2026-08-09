@@ -193,6 +193,7 @@ func TestMessagesUsesOpenAICompatibleRoute(t *testing.T) {
 	if content[0].(map[string]any)["text"] != "pong" {
 		t.Fatalf("content=%#v", content)
 	}
+	a.flushLedgerWrites()
 	var protocol string
 	var success, inputTokens, outputTokens int
 	if err := a.db.QueryRow(`SELECT protocol,success,input_tokens,output_tokens FROM request_ledger`).Scan(&protocol, &success, &inputTokens, &outputTokens); err != nil {

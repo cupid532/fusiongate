@@ -129,6 +129,7 @@ func TestOpenAICompatibleGatewayFlow(t *testing.T) {
 	if message["content"] != "pong" {
 		t.Fatalf("response = %#v", out)
 	}
+	a.flushLedgerWrites()
 	var success, input, output int
 	var cost int64
 	if err := a.db.QueryRow(`SELECT success,input_tokens,output_tokens,cost_micros FROM request_ledger`).Scan(&success, &input, &output, &cost); err != nil {

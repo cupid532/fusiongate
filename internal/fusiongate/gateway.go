@@ -92,7 +92,7 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 
 func (a *App) keySpentMicros(id int64) (int64, error) {
 	var spent sql.NullInt64
-	if err := a.db.QueryRow(`SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=? AND completed_at IS NOT NULL`, id).Scan(&spent); err != nil {
+	if err := a.reader().QueryRow(`SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=? AND completed_at IS NOT NULL`, id).Scan(&spent); err != nil {
 		return 0, err
 	}
 	return spent.Int64, nil
@@ -158,7 +158,7 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	var x authKey
 	var allowAll, allowImages, revoked int
 	var expiresAt, createdAt string
-	err := a.db.QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,budget_micros FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt, &x.BudgetMicros)
+	err := a.reader().QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,budget_micros FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt, &x.BudgetMicros)
 	if err != nil {
 		return authKey{}, false
 	}
@@ -248,7 +248,7 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	rows, err := a.db.Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 GROUP BY r.public_name ORDER BY r.public_name`)
+	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 GROUP BY r.public_name ORDER BY r.public_name`)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -357,7 +357,7 @@ func modelMetadata(name, routeCapabilities, providerTypes, upstreamModels string
 }
 
 func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]resolvedRoute, error) {
-	rows, err := a.db.QueryContext(ctx, `
+	rows, err := a.reader().QueryContext(ctx, `
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
        r.input_price_micros,r.cached_price_micros,r.output_price_micros,r.long_context_threshold,
        r.long_input_price_micros,r.long_cached_price_micros,r.long_output_price_micros,
@@ -477,41 +477,34 @@ func requestClientIP(r *http.Request) string {
 	return host
 }
 
-func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID string, attempt int, retryReason string) (int64, string) {
-	if err := a.pruneRequestLedger(context.Background(), false); err != nil {
-		a.log.Error("request ledger retention cleanup", "error", err)
-	}
+// startLedger records the beginning of one upstream attempt and returns the
+// attempt's stable request_id. The write is queued, so the caller never waits for
+// SQLite before dispatching the upstream request.
+func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID string, attempt int, retryReason string) string {
 	attemptID := gatewayID + "_a" + strconv.Itoa(attempt)
-	res, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name)
-	if err != nil {
-		a.log.Error("ledger insert", "error", err)
-		return 0, attemptID
-	}
-	id, _ := res.LastInsertId()
-	return id, attemptID
+	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name)
+	return attemptID
 }
 
-func (a *App) recordFirstByte(id int64, start time.Time) {
-	if id == 0 {
+// recordFirstByte is called from inside the response read path, so it must not
+// block on the database: a synchronous write here would delay the first byte the
+// client sees by however long SQLite takes to accept it.
+func (a *App) recordFirstByte(attemptID string, start time.Time) {
+	if attemptID == "" {
 		return
 	}
 	elapsed := time.Since(start).Milliseconds()
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	if _, err := a.db.Exec(`UPDATE request_ledger SET first_byte_ms=? WHERE id=? AND first_byte_ms IS NULL`, elapsed, id); err != nil {
-		a.log.Error("ledger first byte update", "error", err)
-	}
+	a.queueLedgerWrite(`UPDATE request_ledger SET first_byte_ms=? WHERE request_id=? AND first_byte_ms IS NULL`, elapsed, attemptID)
 }
 
-func (a *App) endLedger(id int64, success bool, status int, errorType string, start time.Time, usage Usage) {
-	if id == 0 {
+func (a *App) endLedger(attemptID string, success bool, status int, errorType string, start time.Time, usage Usage) {
+	if attemptID == "" {
 		return
 	}
-	_, err := a.db.Exec(`UPDATE request_ledger SET completed_at=?,success=?,status_code=?,error_type=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_tokens=?,reasoning_tokens=?,cost_micros=?,cost_type=?,usage_reported=? WHERE id=?`, now(), boolInt(success), status, errorType, time.Since(start).Milliseconds(), usage.Input, usage.Output, usage.Cached, usage.Reasoning, usage.CostMicros, usage.CostType, boolInt(usage.Reported), id)
-	if err != nil {
-		a.log.Error("ledger update", "error", err)
-	}
+	a.queueLedgerWrite(`UPDATE request_ledger SET completed_at=?,success=?,status_code=?,error_type=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_tokens=?,reasoning_tokens=?,cost_micros=?,cost_type=?,usage_reported=? WHERE request_id=?`, now(), boolInt(success), status, errorType, time.Since(start).Milliseconds(), usage.Input, usage.Output, usage.Cached, usage.Reasoning, usage.CostMicros, usage.CostType, boolInt(usage.Reported), attemptID)
 }
 
 func cost(z resolvedRoute, usage *Usage) {
@@ -761,7 +754,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			a.metrics.failovers.Add(1)
 		}
 		started := time.Now()
-		ledgerID, attemptID := a.startLedger(key, z, protocol, stream, clientIP, gatewayID, attempt, previousReason)
+		attemptID := a.startLedger(key, z, protocol, stream, clientIP, gatewayID, attempt, previousReason)
 		var observedFirstByteMS atomic.Int64
 		result := execute(z, attemptID, func() {
 			elapsed := time.Since(started).Milliseconds()
@@ -771,7 +764,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			observedFirstByteMS.CompareAndSwap(0, elapsed)
 			a.metrics.firstByteCount.Add(1)
 			a.metrics.firstByteMillis.Add(elapsed)
-			a.recordFirstByte(ledgerID, started)
+			a.recordFirstByte(attemptID, started)
 		})
 		latency := time.Since(started)
 		a.completeRoute(z, result, latency, time.Duration(observedFirstByteMS.Load())*time.Millisecond)
@@ -784,7 +777,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		if reason == "" && status >= 400 {
 			reason = retryReason(status, result.Err)
 		}
-		a.endLedger(ledgerID, result.Handled && status < 400 && result.Err == nil, status, reason, started, result.Usage)
+		a.endLedger(attemptID, result.Handled && status < 400 && result.Err == nil, status, reason, started, result.Usage)
 		if result.Handled {
 			finalStatus = status
 			finalSuccess = status < 400 && result.Err == nil

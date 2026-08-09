@@ -96,6 +96,7 @@ func TestFailoverRecordsAttempts(t *testing.T) {
 	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
 		t.Fatalf("calls primary=%d backup=%d", firstCalls.Load(), secondCalls.Load())
 	}
+	a.flushLedgerWrites()
 	rows, err := a.db.Query(`SELECT attempt,retry_reason,success FROM request_ledger ORDER BY attempt`)
 	if err != nil {
 		t.Fatal(err)
@@ -481,6 +482,7 @@ func TestEmptyStreamFailsOverBeforeHeadersAreCommitted(t *testing.T) {
 	if primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
 		t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
 	}
+	a.flushLedgerWrites()
 	var retryReason string
 	if err := a.db.QueryRow(`SELECT retry_reason FROM request_ledger WHERE attempt=2`).Scan(&retryReason); err != nil {
 		t.Fatal(err)
@@ -875,6 +877,7 @@ func TestConnectionFailureFailsOverBeforeAnyResponse(t *testing.T) {
 	if backupCalls.Load() != 1 {
 		t.Fatalf("backup calls=%d, want 1", backupCalls.Load())
 	}
+	a.flushLedgerWrites()
 	var attempts int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&attempts); err != nil {
 		t.Fatal(err)

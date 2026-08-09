@@ -162,6 +162,7 @@ func TestLiveRequestLedgerAndFirstByteTiming(t *testing.T) {
 	releaseFirstByte <- struct{}{}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
+		a.flushLedgerWrites()
 		var first sql.NullInt64
 		if err := a.db.QueryRow(`SELECT first_byte_ms FROM request_ledger LIMIT 1`).Scan(&first); err != nil {
 			t.Fatal(err)
@@ -178,6 +179,7 @@ func TestLiveRequestLedgerAndFirstByteTiming(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	a.flushLedgerWrites()
 	mid := requestListForTest(t, a)
 	if len(mid) != 1 || !mid[0].Running || !mid[0].FirstByteMS.Valid {
 		t.Fatalf("mid-flight ledger=%+v", mid)
@@ -192,6 +194,7 @@ func TestLiveRequestLedgerAndFirstByteTiming(t *testing.T) {
 		t.Fatalf("gateway status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
+	a.flushLedgerWrites()
 	final := requestListForTest(t, a)
 	if len(final) != 1 || final[0].Running || final[0].CompletedAt == "" || !final[0].Success || !final[0].FirstByteMS.Valid {
 		t.Fatalf("final ledger=%+v", final)

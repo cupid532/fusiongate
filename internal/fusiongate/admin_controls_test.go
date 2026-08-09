@@ -43,6 +43,7 @@ func TestDeleteKeyRemovesItAndItsLedger(t *testing.T) {
 	if keyCount != 0 {
 		t.Fatalf("deleted key remains in database: %d", keyCount)
 	}
+	a.flushLedgerWrites()
 	var ledgerCount int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE request_id='key-delete-ledger'`).Scan(&ledgerCount); err != nil {
 		t.Fatal(err)
