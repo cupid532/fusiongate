@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.34
+
+- Cap the in-memory provider-key cooldown at 10 minutes. A 401/403/429 used to adopt the upstream `Retry-After` without any bound, so a single 429 answering `Retry-After: 86400` silently benched a healthy channel for a day; the cooldown lives only in process memory, so the console kept showing the provider as healthy while every request skipped it.
+- Let `auth_expired` providers recover on their own. The scheduler used to exclude them permanently, so a refreshed OAuth token never returned to rotation until an external import rewrote the provider status. The immediate circuit breaker that every 401/403 already triggers now throttles retries instead, and the half-open probe promotes the provider back to healthy on its first success.
+
 ## V1.33
 
 - Harden console and authentication boundaries: apply a restrictive Content Security Policy, derive login rate-limit identity from the trusted client-IP parser instead of a forged leading `X-Forwarded-For` value, and keep provider credential/decryption details out of public model-resolution errors.

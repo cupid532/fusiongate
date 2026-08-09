@@ -151,10 +151,11 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 }
 
 func (a *App) routeSelectableLocked(z resolvedRoute, state *providerRuntime, nowTime time.Time, availability *routeAvailability) bool {
-	if z.ProviderKeyID == 0 && strings.EqualFold(strings.TrimSpace(z.Provider.Status), "auth_expired") {
-		availability.Reason = "provider_auth_expired"
-		return false
-	}
+	// An auth_expired provider is NOT benched forever here. A 401/403 already
+	// opens the circuit immediately (see completeRoute), so the circuit check
+	// below throttles retries while the credential is broken, and the half-open
+	// probe rediscovers the provider once its token is refreshed. A permanent
+	// exclusion would require an external status rewrite to ever recover.
 	if z.ProviderKeyID > 0 {
 		if openUntil := a.providerKeyCooldowns[z.ProviderKeyID]; openUntil.After(nowTime) {
 			wait := time.Until(openUntil)
@@ -423,6 +424,13 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		cooldown := 5 * time.Minute
 		if result.RetryAfter > cooldown {
 			cooldown = result.RetryAfter
+		}
+		// Upstreams occasionally answer 429 with an absurd Retry-After (hours or
+		// days). The key cooldown only lives in memory and is invisible in the
+		// console, so an uncapped value can silently bench a healthy provider for
+		// the rest of the day. Cap it like the provider-level circuit breaker.
+		if cooldown > 10*time.Minute {
+			cooldown = 10 * time.Minute
 		}
 		a.providerKeyCooldowns[z.ProviderKeyID] = time.Now().Add(cooldown)
 		a.routeMu.Unlock()
