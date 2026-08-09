@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.29
+
+- Stop trusting the first `X-Forwarded-For` entry for the request ledger's client address. Proxies append the peer they saw, so the leading entry is whatever the caller chose to send; the gateway now scans the chain from the right and takes the first public address, skipping both trusted local hops and injected entries.
+- Apply the API key rate limit as a sliding window. The fixed window let a caller spend the whole limit just before a boundary and again just after, delivering twice the configured rate.
+- Scan comma-separated permission and capability lists in place. Model permission checks run on every request and now allocate nothing.
+
 ## V1.28
 
 - Maintain each API key's spend as a running total on the key instead of summing its whole request ledger. Admission previously ran that aggregate on every request from a budgeted key, over rows that only accumulate for a year.

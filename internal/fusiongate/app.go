@@ -86,6 +86,9 @@ type App struct {
 type rateWindow struct {
 	At    time.Time
 	Count int
+	// Prev holds the previous window's count so the API key limiter can weight it
+	// into a sliding estimate. The login limiter only uses At and Count.
+	Prev int
 }
 type Provider struct {
 	ID                      int64   `json:"id"`

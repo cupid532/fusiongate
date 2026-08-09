@@ -201,20 +201,42 @@ func (a *App) markAPIKeyUsed(id int64) {
 	_, _ = a.db.Exec(`UPDATE api_keys SET last_used_at=? WHERE id=?`, current.UTC().Format(time.RFC3339Nano), id)
 }
 
+// allowRate applies the key's per-minute limit as a sliding window. A fixed window
+// would let a caller send the full limit at the end of one window and again at the
+// start of the next, delivering twice the configured rate across the boundary.
 func (a *App) allowRate(k authKey) bool {
 	if k.RPMLimit <= 0 {
 		return true
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	x := a.rate[k.Hash]
-	t := time.Now()
-	if x == nil || t.Sub(x.At) >= time.Minute {
-		a.rate[k.Hash] = &rateWindow{At: t, Count: 1}
+	current := time.Now()
+	window := a.rate[k.Hash]
+	if window == nil {
+		a.rate[k.Hash] = &rateWindow{At: current, Count: 1}
 		return true
 	}
-	x.Count++
-	return x.Count <= k.RPMLimit
+	elapsed := current.Sub(window.At)
+	switch {
+	case elapsed >= 2*time.Minute:
+		window.At, window.Count, window.Prev = current, 0, 0
+		elapsed = 0
+	case elapsed >= time.Minute:
+		window.At = window.At.Add(time.Minute)
+		window.Prev, window.Count = window.Count, 0
+		elapsed = current.Sub(window.At)
+	}
+	// Weight the previous window by the part of it that still falls inside the
+	// trailing minute.
+	overlap := 1 - elapsed.Seconds()/60
+	if overlap < 0 {
+		overlap = 0
+	}
+	if float64(window.Prev)*overlap+float64(window.Count)+1 > float64(k.RPMLimit) {
+		return false
+	}
+	window.Count++
+	return true
 }
 
 func allowed(k authKey, model string) bool {
@@ -224,11 +246,27 @@ func allowed(k authKey, model string) bool {
 	return k.AllowAll || matches(k.AllowModels, model)
 }
 
+// nextListItem splits a comma-separated list in place. Permission checks run on every
+// request, so they should not allocate a slice just to look at each entry.
+func nextListItem(list string) (item, rest string) {
+	if index := strings.IndexByte(list, ','); index >= 0 {
+		return strings.TrimSpace(list[:index]), list[index+1:]
+	}
+	return strings.TrimSpace(list), ""
+}
+
 func matches(patterns, model string) bool {
-	for _, p := range strings.Split(patterns, ",") {
-		p = strings.TrimSpace(p)
-		if p == model || (strings.HasSuffix(p, "*") && strings.HasPrefix(model, strings.TrimSuffix(p, "*"))) {
-			return p != ""
+	for patterns != "" {
+		var p string
+		p, patterns = nextListItem(patterns)
+		if p == "" {
+			continue
+		}
+		if p == model {
+			return true
+		}
+		if strings.HasSuffix(p, "*") && strings.HasPrefix(model, p[:len(p)-1]) {
+			return true
 		}
 	}
 	return false
@@ -238,8 +276,10 @@ func matchesCapability(capabilities, required string) bool {
 	if required == "" {
 		return true
 	}
-	for _, capability := range strings.Split(capabilities, ",") {
-		if strings.EqualFold(strings.TrimSpace(capability), required) {
+	for capabilities != "" {
+		var capability string
+		capability, capabilities = nextListItem(capabilities)
+		if strings.EqualFold(capability, required) {
 			return true
 		}
 	}
@@ -465,17 +505,32 @@ ORDER BY r.sort_order,r.id`, model)
 
 func requestID() string { return "req_" + hex.EncodeToString(randomBytes(12)) }
 
+// requestClientIP resolves the caller's address, and is only willing to believe
+// X-Forwarded-For when the immediate peer is a local reverse proxy.
+//
+// Each proxy appends the peer it saw, so the chain reads oldest-first and its tail is
+// written by infrastructure we control. Scanning from the right and taking the first
+// public address therefore skips both the trusted local hops at the end and any
+// addresses a client injected at the front: to poison the result a caller would have
+// to make the proxy observe it at a public address other than its own.
 func requestClientIP(r *http.Request) string {
 	host := r.RemoteAddr
 	if parsed, err := netip.ParseAddrPort(host); err == nil {
 		host = parsed.Addr().String()
 	}
-	if addr, err := netip.ParseAddr(host); err == nil && (addr.IsLoopback() || addr.IsPrivate()) {
-		if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
-			if parsed, err := netip.ParseAddr(forwarded); err == nil {
-				host = parsed.String()
-			}
+	addr, err := netip.ParseAddr(host)
+	if err != nil || !(addr.IsLoopback() || addr.IsPrivate()) {
+		return host
+	}
+	forwarded := r.Header.Get("X-Forwarded-For")
+	for end := len(forwarded); end > 0; {
+		start := strings.LastIndexByte(forwarded[:end], ',') + 1
+		candidate := strings.TrimSpace(forwarded[start:end])
+		if parsed, parseErr := netip.ParseAddr(candidate); parseErr == nil &&
+			!parsed.IsLoopback() && !parsed.IsPrivate() && !parsed.IsLinkLocalUnicast() {
+			return parsed.String()
 		}
+		end = start - 1
 	}
 	return host
 }
