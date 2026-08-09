@@ -35,11 +35,15 @@ CREATE TABLE request_ledger (
  protocol TEXT NOT NULL, stream INTEGER NOT NULL DEFAULT 0, success INTEGER NOT NULL DEFAULT 0, status_code INTEGER NOT NULL DEFAULT 0,
  error_type TEXT NOT NULL DEFAULT '', latency_ms INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0,
  output_tokens INTEGER NOT NULL DEFAULT 0, cached_tokens INTEGER NOT NULL DEFAULT 0, reasoning_tokens INTEGER NOT NULL DEFAULT 0,
- cost_micros INTEGER NOT NULL DEFAULT 0, cost_type TEXT NOT NULL DEFAULT 'unknown');`)
+ cost_micros INTEGER NOT NULL DEFAULT 0, cost_type TEXT NOT NULL DEFAULT 'unknown');
+CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NULL DEFAULT 'priority_failover', updated_at TEXT NOT NULL);`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	stamp := "2026-07-22T00:00:00Z"
+	if _, err := db.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES('legacy-model','priority_failover',?)`, stamp); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO providers(id,name,type,base_url,credential,created_at,updated_at) VALUES(1,'legacy','openai_compatible','https://example.test',X'00',?,?)`, stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
@@ -94,11 +98,8 @@ CREATE TABLE request_ledger (
 		t.Fatalf("legacy provider health check default=%d err=%v", healthCheckEnabled, err)
 	}
 	var policyTable string
-	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='route_policies'`).Scan(&policyTable); err != nil {
-		t.Fatalf("route_policies table was not migrated: %v", err)
-	}
-	if policyTable != "route_policies" {
-		t.Fatalf("route_policies table = %q", policyTable)
+	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='route_policies'`).Scan(&policyTable); err != sql.ErrNoRows {
+		t.Fatalf("route_policies table should be dropped by migration: table=%q err=%v", policyTable, err)
 	}
 	var authIndex string
 	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_provider_auth_fingerprint'`).Scan(&authIndex); err != nil {

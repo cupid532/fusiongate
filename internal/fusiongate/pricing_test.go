@@ -202,7 +202,7 @@ func TestDeletePublicModelRemovesAllMappings(t *testing.T) {
 	}
 	defer a.Close()
 	stamp := now()
-	for i, name := range []string{"one", "two"} {
+	for _, name := range []string{"one", "two"} {
 		res, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,created_at,updated_at) VALUES(?,?,?,?,?,?)`, name, "openai", "https://api.example", []byte{1}, stamp, stamp)
 		if err != nil {
 			t.Fatal(err)
@@ -211,21 +211,17 @@ func TestDeletePublicModelRemovesAllMappings(t *testing.T) {
 		if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,created_at,updated_at) VALUES(?,?,?,?,?)`, "shared", id, "model-"+name, stamp, stamp); err != nil {
 			t.Fatal(err)
 		}
-		if i == 0 {
-			_, _ = a.db.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?)`, "shared", StrategyPriorityFailover, stamp)
-		}
 	}
 	recorder := httptest.NewRecorder()
 	a.modelByName(recorder, httptest.NewRequest(http.MethodDelete, "/api/admin/models/shared", nil), adminCtx{})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	var routes, policies, exclusions int
+	var routes, exclusions int
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM model_routes WHERE public_name='shared'`).Scan(&routes)
-	_ = a.db.QueryRow(`SELECT COUNT(*) FROM route_policies WHERE public_name='shared'`).Scan(&policies)
 	_ = a.db.QueryRow(`SELECT COUNT(*) FROM model_route_exclusions WHERE public_name IN ('model-one','model-two') AND public_name=upstream_model`).Scan(&exclusions)
-	if routes != 0 || policies != 0 || exclusions != 2 {
-		t.Fatalf("routes=%d policies=%d exclusions=%d, expected complete deletion with two exclusions", routes, policies, exclusions)
+	if routes != 0 || exclusions != 2 {
+		t.Fatalf("routes=%d exclusions=%d, expected complete deletion with two exclusions", routes, exclusions)
 	}
 }
 

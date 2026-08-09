@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.35
+
+- Drop the `route_policies` table and every write that maintained it. Per-model strategies predate the global routing strategy, and no request path has ever read the table, so model create/rename/delete and discovery were paying transaction cost to feed a dead schema. Migration removes the table from existing databases, and the legacy-schema test now asserts the drop.
+
 ## V1.34
 
 - Cap the in-memory provider-key cooldown at 10 minutes. A 401/403/429 used to adopt the upstream `Retry-After` without any bound, so a single 429 answering `Retry-After: 86400` silently benched a healthy channel for a day; the cooldown lives only in process memory, so the console kept showing the provider as healthy while every request skipped it.

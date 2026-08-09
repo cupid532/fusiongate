@@ -26,9 +26,6 @@ func TestRouteMappingMergesPublicFailoverGroup(t *testing.T) {
 	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,created_at,updated_at) VALUES(?,?,?,?,?,?)`, "grok-4.2", providerTwo, "grok-4.2-fast", "chat,stream", stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.db.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?)`, "grok-4.2-mult-xhigh", StrategyPriorityFailover, stamp); err != nil {
-		t.Fatal(err)
-	}
 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPatch, "/api/admin/routes/"+intString(routeID), strings.NewReader(`{"public_name":"GROK-4.2"}`))
@@ -62,13 +59,6 @@ func TestRouteMappingMergesPublicFailoverGroup(t *testing.T) {
 	}
 	if _, err := a.resolve(context.Background(), "grok-4.2-mult-xhigh", "chat"); err == nil {
 		t.Fatal("old public model still resolves after mapping")
-	}
-	var oldPolicies int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM route_policies WHERE public_name='grok-4.2-mult-xhigh'`).Scan(&oldPolicies); err != nil {
-		t.Fatal(err)
-	}
-	if oldPolicies != 0 {
-		t.Fatalf("old policy remains: %d", oldPolicies)
 	}
 }
 

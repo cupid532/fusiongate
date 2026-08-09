@@ -566,8 +566,6 @@ func (a *App) migrate(ctx context.Context) error {
     priority INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
     input_price_micros INTEGER NOT NULL DEFAULT 0, output_price_micros INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(public_name,provider_id,upstream_model));
-  CREATE TABLE IF NOT EXISTS route_policies (
-    public_name TEXT PRIMARY KEY, strategy TEXT NOT NULL DEFAULT 'priority_failover', updated_at TEXT NOT NULL);
 	CREATE TABLE IF NOT EXISTS model_route_exclusions (
 	  provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
 	  public_name TEXT NOT NULL, upstream_model TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
@@ -756,6 +754,11 @@ CREATE INDEX IF NOT EXISTS idx_groups_order ON provider_groups(sort_order, id);`
 
 	_, err = a.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_providers_group ON providers(group_id, group_sort_order, id);`)
 	if err != nil {
+		return err
+	}
+	// route_policies predates the global routing strategy: every write kept a
+	// per-model row that no request path ever read. Drop the leftover table.
+	if _, err := a.db.ExecContext(ctx, `DROP TABLE IF EXISTS route_policies`); err != nil {
 		return err
 	}
 	if err := a.migrateProviderAPIKeys(ctx); err != nil {

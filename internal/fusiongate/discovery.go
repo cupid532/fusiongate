@@ -1010,7 +1010,6 @@ func (a *App) applySelectedModels(parent context.Context, providerID int64, sele
 	stamp := now()
 	currentModels := map[string]bool{}
 	removedModels := map[string]bool{}
-	oldPublicNames := map[string]bool{}
 	for _, route := range current {
 		modelID := routeDiscoveryModelID(route, available)
 		if selectedSet[modelID] {
@@ -1028,12 +1027,6 @@ func (a *App) applySelectedModels(parent context.Context, providerID int64, sele
 			return modelSelectionResult{}, err
 		}
 		removedModels[modelID] = true
-		oldPublicNames[normalizedModelID(route.PublicName)] = true
-	}
-	for publicName := range oldPublicNames {
-		if _, err := tx.ExecContext(parent, `DELETE FROM route_policies WHERE LOWER(public_name)=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE LOWER(public_name)=?)`, publicName, publicName); err != nil {
-			return modelSelectionResult{}, err
-		}
 	}
 
 	for _, id := range normalized {
@@ -1056,9 +1049,6 @@ SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHER
 		}
 		added, _ := res.RowsAffected()
 		result.Added += int(added)
-		if _, err := tx.ExecContext(parent, `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, id, StrategyPriorityFailover, stamp); err != nil {
-			return modelSelectionResult{}, err
-		}
 	}
 	result.Removed = len(removedModels)
 	if err := tx.Commit(); err != nil {
@@ -1144,17 +1134,10 @@ WHERE NOT EXISTS (SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(publi
 			return modelImportResult{}, err
 		}
 		rows, _ := res.RowsAffected()
-		policyNames := append([]string(nil), model.PublicNames...)
 		if rows == 1 {
 			result.Added++
-			policyNames = appendUniqueModelName(policyNames, model.ID)
 		} else {
 			result.Existing++
-		}
-		for _, publicName := range policyNames {
-			if _, err := tx.ExecContext(parent, `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, publicName, StrategyPriorityFailover, stamp); err != nil {
-				return modelImportResult{}, err
-			}
 		}
 	}
 	if err := tx.Commit(); err != nil {

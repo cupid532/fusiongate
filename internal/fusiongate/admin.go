@@ -1169,10 +1169,6 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		if _, err := tx.Exec(`INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, in.PublicName, StrategyPriorityFailover, now()); err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
 		if err := tx.Commit(); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1270,14 +1266,6 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusNotFound, "not_found", "route not found")
 			return
 		}
-		if _, err := tx.ExecContext(r.Context(), `INSERT INTO route_policies(public_name,strategy,updated_at) VALUES(?,?,?) ON CONFLICT(public_name) DO NOTHING`, newPublicName, StrategyPriorityFailover, now()); err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
-		if _, err := tx.ExecContext(r.Context(), `DELETE FROM route_policies WHERE public_name=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, oldPublicName, oldPublicName); err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
 		upstreamKey := strings.ToLower(strings.TrimSpace(upstreamModel))
 		if _, err := tx.ExecContext(r.Context(), `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?)`, providerID, upstreamKey, upstreamKey); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -1323,7 +1311,6 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		_, _ = tx.Exec(`DELETE FROM route_policies WHERE public_name=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, publicName, publicName)
 		if err := tx.Commit(); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return

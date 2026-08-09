@@ -876,9 +876,6 @@ SELECT provider_id,LOWER(upstream_model),LOWER(upstream_model),? FROM model_rout
 		}
 		deletedModels++
 		deletedRoutes += deleted
-		if _, err := tx.ExecContext(ctx, `DELETE FROM route_policies WHERE public_name=?`, name); err != nil {
-			return 0, 0, err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, 0, err
