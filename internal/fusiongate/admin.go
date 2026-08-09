@@ -762,221 +762,232 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 	switch r.Method {
 	case http.MethodDelete:
-		res, err := a.db.Exec(`DELETE FROM providers WHERE id=?`, id)
-		if err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			fail(w, http.StatusNotFound, "not_found", "provider not found")
-			return
-		}
-		a.resetProviderRuntime(id)
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		a.providerDelete(w, id)
 	case http.MethodPatch:
-		var in struct {
-			Name                    *string  `json:"name"`
-			Type                    *string  `json:"type"`
-			BaseURL                 *string  `json:"baseURL"`
-			Credential              *string  `json:"credential"`
-			Enabled                 *bool    `json:"enabled"`
-			Archived                *bool    `json:"archived"`
-			Priority                *int     `json:"priority"`
-			Weight                  *int     `json:"weight"`
-			Notes                   *string  `json:"notes"`
-			PassthroughMode         *string  `json:"passthrough_mode"`
-			ClientPolicy            *string  `json:"client_policy"`
-			MaxConcurrency          *int     `json:"max_concurrency"`
-			RequestTimeoutMS        *int     `json:"request_timeout_ms"`
-			FailureThreshold        *int     `json:"failure_threshold"`
-			CooldownSeconds         *int     `json:"cooldown_seconds"`
-			ResetHealth             bool     `json:"reset_health"`
-			HealthCheckEnabled      *bool    `json:"health_check_enabled"`
-			GroupID                 *int64   `json:"group_id"`
-			ClearGroup              bool     `json:"clear_group"`
-			GroupSortOrder          *int     `json:"group_sort_order"`
-			ManualBalanceUSD        *float64 `json:"manual_balance_usd"`
-			ClearManualBalance      bool     `json:"clear_manual_balance"`
-			BalanceMultiplierOpenAI *float64 `json:"balance_multiplier_openai"`
-			BalanceMultiplierClaude *float64 `json:"balance_multiplier_claude"`
-			BalanceMultiplierGrok   *float64 `json:"balance_multiplier_grok"`
-			BalanceMultiplierGemini *float64 `json:"balance_multiplier_gemini"`
-			BalanceMultiplierOther  *float64 `json:"balance_multiplier_other"`
-			IPPoolNodeID            *int64   `json:"ip_pool_node_id"`
-			DefaultModel            *string  `json:"default_model"`
-		}
-		if err := readJSON(r, &in); err != nil {
-			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
-			return
-		}
-		var currentEnabled int
-		var authKind, currentName, currentType, currentBaseURL string
-		if err := a.db.QueryRow(`SELECT enabled,auth_kind,name,type,base_url FROM providers WHERE id=?`, id).Scan(&currentEnabled, &authKind, &currentName, &currentType, &currentBaseURL); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				fail(w, http.StatusNotFound, "not_found", "provider not found")
-				return
-			}
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
-		connectionEditRequested := in.Name != nil || in.Type != nil || in.BaseURL != nil || in.Credential != nil
-		if connectionEditRequested && authKind != "api_key" {
-			fail(w, http.StatusBadRequest, "invalid_request", "OAuth providers must be managed from credential files")
-			return
-		}
-		if in.Name != nil {
-			value := strings.TrimSpace(*in.Name)
-			if value == "" {
-				fail(w, http.StatusBadRequest, "invalid_request", "provider name is required")
-				return
-			}
-			in.Name = &value
-		}
-		if in.Type != nil {
-			value := strings.TrimSpace(*in.Type)
-			if !validEditableProviderType(value) {
-				fail(w, http.StatusBadRequest, "invalid_request", "unsupported editable provider type")
-				return
-			}
-			in.Type = &value
-		}
-		if in.BaseURL != nil {
-			value := strings.TrimRight(strings.TrimSpace(*in.BaseURL), "/")
-			if err := validateUpstream(value, a.cfg); err != nil {
-				fail(w, http.StatusBadRequest, "unsafe_upstream", err.Error())
-				return
-			}
-			in.BaseURL = &value
-		}
-		var encryptedCredential any
-		credentialUpdated := false
-		if in.Credential != nil {
-			value := strings.TrimSpace(*in.Credential)
-			if value == "" {
-				in.Credential = nil
-			} else {
-				encrypted, err := a.encrypt(value)
-				if err != nil {
-					fail(w, http.StatusInternalServerError, "credential_error", err.Error())
-					return
-				}
-				encryptedCredential = encrypted
-				credentialUpdated = true
-			}
-		}
-		if in.DefaultModel != nil {
-			value := normalizeProviderKeyModel(*in.DefaultModel)
-			in.DefaultModel = &value
-		}
-		connectionChanged := credentialUpdated || (in.Name != nil && *in.Name != currentName) || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL) || in.IPPoolNodeID != nil || in.DefaultModel != nil
-		discoveryConnectionChanged := credentialUpdated || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL)
-		if in.IPPoolNodeID != nil && *in.IPPoolNodeID > 0 {
-			if err := a.validateIPPoolNode(*in.IPPoolNodeID); err != nil {
-				fail(w, http.StatusBadRequest, "invalid_ip_pool_node", err.Error())
-				return
-			}
-		}
-		if (in.Priority != nil && *in.Priority < 0) || (in.Weight != nil && *in.Weight < 1) || (in.MaxConcurrency != nil && *in.MaxConcurrency < 0) || (in.RequestTimeoutMS != nil && *in.RequestTimeoutMS < 1000) || (in.FailureThreshold != nil && *in.FailureThreshold < 1) || (in.CooldownSeconds != nil && *in.CooldownSeconds < 1) || (in.PassthroughMode != nil && !validPassthroughMode(*in.PassthroughMode)) || (in.ClientPolicy != nil && !validClientPolicy(*in.ClientPolicy)) {
-			fail(w, http.StatusBadRequest, "invalid_request", "invalid provider scheduling or forwarding configuration")
-			return
-		}
-		if in.ManualBalanceUSD != nil && (*in.ManualBalanceUSD < 0 || *in.ManualBalanceUSD > 1_000_000) {
-			fail(w, http.StatusBadRequest, "invalid_request", "manual balance must be between 0 and 1000000 USD")
-			return
-		}
-		for _, multiplier := range []*float64{in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther} {
-			if multiplier != nil && (*multiplier < 0 || *multiplier > 1000) {
-				fail(w, http.StatusBadRequest, "invalid_request", "balance multipliers must be between 0 and 1000")
-				return
-			}
-		}
-		// Re-enabling a channel or changing its connection details starts a
-		// fresh health window so an old circuit state does not hide a new key.
-		resetOnEnable := in.Enabled != nil && *in.Enabled && !strBool(currentEnabled)
-		var groupIDArg any
-		if in.ClearGroup {
-			groupIDArg = sql.NullInt64{}
-		} else if in.GroupID != nil {
-			groupIDArg = *in.GroupID
-		}
-		groupAssignRequested := in.ClearGroup || in.GroupID != nil
-		var ipPoolNodeArg any
-		if in.IPPoolNodeID != nil && *in.IPPoolNodeID > 0 {
-			ipPoolNodeArg = *in.IPPoolNodeID
-		}
-		if credentialUpdated {
-			var firstKeyID int64
-			if err := a.db.QueryRow(`SELECT id FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1`, id).Scan(&firstKeyID); err == nil {
-				raw := strings.TrimSpace(*in.Credential)
-				if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=?,fingerprint=?,key_hint=?,status='untested',last_error='',updated_at=? WHERE id=?`, encryptedCredential, a.providerKeyFingerprint(raw), providerKeyHint(raw), now(), firstKeyID); err != nil {
-					if strings.Contains(strings.ToLower(err.Error()), "unique") {
-						fail(w, http.StatusConflict, "duplicate_api_key", "this API key already exists in the provider")
-					} else {
-						fail(w, http.StatusInternalServerError, "database_error", err.Error())
-					}
-					return
-				}
-			}
-		}
-		res, err := a.db.Exec(`UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, now(), id)
-		if err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
-		n, _ := res.RowsAffected()
-		if n == 0 {
-			fail(w, http.StatusNotFound, "not_found", "provider not found")
-			return
-		}
-		if in.HealthCheckEnabled != nil {
-			status, message := "pending", ""
-			if !*in.HealthCheckEnabled {
-				status, message = "disabled", "health checks disabled for this provider"
-			}
-			if _, err := a.db.Exec(`UPDATE providers SET health_check_status=?,health_check_error=?,updated_at=? WHERE id=?`, status, message, now(), id); err != nil {
-				fail(w, http.StatusInternalServerError, "database_error", err.Error())
-				return
-			}
-		}
-		if discoveryConnectionChanged {
-			if _, err := a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, id); err != nil {
-				fail(w, http.StatusInternalServerError, "database_error", err.Error())
-				return
-			}
-			if _, err := a.db.Exec(`UPDATE provider_api_keys SET status='untested',last_error='',updated_at=? WHERE provider_id=?`, now(), id); err != nil {
-				fail(w, http.StatusInternalServerError, "database_error", err.Error())
-				return
-			}
-		}
-		if in.ManualBalanceUSD != nil || in.ClearManualBalance || in.BalanceMultiplierOpenAI != nil || in.BalanceMultiplierClaude != nil || in.BalanceMultiplierGrok != nil || in.BalanceMultiplierGemini != nil || in.BalanceMultiplierOther != nil {
-			var balance any
-			var baseline any
-			if in.ManualBalanceUSD != nil {
-				balance = int64(*in.ManualBalanceUSD*1_000_000 + 0.5)
-				baseline = now()
-			} else if in.ClearManualBalance {
-				balance = nil
-				baseline = nil
-			}
-			_, err = a.db.Exec(`UPDATE providers SET manual_balance_micros=CASE WHEN ? THEN ? ELSE manual_balance_micros END,balance_baseline_at=CASE WHEN ? THEN ? ELSE balance_baseline_at END,balance_multiplier_openai=COALESCE(?,balance_multiplier_openai),balance_multiplier_claude=COALESCE(?,balance_multiplier_claude),balance_multiplier_grok=COALESCE(?,balance_multiplier_grok),balance_multiplier_gemini=COALESCE(?,balance_multiplier_gemini),balance_multiplier_other=COALESCE(?,balance_multiplier_other),updated_at=? WHERE id=?`, in.ManualBalanceUSD != nil || in.ClearManualBalance, balance, in.ManualBalanceUSD != nil || in.ClearManualBalance, baseline, in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther, now(), id)
-			if err != nil {
-				fail(w, http.StatusInternalServerError, "database_error", err.Error())
-				return
-			}
-		}
-		if in.ResetHealth || resetOnEnable || connectionChanged {
-			_, err = a.db.Exec(`UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)
-			if err != nil {
-				fail(w, http.StatusInternalServerError, "database_error", err.Error())
-				return
-			}
-			a.resetProviderRuntime(id)
-		}
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true, "credential_updated": credentialUpdated})
+		a.providerUpdate(w, r, id)
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")
 	}
+}
+
+// providerDelete removes one provider and forgets the scheduler state that referenced it.
+func (a *App) providerDelete(w http.ResponseWriter, id int64) {
+	res, err := a.db.Exec(`DELETE FROM providers WHERE id=?`, id)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		fail(w, http.StatusNotFound, "not_found", "provider not found")
+		return
+	}
+	a.resetProviderRuntime(id)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// providerUpdate applies a partial provider edit. Every field is optional, so a key
+// rotation or a scheduling tweak never has to resend the whole provider.
+func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
+	var in struct {
+		Name                    *string  `json:"name"`
+		Type                    *string  `json:"type"`
+		BaseURL                 *string  `json:"baseURL"`
+		Credential              *string  `json:"credential"`
+		Enabled                 *bool    `json:"enabled"`
+		Archived                *bool    `json:"archived"`
+		Priority                *int     `json:"priority"`
+		Weight                  *int     `json:"weight"`
+		Notes                   *string  `json:"notes"`
+		PassthroughMode         *string  `json:"passthrough_mode"`
+		ClientPolicy            *string  `json:"client_policy"`
+		MaxConcurrency          *int     `json:"max_concurrency"`
+		RequestTimeoutMS        *int     `json:"request_timeout_ms"`
+		FailureThreshold        *int     `json:"failure_threshold"`
+		CooldownSeconds         *int     `json:"cooldown_seconds"`
+		ResetHealth             bool     `json:"reset_health"`
+		HealthCheckEnabled      *bool    `json:"health_check_enabled"`
+		GroupID                 *int64   `json:"group_id"`
+		ClearGroup              bool     `json:"clear_group"`
+		GroupSortOrder          *int     `json:"group_sort_order"`
+		ManualBalanceUSD        *float64 `json:"manual_balance_usd"`
+		ClearManualBalance      bool     `json:"clear_manual_balance"`
+		BalanceMultiplierOpenAI *float64 `json:"balance_multiplier_openai"`
+		BalanceMultiplierClaude *float64 `json:"balance_multiplier_claude"`
+		BalanceMultiplierGrok   *float64 `json:"balance_multiplier_grok"`
+		BalanceMultiplierGemini *float64 `json:"balance_multiplier_gemini"`
+		BalanceMultiplierOther  *float64 `json:"balance_multiplier_other"`
+		IPPoolNodeID            *int64   `json:"ip_pool_node_id"`
+		DefaultModel            *string  `json:"default_model"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	var currentEnabled int
+	var authKind, currentName, currentType, currentBaseURL string
+	if err := a.db.QueryRow(`SELECT enabled,auth_kind,name,type,base_url FROM providers WHERE id=?`, id).Scan(&currentEnabled, &authKind, &currentName, &currentType, &currentBaseURL); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			fail(w, http.StatusNotFound, "not_found", "provider not found")
+			return
+		}
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	connectionEditRequested := in.Name != nil || in.Type != nil || in.BaseURL != nil || in.Credential != nil
+	if connectionEditRequested && authKind != "api_key" {
+		fail(w, http.StatusBadRequest, "invalid_request", "OAuth providers must be managed from credential files")
+		return
+	}
+	if in.Name != nil {
+		value := strings.TrimSpace(*in.Name)
+		if value == "" {
+			fail(w, http.StatusBadRequest, "invalid_request", "provider name is required")
+			return
+		}
+		in.Name = &value
+	}
+	if in.Type != nil {
+		value := strings.TrimSpace(*in.Type)
+		if !validEditableProviderType(value) {
+			fail(w, http.StatusBadRequest, "invalid_request", "unsupported editable provider type")
+			return
+		}
+		in.Type = &value
+	}
+	if in.BaseURL != nil {
+		value := strings.TrimRight(strings.TrimSpace(*in.BaseURL), "/")
+		if err := validateUpstream(value, a.cfg); err != nil {
+			fail(w, http.StatusBadRequest, "unsafe_upstream", err.Error())
+			return
+		}
+		in.BaseURL = &value
+	}
+	var encryptedCredential any
+	credentialUpdated := false
+	if in.Credential != nil {
+		value := strings.TrimSpace(*in.Credential)
+		if value == "" {
+			in.Credential = nil
+		} else {
+			encrypted, err := a.encrypt(value)
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "credential_error", err.Error())
+				return
+			}
+			encryptedCredential = encrypted
+			credentialUpdated = true
+		}
+	}
+	if in.DefaultModel != nil {
+		value := normalizeProviderKeyModel(*in.DefaultModel)
+		in.DefaultModel = &value
+	}
+	connectionChanged := credentialUpdated || (in.Name != nil && *in.Name != currentName) || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL) || in.IPPoolNodeID != nil || in.DefaultModel != nil
+	discoveryConnectionChanged := credentialUpdated || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL)
+	if in.IPPoolNodeID != nil && *in.IPPoolNodeID > 0 {
+		if err := a.validateIPPoolNode(*in.IPPoolNodeID); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_ip_pool_node", err.Error())
+			return
+		}
+	}
+	if (in.Priority != nil && *in.Priority < 0) || (in.Weight != nil && *in.Weight < 1) || (in.MaxConcurrency != nil && *in.MaxConcurrency < 0) || (in.RequestTimeoutMS != nil && *in.RequestTimeoutMS < 1000) || (in.FailureThreshold != nil && *in.FailureThreshold < 1) || (in.CooldownSeconds != nil && *in.CooldownSeconds < 1) || (in.PassthroughMode != nil && !validPassthroughMode(*in.PassthroughMode)) || (in.ClientPolicy != nil && !validClientPolicy(*in.ClientPolicy)) {
+		fail(w, http.StatusBadRequest, "invalid_request", "invalid provider scheduling or forwarding configuration")
+		return
+	}
+	if in.ManualBalanceUSD != nil && (*in.ManualBalanceUSD < 0 || *in.ManualBalanceUSD > 1_000_000) {
+		fail(w, http.StatusBadRequest, "invalid_request", "manual balance must be between 0 and 1000000 USD")
+		return
+	}
+	for _, multiplier := range []*float64{in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther} {
+		if multiplier != nil && (*multiplier < 0 || *multiplier > 1000) {
+			fail(w, http.StatusBadRequest, "invalid_request", "balance multipliers must be between 0 and 1000")
+			return
+		}
+	}
+	// Re-enabling a channel or changing its connection details starts a
+	// fresh health window so an old circuit state does not hide a new key.
+	resetOnEnable := in.Enabled != nil && *in.Enabled && !strBool(currentEnabled)
+	var groupIDArg any
+	if in.ClearGroup {
+		groupIDArg = sql.NullInt64{}
+	} else if in.GroupID != nil {
+		groupIDArg = *in.GroupID
+	}
+	groupAssignRequested := in.ClearGroup || in.GroupID != nil
+	var ipPoolNodeArg any
+	if in.IPPoolNodeID != nil && *in.IPPoolNodeID > 0 {
+		ipPoolNodeArg = *in.IPPoolNodeID
+	}
+	if credentialUpdated {
+		var firstKeyID int64
+		if err := a.db.QueryRow(`SELECT id FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1`, id).Scan(&firstKeyID); err == nil {
+			raw := strings.TrimSpace(*in.Credential)
+			if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=?,fingerprint=?,key_hint=?,status='untested',last_error='',updated_at=? WHERE id=?`, encryptedCredential, a.providerKeyFingerprint(raw), providerKeyHint(raw), now(), firstKeyID); err != nil {
+				if strings.Contains(strings.ToLower(err.Error()), "unique") {
+					fail(w, http.StatusConflict, "duplicate_api_key", "this API key already exists in the provider")
+				} else {
+					fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				}
+				return
+			}
+		}
+	}
+	res, err := a.db.Exec(`UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, now(), id)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		fail(w, http.StatusNotFound, "not_found", "provider not found")
+		return
+	}
+	if in.HealthCheckEnabled != nil {
+		status, message := "pending", ""
+		if !*in.HealthCheckEnabled {
+			status, message = "disabled", "health checks disabled for this provider"
+		}
+		if _, err := a.db.Exec(`UPDATE providers SET health_check_status=?,health_check_error=?,updated_at=? WHERE id=?`, status, message, now(), id); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+	}
+	if discoveryConnectionChanged {
+		if _, err := a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, id); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if _, err := a.db.Exec(`UPDATE provider_api_keys SET status='untested',last_error='',updated_at=? WHERE provider_id=?`, now(), id); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+	}
+	if in.ManualBalanceUSD != nil || in.ClearManualBalance || in.BalanceMultiplierOpenAI != nil || in.BalanceMultiplierClaude != nil || in.BalanceMultiplierGrok != nil || in.BalanceMultiplierGemini != nil || in.BalanceMultiplierOther != nil {
+		var balance any
+		var baseline any
+		if in.ManualBalanceUSD != nil {
+			balance = int64(*in.ManualBalanceUSD*1_000_000 + 0.5)
+			baseline = now()
+		} else if in.ClearManualBalance {
+			balance = nil
+			baseline = nil
+		}
+		_, err = a.db.Exec(`UPDATE providers SET manual_balance_micros=CASE WHEN ? THEN ? ELSE manual_balance_micros END,balance_baseline_at=CASE WHEN ? THEN ? ELSE balance_baseline_at END,balance_multiplier_openai=COALESCE(?,balance_multiplier_openai),balance_multiplier_claude=COALESCE(?,balance_multiplier_claude),balance_multiplier_grok=COALESCE(?,balance_multiplier_grok),balance_multiplier_gemini=COALESCE(?,balance_multiplier_gemini),balance_multiplier_other=COALESCE(?,balance_multiplier_other),updated_at=? WHERE id=?`, in.ManualBalanceUSD != nil || in.ClearManualBalance, balance, in.ManualBalanceUSD != nil || in.ClearManualBalance, baseline, in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther, now(), id)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+	}
+	if in.ResetHealth || resetOnEnable || connectionChanged {
+		_, err = a.db.Exec(`UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		a.resetProviderRuntime(id)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true, "credential_updated": credentialUpdated})
 }
 
 func maybeBool(v *bool) any {

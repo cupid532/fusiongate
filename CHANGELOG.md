@@ -1,5 +1,13 @@
 # Changelog
 
+## V1.3
+
+- Extract the upstream call that the Anthropic and Gemini chat conversions shared. The two functions were 73% identical, including a 28-line verbatim block covering transport errors, retryable statuses, client-error forwarding and body decoding, so a fix to one could silently miss the other.
+- Render both conversions through one `writeChatCompletion` helper instead of duplicating the OpenAI response shape and cost settlement.
+- Split `providerByID` into a path router plus `providerUpdate` and `providerDelete`. It was a single 305-line function that both dispatched sub-resources and implemented provider CRUD.
+
+`proxyUpstream` is deliberately left whole. It is long but strictly linear, and its failover invariants — above all that a second upstream response is never spliced in after the first byte reaches the client — are easier to verify in one place than spread across helpers that pass a context, a cancel function and a start timer between them.
+
 ## V1.29
 
 - Stop trusting the first `X-Forwarded-For` entry for the request ledger's client address. Proxies append the peer they saw, so the leading entry is whatever the caller chose to send; the gateway now scans the chain from the right and takes the first public address, skipping both trusted local hops and injected entries.

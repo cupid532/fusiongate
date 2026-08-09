@@ -933,6 +933,54 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 	})
 }
 
+// sendNonStreamingUpstream performs one non-streaming upstream request and applies the
+// failover and error-forwarding rules shared by the protocol conversions: transport
+// errors and retryable statuses stay retryable, a client error is forwarded verbatim
+// and marked handled, and a body that will not decode is retryable. On success it
+// returns the decoded upstream payload.
+func (a *App) sendNonStreamingUpstream(w http.ResponseWriter, r *http.Request, z resolvedRoute, req *http.Request, onFirstByte func()) (map[string]any, attemptResult, bool) {
+	resp, err := a.doProviderRequest(req, z.Provider.IPPoolNodeID)
+	if err != nil {
+		if downstreamCanceled(r) {
+			return nil, attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}, false
+		}
+		return nil, attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, err), Err: err}, false
+	}
+	defer resp.Body.Close()
+	resp.Body = observeFirstByte(resp.Body, onFirstByte)
+	if retryableStatus(resp.StatusCode) {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
+		return nil, attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}, false
+	}
+	if resp.StatusCode >= 400 {
+		copyUpstreamResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, copyErr := io.Copy(w, resp.Body)
+		reason := retryReason(resp.StatusCode, nil)
+		if copyErr != nil {
+			reason = "downstream_write_error"
+		}
+		return nil, attemptResult{Status: resp.StatusCode, Handled: true, Reason: reason, Err: copyErr}, false
+	}
+	var source map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&source); err != nil {
+		return nil, attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: err}, false
+	}
+	return source, attemptResult{}, true
+}
+
+// writeChatCompletion renders a converted upstream answer as an OpenAI chat completion
+// and settles its estimated cost.
+func writeChatCompletion(w http.ResponseWriter, z resolvedRoute, rid, content string, finishReason any, usage Usage) attemptResult {
+	cost(z, &usage)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": "chatcmpl-" + rid, "object": "chat.completion", "created": time.Now().Unix(), "model": z.Route.PublicName,
+		"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": finishReason}},
+		"usage":   map[string]any{"prompt_tokens": usage.Input, "completion_tokens": usage.Output, "total_tokens": usage.Input + usage.Output},
+	})
+	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
+}
+
 func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[string]any, z resolvedRoute, rid string, onFirstByte func()) attemptResult {
 	messages, _ := body["messages"].([]any)
 	outMessages := []map[string]any{}
@@ -975,32 +1023,9 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 	if err := setProviderAuth(req, z); err != nil {
 		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
-	resp, err := a.doProviderRequest(req, z.Provider.IPPoolNodeID)
-	if err != nil {
-		if downstreamCanceled(r) {
-			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}
-		}
-		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, err), Err: err}
-	}
-	defer resp.Body.Close()
-	resp.Body = observeFirstByte(resp.Body, onFirstByte)
-	if retryableStatus(resp.StatusCode) {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
-		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
-	}
-	if resp.StatusCode >= 400 {
-		copyUpstreamResponseHeaders(w.Header(), resp.Header)
-		w.WriteHeader(resp.StatusCode)
-		_, copyErr := io.Copy(w, resp.Body)
-		reason := retryReason(resp.StatusCode, nil)
-		if copyErr != nil {
-			reason = "downstream_write_error"
-		}
-		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: reason, Err: copyErr}
-	}
-	var source map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&source); err != nil {
-		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: err}
+	source, result, ok := a.sendNonStreamingUpstream(w, r, z, req, onFirstByte)
+	if !ok {
+		return result
 	}
 	content := ""
 	if contents, ok := source["content"].([]any); ok {
@@ -1012,10 +1037,7 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 			}
 		}
 	}
-	usage := parseAnthropicUsage(source)
-	cost(z, &usage)
-	writeJSON(w, http.StatusOK, map[string]any{"id": "chatcmpl-" + rid, "object": "chat.completion", "created": time.Now().Unix(), "model": z.Route.PublicName, "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": source["stop_reason"]}}, "usage": map[string]any{"prompt_tokens": usage.Input, "completion_tokens": usage.Output, "total_tokens": usage.Input + usage.Output}})
-	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
+	return writeChatCompletion(w, z, rid, content, source["stop_reason"], parseAnthropicUsage(source))
 }
 
 func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string]any, z resolvedRoute, rid string, onFirstByte func()) attemptResult {
@@ -1039,32 +1061,9 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	copyUpstreamRequestHeaders(req.Header, r.Header)
 	req.Header.Set("content-type", "application/json")
-	resp, err := a.doProviderRequest(req, z.Provider.IPPoolNodeID)
-	if err != nil {
-		if downstreamCanceled(r) {
-			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}
-		}
-		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, err), Err: err}
-	}
-	defer resp.Body.Close()
-	resp.Body = observeFirstByte(resp.Body, onFirstByte)
-	if retryableStatus(resp.StatusCode) {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
-		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
-	}
-	if resp.StatusCode >= 400 {
-		copyUpstreamResponseHeaders(w.Header(), resp.Header)
-		w.WriteHeader(resp.StatusCode)
-		_, copyErr := io.Copy(w, resp.Body)
-		reason := retryReason(resp.StatusCode, nil)
-		if copyErr != nil {
-			reason = "downstream_write_error"
-		}
-		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: reason, Err: copyErr}
-	}
-	var source map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&source); err != nil {
-		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: err}
+	source, result, ok := a.sendNonStreamingUpstream(w, r, z, req, onFirstByte)
+	if !ok {
+		return result
 	}
 	content := ""
 	if candidates, ok := source["candidates"].([]any); ok && len(candidates) > 0 {
@@ -1075,10 +1074,7 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 			content += textContent(part)
 		}
 	}
-	usage := parseGeminiUsage(source)
-	cost(z, &usage)
-	writeJSON(w, http.StatusOK, map[string]any{"id": "chatcmpl-" + rid, "object": "chat.completion", "created": time.Now().Unix(), "model": z.Route.PublicName, "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": usage.Input, "completion_tokens": usage.Output, "total_tokens": usage.Input + usage.Output}})
-	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
+	return writeChatCompletion(w, z, rid, content, "stop", parseGeminiUsage(source))
 }
 
 func (a *App) responses(w http.ResponseWriter, r *http.Request, key authKey) {
