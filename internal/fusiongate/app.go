@@ -899,6 +899,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/livez", a.live)
 	mux.HandleFunc("/readyz", a.readyHealth)
 	mux.HandleFunc("/healthz", a.readyHealth)
+	mux.HandleFunc("/ui/", a.uiAsset)
 	mux.HandleFunc("/", a.ui)
 	mux.HandleFunc("/api/admin/login", a.login)
 	mux.HandleFunc("/api/admin/logout", a.logout)

@@ -1,5 +1,13 @@
 # Changelog
 
+## V1.31
+
+- Split the admin console into three embedded assets: `ui/index.html` (shell), `ui/app.css` (styles and theme tokens) and `ui/app.js` (behaviour). It was one 285 KB file holding a 78 KB stylesheet and a 165 KB script with 259 functions in a single `<script>` block.
+- Serve the stylesheet and script from `/ui/app.css` and `/ui/app.js`, requested with the running version so a matching response can be cached indefinitely and an upgrade invalidates it. Only those two names are served, so the path is not a file server.
+- Keep the pre-paint theme script inline in the shell, so switching themes still cannot flash the wrong one.
+
+The binary is still a single self-contained executable: the assets are embedded as a directory rather than a single file.
+
 ## V1.3
 
 - Extract the upstream call that the Anthropic and Gemini chat conversions shared. The two functions were 73% identical, including a 28-line verbatim block covering transport errors, retryable statuses, client-error forwarding and body decoding, so a fix to one could silently miss the other.

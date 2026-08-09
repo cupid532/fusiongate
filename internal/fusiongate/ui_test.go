@@ -6,8 +6,15 @@ import (
 	"testing"
 )
 
+// adminSource is the whole console as one string. The shell, stylesheet and script are
+// separate embedded assets, so assertions that do not care which file a snippet lives
+// in search all three.
+func adminSource() string {
+	return string(adminHTML) + string(adminCSS) + string(adminJS)
+}
+
 func TestAdminUIRendersVersion(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	if !strings.Contains(html, "FusionGate "+Version) {
 		t.Fatalf("admin UI does not contain version %q", Version)
 	}
@@ -17,7 +24,7 @@ func TestAdminUIRendersVersion(t *testing.T) {
 }
 
 func TestModelSelectionToolbarReceivesVisibleModels(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	if !strings.Contains(html, "updateModelSelectionToolbar(visible.map(([name])=>name))") {
 		t.Fatal("renderRoutes must pass the visible public model names to the selection toolbar")
 	}
@@ -27,7 +34,7 @@ func TestModelSelectionToolbarReceivesVisibleModels(t *testing.T) {
 }
 
 func TestModelPickerUsesExistingModelsAsEditableSelection(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	checks := []string{
 		"const active=models.filter(x=>x.existing).map(x=>x.id)",
 		"selected:new Set(active),initial:new Set(active)",
@@ -48,7 +55,7 @@ func TestModelPickerUsesExistingModelsAsEditableSelection(t *testing.T) {
 }
 
 func TestRoutesPageUsesProviderDiscoveryAndUnifiedMapping(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, obsolete := range []string{"model-add-card", "routeForm", "discoverModelsFromRoutePage", "modelDiscoveryProvider"} {
 		if strings.Contains(html, obsolete) {
 			t.Fatalf("routes page still contains obsolete model creation UI %q", obsolete)
@@ -71,7 +78,7 @@ func TestRoutesPageUsesProviderDiscoveryAndUnifiedMapping(t *testing.T) {
 }
 
 func TestIPPoolUIKeepsDirectAsDefaultAndNeverRendersShareLink(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		`data-page="ippool"`,
 		`id="page-ippool"`,
@@ -92,7 +99,7 @@ func TestIPPoolUIKeepsDirectAsDefaultAndNeverRendersShareLink(t *testing.T) {
 }
 
 func TestModelPickerShowsExistingUnifiedAliases(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		"(model.public_names||[])",
 		"映射为 ",
@@ -105,7 +112,7 @@ func TestModelPickerShowsExistingUnifiedAliases(t *testing.T) {
 }
 
 func TestProviderStatusFiltersFollowSchedulingStates(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		`id="providerStatusFilters"`,
 		`aria-label="渠道状态筛选"`,
@@ -131,7 +138,7 @@ func TestProviderStatusFiltersFollowSchedulingStates(t *testing.T) {
 }
 
 func TestLightThemeUsesHighContrastCoolPalette(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		`/* Crisp visual system: strong hierarchy, compact controls, explicit status. */`,
 		`html[data-theme="light"]{--bg:#f3f6fa;--sidebar:#0d1726;--surface:#fff;--surface-2:#f6f8fb;--surface-3:#e9eef5`,
@@ -163,11 +170,11 @@ func TestLightThemeUsesHighContrastCoolPalette(t *testing.T) {
 // per-component theme rules allowed are the ones that toggle behaviour rather than
 // colour.
 func TestThemeIsDrivenBySingleTokenLayer(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	if !strings.Contains(html, "THEME TOKENS - the single place to restyle the whole console.") {
 		t.Fatal("the theme token layer is no longer documented")
 	}
-	style := html[strings.Index(html, "<style>"):strings.Index(html, "</style>")]
+	style := string(adminCSS)
 	allowed := map[string]bool{
 		`html[data-theme="light"] body`: true,
 		`html[data-theme="dark"] body`:  true,
@@ -191,7 +198,7 @@ func TestThemeIsDrivenBySingleTokenLayer(t *testing.T) {
 }
 
 func TestRequestLedgerHasServerSideDetailedTimeFilters(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		`id="requestFrom" type="datetime-local" step="1"`,
 		`id="requestTo" type="datetime-local" step="1"`,
@@ -210,7 +217,7 @@ func TestRequestLedgerHasServerSideDetailedTimeFilters(t *testing.T) {
 }
 
 func TestCompletedHealthCheckPanelStaysHidden(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		`terminal=['completed','cancelled'].includes(job?.status)`,
 		`$(id)!==panel||terminal`,
@@ -223,7 +230,7 @@ func TestCompletedHealthCheckPanelStaysHidden(t *testing.T) {
 }
 
 func TestRoutesPageSupportsPersistentChannelReordering(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		`draggable="true"`,
 		"function routeDrop(event,targetId)",
@@ -241,7 +248,7 @@ func TestRoutesPageSupportsPersistentChannelReordering(t *testing.T) {
 }
 
 func TestProvidersPageSupportsPersistentGlobalReordering(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		"function providerDragStart(event,id)",
 		"function providerDrop(event,targetId)",
@@ -264,7 +271,7 @@ func TestProvidersPageSupportsPersistentGlobalReordering(t *testing.T) {
 }
 
 func TestProvidersPageSupportsArchiveFilter(t *testing.T) {
-	html := string(adminHTML)
+	html := adminSource()
 	for _, required := range []string{
 		"['all','enabled','disabled','circuit','archived']",
 		"['all','全部渠道'],['enabled','参与调度'],['disabled','已停用'],['circuit','熔断冷却'],['archived','归档']",
