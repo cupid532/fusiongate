@@ -419,10 +419,10 @@ func TestAPIKeyBudgetAndExpiryStopAuthentication(t *testing.T) {
 	if _, ok := a.authenticateKey(req); !ok {
 		t.Fatal("key should authenticate before its budget is spent")
 	}
-	stamp := now()
-	if _, err := a.db.Exec(`INSERT INTO request_ledger(request_id,created_at,completed_at,api_key_id,public_model,upstream_model,protocol,cost_micros,cost_type) VALUES(?,?,?,?,?,?,?,?,?)`, "spent", stamp, stamp, keyID, "m", "m", "test", 1_000_000, "estimated"); err != nil {
-		t.Fatal(err)
-	}
+	// Spend is settled onto the key's running total, which is what admission reads.
+	a.endLedger(a.startLedger(authKey{ID: keyID}, resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "m"}, Provider: Provider{ID: 1}}, "test", false, "127.0.0.1", "req_spent", 1, ""),
+		keyID, true, 200, "", time.Now(), Usage{CostMicros: 1_000_000, CostType: "estimated", Reported: true})
+	a.flushLedgerWrites()
 	if _, ok := a.authenticateKey(req); ok {
 		t.Fatal("budget-exhausted key authenticated")
 	}

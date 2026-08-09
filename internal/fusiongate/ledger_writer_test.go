@@ -24,7 +24,7 @@ func TestLedgerWritesAreQueuedOffTheRequestPath(t *testing.T) {
 	}
 	attemptID := a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_queued", 1, "")
 	a.recordFirstByte(attemptID, time.Now().Add(-30*time.Millisecond))
-	a.endLedger(attemptID, true, 200, "", time.Now().Add(-50*time.Millisecond), Usage{Input: 7, Output: 11, Reported: true})
+	a.endLedger(attemptID, key.ID, true, 200, "", time.Now().Add(-50*time.Millisecond), Usage{Input: 7, Output: 11, Reported: true})
 
 	if queued := a.metrics.ledgerQueued.Load() - before; queued != 3 {
 		t.Fatalf("queued ledger writes = %d, want 3 (a synchronous write would not be counted)", queued)
@@ -63,7 +63,7 @@ func TestLedgerWriterPreservesOrderPerAttempt(t *testing.T) {
 	route := resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "u"}, Provider: Provider{ID: 1}}
 	for i := range 50 {
 		id := a.startLedger(key, route, "openai_chat", false, "127.0.0.1", "req_order", i+1, "")
-		a.endLedger(id, true, 200, "", time.Now(), Usage{Input: int64(i), Reported: true})
+		a.endLedger(id, key.ID, true, 200, "", time.Now(), Usage{Input: int64(i), Reported: true})
 	}
 	a.flushLedgerWrites()
 	var rows, completedRows int

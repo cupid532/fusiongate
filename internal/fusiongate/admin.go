@@ -1421,7 +1421,7 @@ func normalizeModelList(value string) string {
 func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.reader().Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL,budget_micros,COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0) FROM api_keys ORDER BY id DESC`)
+		rows, err := a.reader().Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL,budget_micros,spent_micros FROM api_keys ORDER BY id DESC`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1594,7 +1594,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var input, output, cached, reasoning, costMicros int64
 	a.reader().QueryRow(`SELECT COUNT(*) FROM providers WHERE enabled=1`).Scan(&p)
 	a.reader().QueryRow(`SELECT COUNT(DISTINCT r.public_name) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1`).Scan(&m)
-	a.reader().QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0 AND (expires_at IS NULL OR expires_at='' OR expires_at>?) AND (budget_micros=0 OR COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0)<budget_micros)`, now()).Scan(&k)
+	a.reader().QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0 AND (expires_at IS NULL OR expires_at='' OR expires_at>?) AND (budget_micros=0 OR spent_micros<budget_micros)`, now()).Scan(&k)
 	a.reader().QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&total)
 	a.reader().QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(reasoning_tokens),0),COALESCE(SUM(cost_micros),0) FROM request_ledger WHERE completed_at IS NOT NULL`).Scan(&input, &output, &cached, &reasoning, &costMicros)
 	a.reader().QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE created_at>=?`, time.Now().UTC().Truncate(24*time.Hour).Format(time.RFC3339)).Scan(&today)

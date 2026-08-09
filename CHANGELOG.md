@@ -1,5 +1,12 @@
 # Changelog
 
+## V1.28
+
+- Maintain each API key's spend as a running total on the key instead of summing its whole request ledger. Admission previously ran that aggregate on every request from a budgeted key, over rows that only accumulate for a year.
+- Stop refunding budget when retention prunes old rows. Because spend was derived from the ledger, a budget silently regained capacity once its rows passed the one-year cutoff; the running total no longer does.
+- Seed the running total from existing ledger history on upgrade, so budgets carry their spend across the migration.
+- Read the same total for the console's key list and active-key count rather than recomputing two correlated subqueries.
+
 ## V1.27
 
 ### Request-path database work

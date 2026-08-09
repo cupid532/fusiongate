@@ -602,6 +602,10 @@ func (a *App) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	hadKeySpend, err := hasColumn(ctx, a.db, "api_keys", "spent_micros")
+	if err != nil {
+		return err
+	}
 	for _, column := range []struct{ table, name, ddl string }{
 		{"providers", "passthrough_mode", "TEXT NOT NULL DEFAULT 'normalized'"},
 		{"providers", "client_policy", "TEXT NOT NULL DEFAULT 'any'"},
@@ -650,6 +654,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "client_ip", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "encrypted_key", "BLOB"},
 		{"api_keys", "budget_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "spent_micros", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "cached_price_micros", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "long_context_threshold", "INTEGER NOT NULL DEFAULT 0"},
@@ -675,6 +680,13 @@ func (a *App) migrate(ctx context.Context) error {
 	}
 	if !hadProviderSortOrder {
 		if _, err := a.db.ExecContext(ctx, `UPDATE providers SET sort_order=id`); err != nil {
+			return err
+		}
+	}
+	if !hadKeySpend {
+		// Seed the running total once from the ledger. From here on it is maintained
+		// incrementally, so retention pruning can no longer hand budget back.
+		if _, err := a.db.ExecContext(ctx, `UPDATE api_keys SET spent_micros=COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0)`); err != nil {
 			return err
 		}
 	}

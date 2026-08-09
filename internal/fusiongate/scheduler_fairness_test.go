@@ -216,10 +216,11 @@ func TestBudgetedKeyStopsOnlyWhenBudgetIsSpent(t *testing.T) {
 		t.Fatal(err)
 	}
 	keyID, _ := res.LastInsertId()
-	if _, err := a.db.Exec(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,created_at,completed_at,api_key_id,public_model,upstream_model,protocol,cost_micros) VALUES('r1','g1',1,?,?,?,'m','m','openai_chat',?)`,
-		now(), now(), keyID, 1_000_000); err != nil {
-		t.Fatal(err)
-	}
+	// Settle the whole budget through the real accounting path.
+	route := resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "m"}, Provider: Provider{ID: 1}}
+	a.endLedger(a.startLedger(authKey{ID: keyID}, route, "openai_chat", false, "127.0.0.1", "req_spent", 1, ""),
+		keyID, true, 200, "", time.Now(), Usage{CostMicros: 1_000_000, CostType: "estimated", Reported: true})
+	a.flushLedgerWrites()
 	handler := a.api(func(w http.ResponseWriter, r *http.Request, _ authKey) {
 		t.Fatal("an exhausted budget must not reach the gateway handler")
 	})
