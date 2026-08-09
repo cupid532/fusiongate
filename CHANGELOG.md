@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.32
+
+- Always render the version with two decimal digits. The old rule dropped insignificant trailing hundredths, so a major bump from `V1.29` displayed as `V1.3` and read like a downgrade in the console sidebar. `V1.30` now stays `V1.30`.
+- Normalise the two historical headings that used one decimal digit (`V1.1` and `V1.3`) so the changelog reads monotonically.
+- Add `TestVersionUsesTwoDecimalDigits`, an integer-hundredths round-trip check, and a changelog test that fails when a heading skips the format or when the current version has no entry.
+
 ## V1.31
 
 - Split the admin console into three embedded assets: `ui/index.html` (shell), `ui/app.css` (styles and theme tokens) and `ui/app.js` (behaviour). It was one 285 KB file holding a 78 KB stylesheet and a 165 KB script with 259 functions in a single `<script>` block.
@@ -8,7 +14,7 @@
 
 The binary is still a single self-contained executable: the assets are embedded as a directory rather than a single file.
 
-## V1.3
+## V1.30
 
 - Extract the upstream call that the Anthropic and Gemini chat conversions shared. The two functions were 73% identical, including a 28-line verbatim block covering transport errors, retryable statuses, client-error forwarding and body decoding, so a fix to one could silently miss the other.
 - Render both conversions through one `writeChatCompletion` helper instead of duplicating the OpenAI response shape and cost settlement.
@@ -103,7 +109,7 @@ Verified with `gofmt`, `go vet ./...`, `staticcheck ./...`, `go test ./...`, and
 - Roll back optimistic ordering changes and reload server state when persistence fails.
 - Render ordinary providers from their persisted global `sort_order` so the UI matches the saved order without a refresh.
 
-## V1.1
+## V1.10
 
 - Bound upstream failover attempts to prevent retry storms and expose the attempt count on bounded failures.
 - Add a global request admission limit with `Retry-After` overload responses.
