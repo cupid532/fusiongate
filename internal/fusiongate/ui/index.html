@@ -66,7 +66,7 @@
 </section>
 
 <div id="app" class="app-shell hidden">
-  <aside id="sidebar" class="sidebar">
+  <aside id="sidebar" class="sidebar" aria-label="主导航">
     <div class="sidebar-brand"><span class="brand-mark"><svg class="icon icon-lg"><use href="#i-route"/></svg></span><div><strong>FusionGate</strong><small>CONTROL PLANE</small></div></div>
     <div class="nav-label">Workspace</div>
     <nav class="nav-list">
@@ -83,8 +83,9 @@
       <div class="system-status"><div class="system-row"><i class="status-dot"></i><span class="status-label">网关运行正常<small>FusionGate {{FUSIONGATE_VERSION}}</small></span></div><div class="sidebar-actions"><button class="icon-btn" title="刷新" aria-label="刷新数据" onclick="load()"><svg class="icon"><use href="#i-refresh"/></svg></button><button class="icon-btn" title="切换明暗主题" aria-label="切换明暗主题" onclick="toggleTheme()"><svg class="icon theme-icon-sun"><use href="#i-sun"/></svg><svg class="icon theme-icon-moon"><use href="#i-moon"/></svg></button><button id="logout" class="icon-btn" title="退出登录" aria-label="退出登录"><svg class="icon"><use href="#i-logout"/></svg></button></div></div>
     </div>
   </aside>
+  <button id="sidebarBackdrop" class="sidebar-backdrop" type="button" aria-label="关闭导航菜单" aria-hidden="true" tabindex="-1"></button>
   <main class="main">
-    <header class="topbar"><div style="display:flex;align-items:center;gap:12px"><button class="icon-btn mobile-menu" id="mobileMenu" aria-label="打开导航菜单"><svg class="icon"><use href="#i-menu"/></svg></button><div class="breadcrumbs"><span>FusionGate</span><span>/</span><span id="crumb" class="current">概览</span></div></div><div class="top-actions"><span class="env-badge runtime-status" title="FusionGate 正常运行，数据存储于本机 SQLite"><i class="status-dot"></i><span class="runtime-status-copy"><strong>运行正常</strong><small>LOCAL · SQLITE</small></span></span><button class="icon-btn" onclick="load()" title="刷新数据" aria-label="刷新数据"><svg class="icon"><use href="#i-refresh"/></svg></button></div></header>
+    <header class="topbar"><div style="display:flex;align-items:center;gap:12px"><button class="icon-btn mobile-menu" id="mobileMenu" type="button" aria-label="打开导航菜单" aria-controls="sidebar" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><div class="breadcrumbs"><span>FusionGate</span><span>/</span><span id="crumb" class="current">概览</span></div></div><div class="top-actions"><span class="env-badge runtime-status" title="FusionGate 正常运行，数据存储于本机 SQLite"><i class="status-dot"></i><span class="runtime-status-copy"><strong>运行正常</strong><small>LOCAL · SQLITE</small></span></span><button class="icon-btn" onclick="load()" title="刷新数据" aria-label="刷新数据"><svg class="icon"><use href="#i-refresh"/></svg></button></div></header>
     <div class="content">
       <section class="page active" id="page-dashboard">
         <div class="page-head"><div><h1>网关概览</h1><p>统一观察 Provider、模型路由、访问密钥和请求状态。</p></div><div class="page-actions"><button class="btn btn-secondary" onclick="copyText(location.origin+'/v1')"><svg class="icon"><use href="#i-copy"/></svg>复制 Base URL</button><button class="btn btn-primary" onclick="showPage('providers');openProviderCreate()"><svg class="icon"><use href="#i-plus"/></svg>添加渠道</button></div></div>

@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.37
+
+- Rework the admin console for phone-sized screens with 44 px touch targets, calmer two-column action layouts, single-column fallbacks on narrow devices, horizontally scrollable filters and tables, and viewport-safe full-width dialogs.
+- Make the mobile navigation deterministic and accessible: add a full-screen dismiss backdrop, lock background scrolling, synchronize `aria-expanded` and labels, and close it after navigation, on Escape, or when the viewport changes.
+- Finish the phone touch-target pass by turning provider balance links and provider/model ordering arrows into visible 44 px controls, while hiding drag handles that mobile browsers cannot operate reliably.
+
 ## V1.36
 
 - Accept Claude Code interactive-session context entries that arrive as `messages[].role = "system"` and preserve their order when bridging Anthropic Messages requests to OpenAI-compatible Chat Completions. Claude Code 2.1.226 adds this dynamic context only in the interactive REPL, so print-mode probes succeeded while real terminal sessions failed locally with HTTP 400 before FusionGate contacted an upstream provider.

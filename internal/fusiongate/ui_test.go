@@ -23,6 +23,38 @@ func TestAdminUIRendersVersion(t *testing.T) {
 	}
 }
 
+func TestMobileNavigationIsDismissibleAndAccessible(t *testing.T) {
+	html := adminSource()
+	for _, required := range []string{
+		`id="sidebarBackdrop"`,
+		`aria-controls="sidebar"`,
+		`aria-expanded="false"`,
+		`function setMobileMenu(open)`,
+		`document.body.classList.toggle('mobile-nav-open',shouldOpen)`,
+		`$('#sidebarBackdrop').onclick=()=>closeMobileMenu(true)`,
+		`if($('#sidebar').classList.contains('open'))`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("mobile navigation is missing %q", required)
+		}
+	}
+}
+
+func TestMobileControlsKeepTouchSizedTargets(t *testing.T) {
+	css := string(adminCSS)
+	for _, required := range []string{
+		`.provider-balance button{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px`,
+		`.provider-order-controls{grid-template-columns:repeat(2,44px);gap:4px;opacity:1}`,
+		`.provider-move{width:44px;height:44px}`,
+		`.route-position{left:14px;top:12px;transform:none;grid-template-columns:repeat(2,44px);gap:8px}`,
+		`.route-move{width:44px;height:44px}`,
+	} {
+		if !strings.Contains(css, required) {
+			t.Fatalf("mobile controls are missing touch-sized rule %q", required)
+		}
+	}
+}
+
 func TestModelSelectionToolbarReceivesVisibleModels(t *testing.T) {
 	html := adminSource()
 	if !strings.Contains(html, "updateModelSelectionToolbar(visible.map(([name])=>name))") {
