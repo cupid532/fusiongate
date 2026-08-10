@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.42
+
+- Upgrade quality detection from a generic gateway-key probe to a one-time targeted run. Administrators now choose the declared GPT-5.6 model, the exact upstream channel, and the exact channel credential/API-key card before starting a low, medium, or high detector preset.
+- Keep real upstream credentials inside FusionGate. The detector receives only a short-lived synthetic token that is accepted from loopback, restricted to one model, route, provider and provider-key card, capped by time and request count, and removed when the run finishes or is stopped.
+- Attach the locked FusionGate target to live status and final reports so results remain attributable to the selected channel, key hint and upstream model, without placing the underlying secret in the browser, detector report or sidecar storage.
+
 ## V1.41
 
 - Remove deprecated OpenAI Chat sampling fields `temperature` and `top_p` when an OpenAI-compatible channel targets a Claude 5 family model. Sub2API accepts the same request for Claude Sonnet 4.6 but returns HTTP 400 for Sonnet 5 with either field, so compatible clients can now use Sonnet 5 without changing their request defaults.

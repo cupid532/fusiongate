@@ -277,6 +277,16 @@ func reserveRouteLocked(z resolvedRoute, state *providerRuntime) resolvedRoute {
 	return z
 }
 
+func (a *App) acquireQualityDetectorRoute(route resolvedRoute) (resolvedRoute, routeAvailability, bool) {
+	a.routeMu.Lock()
+	defer a.routeMu.Unlock()
+	state := a.stateForLocked(route.Provider)
+	if route.Provider.MaxConcurrency > 0 && state.Inflight >= route.Provider.MaxConcurrency {
+		return resolvedRoute{}, routeAvailability{Reason: "provider_saturated"}, false
+	}
+	return reserveRouteLocked(route, state), routeAvailability{}, true
+}
+
 // acquireRoute selects one route from a request-local plan while excluding routes
 // already attempted by this request and providers that are saturated or circuit-open.
 func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strategy RoutingStrategy) (resolvedRoute, routeAvailability, bool) {

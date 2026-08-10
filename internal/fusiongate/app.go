@@ -41,49 +41,54 @@ type Config struct {
 const DefaultStreamStartTimeout = 30 * time.Second
 
 type App struct {
-	db                    *sql.DB
-	readDB                *sql.DB
-	cfg                   Config
-	aead                  cipher.AEAD
-	client                *http.Client
-	qualityDetectorClient *qualityDetectorClient
-	log                   *slog.Logger
-	mu                    sync.Mutex
-	rate                  map[string]*rateWindow
-	routeMu               sync.Mutex
-	providerStates        map[int64]*providerRuntime
-	providerKeyCooldowns  map[int64]time.Time
-	roundRobinCursor      map[string]int
-	smoothWeights         map[string]map[int64]float64
-	ledgerMu              sync.RWMutex
-	ledgerWrites          chan ledgerWrite
-	ledgerWriterDone      chan struct{}
-	ledgerClosed          bool
-	authMu                sync.Mutex
-	refreshMu             sync.Mutex
-	oauthSessions         map[string]oauthSession
-	authImports           map[string]credentialImportSession
-	ledgerCleanupMu       sync.Mutex
-	lastLedgerCleanup     time.Time
-	healthChecker         *HealthChecker
-	healthCheckJobs       *healthCheckJobManager
-	healthProbeMu         sync.Mutex
-	healthProbes          map[int64]struct{}
-	balanceMu             sync.Mutex
-	balanceCache          map[int64]ProviderUpstreamBalance
-	loginMu               sync.Mutex
-	loginAttempts         map[string]*rateWindow
-	loginVerifiers        chan struct{}
-	sessionMu             sync.Mutex
-	adminSessions         map[string]adminSession
-	ready                 atomic.Bool
-	pricingSyncMu         sync.Mutex
-	pricingSyncTrigger    chan struct{}
-	ipPool                *ipPoolManager
-	requestSlots          chan struct{}
-	lastUsedMu            sync.Mutex
-	lastUsedAt            map[int64]time.Time
-	metrics               gatewayMetrics
+	db                       *sql.DB
+	readDB                   *sql.DB
+	cfg                      Config
+	aead                     cipher.AEAD
+	client                   *http.Client
+	qualityDetectorClient    *qualityDetectorClient
+	qualityDetectorControlMu sync.Mutex
+	qualityDetectorMu        sync.Mutex
+	qualityDetectorRoutes    map[string]*qualityDetectorRouteSession
+	qualityDetectorActive    string
+	qualityDetectorLast      qualityDetectorTarget
+	log                      *slog.Logger
+	mu                       sync.Mutex
+	rate                     map[string]*rateWindow
+	routeMu                  sync.Mutex
+	providerStates           map[int64]*providerRuntime
+	providerKeyCooldowns     map[int64]time.Time
+	roundRobinCursor         map[string]int
+	smoothWeights            map[string]map[int64]float64
+	ledgerMu                 sync.RWMutex
+	ledgerWrites             chan ledgerWrite
+	ledgerWriterDone         chan struct{}
+	ledgerClosed             bool
+	authMu                   sync.Mutex
+	refreshMu                sync.Mutex
+	oauthSessions            map[string]oauthSession
+	authImports              map[string]credentialImportSession
+	ledgerCleanupMu          sync.Mutex
+	lastLedgerCleanup        time.Time
+	healthChecker            *HealthChecker
+	healthCheckJobs          *healthCheckJobManager
+	healthProbeMu            sync.Mutex
+	healthProbes             map[int64]struct{}
+	balanceMu                sync.Mutex
+	balanceCache             map[int64]ProviderUpstreamBalance
+	loginMu                  sync.Mutex
+	loginAttempts            map[string]*rateWindow
+	loginVerifiers           chan struct{}
+	sessionMu                sync.Mutex
+	adminSessions            map[string]adminSession
+	ready                    atomic.Bool
+	pricingSyncMu            sync.Mutex
+	pricingSyncTrigger       chan struct{}
+	ipPool                   *ipPoolManager
+	requestSlots             chan struct{}
+	lastUsedMu               sync.Mutex
+	lastUsedAt               map[int64]time.Time
+	metrics                  gatewayMetrics
 }
 type rateWindow struct {
 	At    time.Time
@@ -284,8 +289,9 @@ func New(cfg Config) (*App, error) {
 		oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{},
 		healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{},
 		loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4),
-		adminSessions:      map[string]adminSession{},
-		pricingSyncTrigger: make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
+		adminSessions:         map[string]adminSession{},
+		qualityDetectorRoutes: map[string]*qualityDetectorRouteSession{},
+		pricingSyncTrigger:    make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
 		lastUsedAt: map[int64]time.Time{}, metrics: newGatewayMetrics(),
 	}
 	if strings.TrimSpace(cfg.QualityDetectorURL) != "" {
