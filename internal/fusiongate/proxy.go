@@ -461,6 +461,10 @@ func normalizedCompatibleChatBody(raw []byte) ([]byte, error) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return nil, err
 	}
+	if claude5Model(asString(body["model"])) {
+		delete(body, "temperature")
+		delete(body, "top_p")
+	}
 	for _, value := range anySlice(body["messages"]) {
 		message, _ := value.(map[string]any)
 		if message["role"] == "developer" {
@@ -468,6 +472,19 @@ func normalizedCompatibleChatBody(raw []byte) ([]byte, error) {
 		}
 	}
 	return json.Marshal(body)
+}
+
+func claude5Model(model string) bool {
+	parts := strings.Split(strings.ToLower(strings.TrimSpace(model)), "-")
+	if len(parts) < 3 || parts[0] != "claude" || parts[2] != "5" {
+		return false
+	}
+	switch parts[1] {
+	case "fable", "haiku", "opus", "sonnet":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizedCodexResponsesBody(raw []byte, upstreamModel string) ([]byte, error) {

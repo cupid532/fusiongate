@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.41
+
+- Remove deprecated OpenAI Chat sampling fields `temperature` and `top_p` when an OpenAI-compatible channel targets a Claude 5 family model. Sub2API accepts the same request for Claude Sonnet 4.6 but returns HTTP 400 for Sonnet 5 with either field, so compatible clients can now use Sonnet 5 without changing their request defaults.
+- Preserve those sampling fields for older Claude and non-Claude models, and leave native Anthropic Messages requests untouched.
+
 ## V1.40
 
 - Add an administrator-only “质量检测” module directly below the request ledger. It runs the frozen low, medium, or high presets from `chen-006/gpt56_api_detector` against the current FusionGate Sol, Terra, or Luna route, and shows request cost estimates, live progress, stop controls, verdict summaries, failed evidence, limitations, and the raw JSON report.

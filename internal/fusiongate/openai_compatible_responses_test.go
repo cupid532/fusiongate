@@ -43,6 +43,44 @@ func TestNormalizedCompatibleChatBodyConvertsDeveloperRole(t *testing.T) {
 	}
 }
 
+func TestNormalizedCompatibleChatBodyOmitsDeprecatedClaude5Sampling(t *testing.T) {
+	for _, model := range []string{"claude-fable-5", "claude-haiku-5", "claude-opus-5", "claude-sonnet-5", "claude-sonnet-5-20260801"} {
+		encoded, err := normalizedCompatibleChatBody([]byte(`{"model":"` + model + `","temperature":0,"top_p":0.9,"messages":[{"role":"user","content":"hello"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(encoded, &body); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := body["temperature"]; exists {
+			t.Fatalf("temperature was retained for %s: %s", model, encoded)
+		}
+		if _, exists := body["top_p"]; exists {
+			t.Fatalf("top_p was retained for %s: %s", model, encoded)
+		}
+	}
+}
+
+func TestNormalizedCompatibleChatBodyPreservesSamplingForOlderClaudeModels(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-4-6", "claude-3-5-sonnet", "gpt-5.6-sol"} {
+		encoded, err := normalizedCompatibleChatBody([]byte(`{"model":"` + model + `","temperature":0,"top_p":0.9,"messages":[{"role":"user","content":"hello"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(encoded, &body); err != nil {
+			t.Fatal(err)
+		}
+		if _, exists := body["temperature"]; !exists {
+			t.Fatalf("temperature was removed for %s: %s", model, encoded)
+		}
+		if _, exists := body["top_p"]; !exists {
+			t.Fatalf("top_p was removed for %s: %s", model, encoded)
+		}
+	}
+}
+
 func TestCompatibleResponsesBodyFromRequest(t *testing.T) {
 	raw := []byte(`{"model":"public","instructions":"Be concise","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"function_call_output","call_id":"call-1","output":"found"}],"tools":[{"type":"function","name":"lookup","description":"Lookup","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"lookup"},"max_output_tokens":64,"reasoning":{"effort":"low"},"stream":true}`)
 	encoded, stream, err := compatibleResponsesBodyFromRequest(raw, "upstream")
