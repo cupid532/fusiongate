@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.39
+
+- Stop repeatedly attempting model auto-discovery for expired externally managed OAuth credentials. FusionGate cannot rotate refresh tokens owned by CLIProxy, CPA, Sub2API, or equivalent source runtimes, so those cards now stay in the actionable “等待凭据更新” state until the source credential is imported again.
+- Persist `expired/auth_expired` when an externally managed access token is found expired, and enforce the same skip rule in both the admin console queue and the backend batch endpoint so stale browser state cannot trigger another warning.
+
 ## V1.38
 
 - Replace the usage-and-cost quick ranges with rolling 1-hour, 1-day, 7-day, and 30-day windows. Exact `from` and `to` timestamps now drive every shortcut instead of rounding the shorter ranges back to the start of a calendar day.

@@ -81,6 +81,21 @@ func TestUsageQuickRangesUseRollingHours(t *testing.T) {
 	}
 }
 
+func TestAuthModelAutoSyncSkipsExpiredExternalCredentials(t *testing.T) {
+	html := adminSource()
+	for _, required := range []string{
+		`function externalAuthSource(source)`,
+		`function authCredentialExpired(x)`,
+		`externalAuthSource(x.auth_source)||!x.has_refresh_token`,
+		`authPlatform(x)&&!authCredentialExpired(x)&&Number(x.model_count||0)===0`,
+		`external?['等待凭据更新','orange']`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("OAuth model auto-sync guard is missing %q", required)
+		}
+	}
+}
+
 func TestModelSelectionToolbarReceivesVisibleModels(t *testing.T) {
 	html := adminSource()
 	if !strings.Contains(html, "updateModelSelectionToolbar(visible.map(([name])=>name))") {

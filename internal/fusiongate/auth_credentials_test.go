@@ -519,6 +519,13 @@ func TestExternalOAuthCredentialIsNotRefreshed(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatalf("external refresh endpoint calls=%d, want 0", calls.Load())
 	}
+	var authStatus, providerStatus string
+	if err := a.db.QueryRow(`SELECT auth_status,status FROM providers WHERE id=?`, id).Scan(&authStatus, &providerStatus); err != nil {
+		t.Fatal(err)
+	}
+	if authStatus != "expired" || providerStatus != "auth_expired" {
+		t.Fatalf("statuses=%q/%q, want expired/auth_expired", authStatus, providerStatus)
+	}
 }
 
 func TestOAuthProviderHeadersAndCodexPath(t *testing.T) {
@@ -1126,6 +1133,41 @@ func TestAuthModelSyncKeepsCredentialWhenDiscoveryFails(t *testing.T) {
 	}
 	if providers != 1 || routes != 0 {
 		t.Fatalf("failed discovery changed stored auth provider: providers=%d routes=%d", providers, routes)
+	}
+}
+
+func TestAuthModelSyncSkipsExpiredExternallyManagedCredentials(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	expired := ProviderCredential{
+		Version: 1, Kind: "oauth", Platform: "codex", Source: "cliproxy",
+		AccessToken: "expired-external-access", RefreshToken: "external-refresh",
+		AccountID: "expired-external-account", ExpiresAt: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+	}
+	providerID, _, err := a.saveOAuthProvider(context.Background(), "expired external sync", 1, expired, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET enabled=1,auth_status='ready',status='unknown' WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{providerID}})
+	recorder := httptest.NewRecorder()
+	a.authModelSync(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/auth/models/sync", strings.NewReader(string(body))), adminCtx{})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("sync status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var summary authModelSyncSummary
+	if err := json.Unmarshal(recorder.Body.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Providers != 0 || summary.Failed != 0 || len(summary.Items) != 0 {
+		t.Fatalf("expired external credential was retried: %#v", summary)
 	}
 }
 

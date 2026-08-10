@@ -1030,7 +1030,16 @@ func (a *App) authModelSync(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 			requested[id] = true
 		}
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT p.id,p.name FROM providers p WHERE p.auth_kind='oauth' AND NOT EXISTS (SELECT 1 FROM model_routes r WHERE r.provider_id=p.id) ORDER BY p.id LIMIT 200`)
+	rows, err := a.db.QueryContext(r.Context(), `SELECT p.id,p.name FROM providers p
+		WHERE p.auth_kind='oauth'
+		  AND NOT EXISTS (SELECT 1 FROM model_routes r WHERE r.provider_id=p.id)
+		  AND NOT (
+			lower(COALESCE(p.auth_source,'')) IN ('cliproxy','cli-proxy','cli_proxy','cpa','sub2api')
+			AND p.auth_expires_at IS NOT NULL
+			AND p.auth_expires_at!=''
+			AND p.auth_expires_at<=?
+		  )
+		ORDER BY p.id LIMIT 200`, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be loaded")
 		return
@@ -1572,7 +1581,7 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 			owner = "external"
 		}
 		detail := fmt.Sprintf("externally managed OAuth credential (%s): access token expired; update the imported credential at its source (FusionGate will not rotate imported refresh tokens)", owner)
-		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
+		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET auth_status='expired',status='auth_expired',last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
 		return errors.New(detail)
 	}
 	a.refreshMu.Lock()
