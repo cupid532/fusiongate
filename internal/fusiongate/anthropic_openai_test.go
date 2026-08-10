@@ -66,6 +66,39 @@ func TestAnthropicMessagesRequestToOpenAIConvertsToolsAndResults(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessagesRequestToOpenAISupportsDynamicSystemMessages(t *testing.T) {
+	body := map[string]any{
+		"system": []any{map[string]any{"type": "text", "text": "Static instructions."}},
+		"messages": []any{
+			map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": "Hello"}}},
+			map[string]any{"role": "system", "content": "Dynamic session context."},
+		},
+		"tools": []any{
+			map[string]any{"name": "AskUserQuestion", "input_schema": map[string]any{"type": "object"}},
+		},
+	}
+	encoded, err := anthropicMessagesRequestToOpenAI(body, "upstream-model", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	messages := got["messages"].([]any)
+	if len(messages) != 3 {
+		t.Fatalf("messages=%#v", messages)
+	}
+	first := messages[0].(map[string]any)
+	dynamic := messages[2].(map[string]any)
+	if first["role"] != "system" || first["content"] != "Static instructions." {
+		t.Fatalf("static system=%#v", first)
+	}
+	if dynamic["role"] != "system" || dynamic["content"] != "Dynamic session context." {
+		t.Fatalf("dynamic system=%#v", dynamic)
+	}
+}
+
 func TestWriteOpenAIAsAnthropicConvertsToolUseAndUsage(t *testing.T) {
 	rec := httptest.NewRecorder()
 	result := writeOpenAIAsAnthropic(rec, strings.NewReader(`{

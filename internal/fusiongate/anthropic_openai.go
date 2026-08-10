@@ -92,6 +92,12 @@ func anthropicMessagesRequestToOpenAI(body map[string]any, upstreamModel string,
 		}
 		role, _ := message["role"].(string)
 		switch role {
+		case "system":
+			content := strings.TrimSpace(textContent(message["content"]))
+			if content == "" {
+				return nil, errors.New("system message content must contain text")
+			}
+			messages = append(messages, map[string]any{"role": "system", "content": content})
 		case "assistant":
 			converted, err := anthropicAssistantMessageToOpenAI(message["content"])
 			if err != nil {

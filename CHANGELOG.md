@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.36
+
+- Accept Claude Code interactive-session context entries that arrive as `messages[].role = "system"` and preserve their order when bridging Anthropic Messages requests to OpenAI-compatible Chat Completions. Claude Code 2.1.226 adds this dynamic context only in the interactive REPL, so print-mode probes succeeded while real terminal sessions failed locally with HTTP 400 before FusionGate contacted an upstream provider.
+- Add a regression test covering the static top-level Anthropic system prompt, a later dynamic system message, and interactive-only tool schemas in the same request.
+
 ## V1.35
 
 - Drop the `route_policies` table and every write that maintained it. Per-model strategies predate the global routing strategy, and no request path has ever read the table, so model create/rename/delete and discovery were paying transaction cost to feed a dead schema. Migration removes the table from existing databases, and the legacy-schema test now asserts the drop.
