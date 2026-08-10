@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.38
+
+- Replace the usage-and-cost quick ranges with rolling 1-hour, 1-day, 7-day, and 30-day windows. Exact `from` and `to` timestamps now drive every shortcut instead of rounding the shorter ranges back to the start of a calendar day.
+- Keep 30 days as the default, retain custom ranges, and label the daily UTC chart with the selected rolling window.
+
 ## V1.37
 
 - Rework the admin console for phone-sized screens with 44 px touch targets, calmer two-column action layouts, single-column fallbacks on narrow devices, horizontally scrollable filters and tables, and viewport-safe full-width dialogs.

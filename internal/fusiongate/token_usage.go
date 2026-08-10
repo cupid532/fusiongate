@@ -238,8 +238,8 @@ func (a *App) tokenUsage(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 	days, err := tokenUsageInt(r.URL.Query().Get("days"), 30, 1, 365)
-	if err != nil || (days != 7 && days != 30 && days != 90 && days != 365) {
-		fail(w, http.StatusBadRequest, "invalid_filter", "days must be one of 7, 30, 90, or 365")
+	if err != nil || (days != 1 && days != 7 && days != 30 && days != 90 && days != 365) {
+		fail(w, http.StatusBadRequest, "invalid_filter", "days must be one of 1, 7, 30, 90, or 365")
 		return
 	}
 	page, err := tokenUsageInt(r.URL.Query().Get("page"), 1, 1, 1_000_000)

@@ -55,6 +55,32 @@ func TestMobileControlsKeepTouchSizedTargets(t *testing.T) {
 	}
 }
 
+func TestUsageQuickRangesUseRollingHours(t *testing.T) {
+	html := adminSource()
+	for _, required := range []string{
+		`<option value="1">近 1 小时</option>`,
+		`<option value="24">近 1 天</option>`,
+		`<option value="168">近 7 天</option>`,
+		`<option value="720" selected>近 30 天</option>`,
+		`const hours=Math.max(1,Number(value)||720)`,
+		`from=new Date(to.getTime()-hours*3600000)`,
+		`days:String(range==='custom'?30:usageRangeDays(range))`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("usage quick ranges are missing %q", required)
+		}
+	}
+	for _, obsolete := range []string{
+		`<option value="90">近 90 天</option>`,
+		`<option value="365">近一年</option>`,
+		`from.setHours(0,0,0,0)`,
+	} {
+		if strings.Contains(html, obsolete) {
+			t.Fatalf("usage quick ranges still contain %q", obsolete)
+		}
+	}
+}
+
 func TestModelSelectionToolbarReceivesVisibleModels(t *testing.T) {
 	html := adminSource()
 	if !strings.Contains(html, "updateModelSelectionToolbar(visible.map(([name])=>name))") {

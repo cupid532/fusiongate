@@ -263,6 +263,12 @@ func TestTokenUsageRejectsInvalidFilters(t *testing.T) {
 	if len(response.Series) != 365 || response.Period.Days != 365 {
 		t.Fatalf("365-day series=%d period=%d", len(response.Series), response.Period.Days)
 	}
+
+	day := httptest.NewRecorder()
+	a.tokenUsage(day, httptest.NewRequest(http.MethodGet, "/api/admin/token-usage?days=1", nil), adminCtx{})
+	if day.Code != http.StatusOK {
+		t.Fatalf("1-day status=%d body=%s", day.Code, day.Body.String())
+	}
 }
 
 func TestNewPrunesExpiredLedgerRowsOnStartup(t *testing.T) {
