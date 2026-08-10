@@ -17,7 +17,7 @@ The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and pr
 ## Requirements
 
 - Debian 12 or Ubuntu 22.04/24.04
-- A server with at least 1 vCPU, 1 GB RAM, and 10 GB free disk
+- A server with at least 2 vCPU, 2 GB RAM, and 10 GB free disk when the quality detector is enabled
 - A DNS A record, and optionally an AAAA record, pointing to the server
 - Inbound TCP 80 and TCP/UDP 443
 - Outbound HTTPS access to GitHub, Docker Hub, Docker's apt repository, certificate authorities, configured upstream providers, and the Codex / Claude OAuth authorization and token endpoints when those integrations are enabled
@@ -52,6 +52,7 @@ The installer itself prompts securely by default. `FUSIONGATE_ADMIN_PASSWORD_FIL
 | `/opt/fusiongate/app` | Managed application source and Compose definition |
 | `/opt/fusiongate/config` | Root-only configuration and secret source files |
 | `/opt/fusiongate/data` | SQLite database and WAL files, owned by container UID 10001 |
+| `/opt/fusiongate/quality-detector-data` | Quality-detector SQLite sessions and reports, owned by container UID 10002; API keys are not persisted |
 | `/opt/fusiongate/caddy-data` | TLS certificates and Caddy state |
 | `/var/backups/fusiongate` | Backups created by `fusiongatectl backup` |
 | `/usr/local/bin/fusiongatectl` | Operations command |
@@ -68,6 +69,8 @@ sudo fusiongatectl backup
 ```
 
 An update downloads the configured repository and Git ref, replaces only the managed application source, rebuilds the image, and preserves configuration, secrets, database files, and Caddy state.
+
+The optional quality-detector sidecar shares the FusionGate network namespace and binds only to loopback. Production Compose should set `FUSIONGATE_QUALITY_DETECTOR_URL=http://127.0.0.1:18789` and `FUSIONGATE_QUALITY_DETECTOR_BASE_URL=http://127.0.0.1:8787/v1`; do not publish port `18789`.
 
 After every update, verify both process readiness and the public TLS endpoint:
 

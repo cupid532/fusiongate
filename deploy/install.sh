@@ -124,11 +124,13 @@ if $UPDATE_ONLY; then
 
   log "Validating the candidate source before replacing the active release"
   docker build -t fusiongate:update-candidate "$work/source"
+  docker build -f "$work/source/deploy/quality-detector.Dockerfile" -t fusiongate-quality-detector:update-candidate "$work/source"
 fi
 
 install -d -m 0755 "$FUSIONGATE_HOME/app" "$FUSIONGATE_HOME/config"
-install -d -m 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/caddy-data" "$FUSIONGATE_HOME/caddy-config"
+install -d -m 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/quality-detector-data" "$FUSIONGATE_HOME/caddy-data" "$FUSIONGATE_HOME/caddy-config"
 chown 10001:10001 "$FUSIONGATE_HOME/data"
+chown 10002:10002 "$FUSIONGATE_HOME/quality-detector-data"
 
 if command -v rsync >/dev/null 2>&1; then
   rsync -a --delete --exclude='.git' "$work/source/" "$FUSIONGATE_HOME/app/"
@@ -160,6 +162,7 @@ FUSIONGATE_ENV_FILE=$FUSIONGATE_HOME/config/fusiongate.env
 FUSIONGATE_MASTER_KEY_PATH=$FUSIONGATE_HOME/config/master_key
 FUSIONGATE_ADMIN_PASSWORD_PATH=$FUSIONGATE_HOME/config/admin_password
 FUSIONGATE_DATA_PATH=$FUSIONGATE_HOME/data
+FUSIONGATE_QUALITY_DETECTOR_DATA_PATH=$FUSIONGATE_HOME/quality-detector-data
 CADDY_DATA_PATH=$FUSIONGATE_HOME/caddy-data
 CADDY_CONFIG_PATH=$FUSIONGATE_HOME/caddy-config
 ENV

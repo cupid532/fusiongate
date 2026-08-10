@@ -88,6 +88,8 @@ func main() {
 		StreamStartTimeout:     envDuration("FUSIONGATE_STREAM_START_TIMEOUT", fusiongate.DefaultStreamStartTimeout),
 		StreamIdleTimeout:      envDuration("FUSIONGATE_STREAM_IDLE_TIMEOUT", 5*time.Minute),
 		CORSOrigins:            strings.TrimSpace(os.Getenv("FUSIONGATE_CORS_ORIGINS")),
+		QualityDetectorURL:     strings.TrimSpace(os.Getenv("FUSIONGATE_QUALITY_DETECTOR_URL")),
+		QualityDetectorBaseURL: strings.TrimSpace(os.Getenv("FUSIONGATE_QUALITY_DETECTOR_BASE_URL")),
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = filepath.Join(".", "data")

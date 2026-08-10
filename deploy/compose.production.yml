@@ -12,6 +12,8 @@ services:
     environment:
       FUSIONGATE_ADDR: 0.0.0.0:8787
       FUSIONGATE_DATA_DIR: /data
+      FUSIONGATE_QUALITY_DETECTOR_URL: http://127.0.0.1:18789
+      FUSIONGATE_QUALITY_DETECTOR_BASE_URL: http://127.0.0.1:8787/v1
       FUSIONGATE_MASTER_KEY_FILE: /run/secrets/fusiongate_master_key
       FUSIONGATE_ADMIN_PASSWORD_FILE: /run/secrets/fusiongate_admin_password
     expose:
@@ -40,6 +42,30 @@ services:
       start_period: 15s
     networks:
       - internal
+
+  quality-detector:
+    build:
+      context: ${FUSIONGATE_SOURCE_PATH}
+      dockerfile: deploy/quality-detector.Dockerfile
+    image: fusiongate-quality-detector:4.0.1
+    restart: unless-stopped
+    network_mode: service:fusiongate
+    depends_on:
+      fusiongate:
+        condition: service_started
+    volumes:
+      - ${FUSIONGATE_QUALITY_DETECTOR_DATA_PATH:-../../quality-detector-data}:/runs
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 2.0
+    pids_limit: 256
 
   caddy:
     image: caddy:2-alpine

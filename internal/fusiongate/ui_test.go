@@ -289,6 +289,38 @@ func TestRequestLedgerHasServerSideDetailedTimeFilters(t *testing.T) {
 	}
 }
 
+func TestQualityDetectorAppearsBelowRequestLedgerAndUsesNativeControls(t *testing.T) {
+	html := adminSource()
+	requestsNav := strings.Index(html, `data-page="requests"`)
+	qualityNav := strings.Index(html, `data-page="quality"`)
+	if requestsNav < 0 || qualityNav <= requestsNav {
+		t.Fatalf("quality detector navigation is not below request ledger: requests=%d quality=%d", requestsNav, qualityNav)
+	}
+	for _, required := range []string{
+		`id="page-quality"`,
+		`质量检测`,
+		`检测失败不等于中转一定主动掺水`,
+		`Key 只传给检测器进程内存`,
+		`<option value="low">低 · 快速排查</option>`,
+		`<option value="medium">中 · 日常完整</option>`,
+		`<option value="high">高 · 全面留证</option>`,
+		`function startQualityDetection()`,
+		`function stopQualityDetection()`,
+		`/api/admin/quality-detector/start`,
+		`/api/admin/quality-detector/status`,
+		`/api/admin/quality-detector/report`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("quality detector UI is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{`<iframe`, `/quality-detector/assets/`, `X-GPT56-Session`} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("third-party detector frontend leaked into the console: %q", forbidden)
+		}
+	}
+}
+
 func TestCompletedHealthCheckPanelStaysHidden(t *testing.T) {
 	html := adminSource()
 	for _, required := range []string{

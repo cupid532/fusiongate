@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.40
+
+- Add an administrator-only “质量检测” module directly below the request ledger. It runs the frozen low, medium, or high presets from `chen-006/gpt56_api_detector` against the current FusionGate Sol, Terra, or Luna route, and shows request cost estimates, live progress, stop controls, verdict summaries, failed evidence, limitations, and the raw JSON report.
+- Keep the detector isolated as a loopback-only sidecar instead of copying its unlicensed source or executing its frontend inside the FusionGate administrator origin. The control API fixes the target to the current gateway, accepts only the three official presets and three GPT-5.6 model names, never persists the supplied FusionGate API key, disables raw request retention, and remains protected by the existing administrator session and CSRF checks.
+- Pin sidecar builds to detector `4.0.1`, upstream commit `c0035f9695406ca0ebd00899e9c080294f894412`, and a verified source archive SHA-256. The production topology shares FusionGate's network namespace, exposes no detector port, includes Node.js for native Codex probes, and stores only detector sessions and reports in a dedicated volume.
+
 ## V1.39
 
 - Stop repeatedly attempting model auto-discovery for expired externally managed OAuth credentials. FusionGate cannot rotate refresh tokens owned by CLIProxy, CPA, Sub2API, or equivalent source runtimes, so those cards now stay in the actionable “等待凭据更新” state until the source credential is imported again.

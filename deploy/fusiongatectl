@@ -67,14 +67,14 @@ case "$cmd" in
     install -d -m 0700 "$BACKUP_DIR"
     stamp="$(date -u +%Y%m%dT%H%M%SZ)"
     archive="$BACKUP_DIR/fusiongate-$stamp.tar.gz"
-    compose stop fusiongate
-    trap 'compose start fusiongate >/dev/null 2>&1 || true' EXIT
+    compose stop quality-detector fusiongate
+    trap 'compose start fusiongate quality-detector >/dev/null 2>&1 || true' EXIT
     verify_database "$FUSIONGATE_HOME/data/fusiongate.db"
-    tar -C "$FUSIONGATE_HOME" -czf "$archive" data config .fusiongate-install
+    tar -C "$FUSIONGATE_HOME" -czf "$archive" data quality-detector-data config .fusiongate-install
     chmod 0600 "$archive"
     sha256sum "$archive" > "$archive.sha256"
     chmod 0600 "$archive.sha256"
-    compose start fusiongate
+    compose start fusiongate quality-detector
     trap - EXIT
     echo "$archive"
     ;;
@@ -92,15 +92,24 @@ case "$cmd" in
     verify_database "$work/data/fusiongate.db"
     safety="$BACKUP_DIR/pre-restore-$(date -u +%Y%m%dT%H%M%SZ)"
     install -d -m 0700 "$safety"
-    compose stop fusiongate
-    trap 'compose start fusiongate >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
+    compose stop quality-detector fusiongate
+    trap 'compose start fusiongate quality-detector >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
     mv "$FUSIONGATE_HOME/data" "$safety/data"
     mv "$FUSIONGATE_HOME/config" "$safety/config"
+    if [[ -d "$FUSIONGATE_HOME/quality-detector-data" ]]; then
+      mv "$FUSIONGATE_HOME/quality-detector-data" "$safety/quality-detector-data"
+    fi
     mv "$work/data" "$FUSIONGATE_HOME/data"
     mv "$work/config" "$FUSIONGATE_HOME/config"
+    if [[ -d "$work/quality-detector-data" ]]; then
+      mv "$work/quality-detector-data" "$FUSIONGATE_HOME/quality-detector-data"
+    else
+      install -d -m 0700 "$FUSIONGATE_HOME/quality-detector-data"
+    fi
     chown -R 10001:10001 "$FUSIONGATE_HOME/data"
-    chmod 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/config"
-    compose start fusiongate
+    chown -R 10002:10002 "$FUSIONGATE_HOME/quality-detector-data"
+    chmod 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/quality-detector-data" "$FUSIONGATE_HOME/config"
+    compose start fusiongate quality-detector
     for _ in $(seq 1 30); do
       if compose exec -T fusiongate wget -qO- http://127.0.0.1:8787/readyz >/dev/null 2>&1; then
         trap - EXIT
@@ -110,12 +119,16 @@ case "$cmd" in
       fi
       sleep 2
     done
-    compose stop fusiongate >/dev/null 2>&1 || true
+    compose stop quality-detector fusiongate >/dev/null 2>&1 || true
     mv "$FUSIONGATE_HOME/data" "$safety/failed-data"
     mv "$FUSIONGATE_HOME/config" "$safety/failed-config"
+    mv "$FUSIONGATE_HOME/quality-detector-data" "$safety/failed-quality-detector-data"
     mv "$safety/data" "$FUSIONGATE_HOME/data"
     mv "$safety/config" "$FUSIONGATE_HOME/config"
-    compose start fusiongate
+    if [[ -d "$safety/quality-detector-data" ]]; then
+      mv "$safety/quality-detector-data" "$FUSIONGATE_HOME/quality-detector-data"
+    fi
+    compose start fusiongate quality-detector
     echo "Restore did not become ready; the previous installation was restored. Failed restore is at $safety" >&2
     exit 1
     ;;
