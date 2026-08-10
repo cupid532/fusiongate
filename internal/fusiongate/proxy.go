@@ -471,7 +471,79 @@ func normalizedCompatibleChatBody(raw []byte) ([]byte, error) {
 			message["role"] = "system"
 		}
 	}
+	normalizeCompatibleCacheControlTTL(body)
 	return json.Marshal(body)
+}
+
+// collectCacheControls appends every cache_control object reachable from node,
+// walking slices in order and descending only through "content" so the result
+// keeps a deterministic, request-order sequence.
+func collectCacheControls(node any, out *[]map[string]any) {
+	switch value := node.(type) {
+	case []any:
+		for _, item := range value {
+			collectCacheControls(item, out)
+		}
+	case map[string]any:
+		if control, ok := value["cache_control"].(map[string]any); ok {
+			*out = append(*out, control)
+		}
+		if content, ok := value["content"]; ok {
+			collectCacheControls(content, out)
+		}
+	}
+}
+
+// applyCacheControlTTLOrder enforces Anthropic's rule that a ttl="1h"
+// cache_control block must never follow a shorter one. Offending blocks are
+// downgraded to "5m" rather than promoting the earlier blocks, so the request
+// never caches anything for longer than the client asked for.
+func applyCacheControlTTLOrder(blocks []map[string]any) bool {
+	changed := false
+	shortSeen := false
+	for _, control := range blocks {
+		if strings.EqualFold(strings.TrimSpace(asString(control["ttl"])), "1h") {
+			if shortSeen {
+				control["ttl"] = "5m"
+				changed = true
+			}
+			continue
+		}
+		// An absent ttl defaults to the five minute cache.
+		shortSeen = true
+	}
+	return changed
+}
+
+// normalizeCompatibleCacheControlTTL applies the TTL ordering rule to an
+// OpenAI-compatible chat body. Upstreams that bridge to Anthropic lift
+// system-role messages into the system array, so those are ordered ahead of the
+// remaining conversation to match how the upstream will process them.
+func normalizeCompatibleCacheControlTTL(body map[string]any) bool {
+	var blocks []map[string]any
+	collectCacheControls(body["tools"], &blocks)
+	messages := anySlice(body["messages"])
+	for _, value := range messages {
+		if message, ok := value.(map[string]any); ok && message["role"] == "system" {
+			collectCacheControls(message, &blocks)
+		}
+	}
+	for _, value := range messages {
+		if message, ok := value.(map[string]any); ok && message["role"] != "system" {
+			collectCacheControls(message, &blocks)
+		}
+	}
+	return applyCacheControlTTLOrder(blocks)
+}
+
+// normalizeAnthropicCacheControlTTL applies the TTL ordering rule to a native
+// Anthropic Messages body, walking the documented processing order.
+func normalizeAnthropicCacheControlTTL(body map[string]any) bool {
+	var blocks []map[string]any
+	collectCacheControls(body["tools"], &blocks)
+	collectCacheControls(body["system"], &blocks)
+	collectCacheControls(body["messages"], &blocks)
+	return applyCacheControlTTLOrder(blocks)
 }
 
 func claude5Model(model string) bool {

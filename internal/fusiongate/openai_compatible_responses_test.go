@@ -193,3 +193,141 @@ func TestCompatibleResponsesProxyDecodesGzipAndBridgesChat(t *testing.T) {
 		t.Fatalf("unexpected downstream response: %s", rec.Body.String())
 	}
 }
+
+func cacheControlTTLs(node any) []string {
+	var blocks []map[string]any
+	collectCacheControls(node, &blocks)
+	ttls := make([]string, 0, len(blocks))
+	for _, control := range blocks {
+		ttls = append(ttls, asString(control["ttl"]))
+	}
+	return ttls
+}
+
+func TestNormalizedCompatibleChatBodyDowngradesLateOneHourCacheTTL(t *testing.T) {
+	// Claude Code sends a multi block system prompt where a one hour cache
+	// marker trails a five minute one, which Anthropic upstreams reject with
+	// "a ttl='1h' cache_control block must not come after a ttl='5m' block".
+	encoded, err := normalizedCompatibleChatBody([]byte(`{
+		"model": "claude-opus-5",
+		"messages": [
+			{"role": "system", "content": [
+				{"type": "text", "text": "identity", "cache_control": {"type": "ephemeral"}},
+				{"type": "text", "text": "tools", "cache_control": {"type": "ephemeral", "ttl": "5m"}},
+				{"type": "text", "text": "project", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+			]},
+			{"role": "user", "content": [
+				{"type": "text", "text": "hello", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+			]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	messages := anySlice(body["messages"])
+	system := asMap(messages[0])
+	if got := cacheControlTTLs(system["content"]); strings.Join(got, ",") != ",5m,5m" {
+		t.Fatalf("system cache ttls were not normalized: %v (%s)", got, encoded)
+	}
+	if got := cacheControlTTLs(asMap(messages[1])["content"]); strings.Join(got, ",") != "5m" {
+		t.Fatalf("trailing message cache ttl was not normalized: %v (%s)", got, encoded)
+	}
+	if asMap(anySlice(system["content"])[2])["text"] != "project" {
+		t.Fatalf("block content was altered: %s", encoded)
+	}
+}
+
+func TestNormalizedCompatibleChatBodyKeepsCompliantCacheTTLOrder(t *testing.T) {
+	encoded, err := normalizedCompatibleChatBody([]byte(`{
+		"model": "claude-opus-5",
+		"tools": [{"type": "function", "function": {"name": "read"}, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
+		"messages": [
+			{"role": "system", "content": [{"type": "text", "text": "rules", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]},
+			{"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "ttl": "5m"}}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if got := cacheControlTTLs(body["tools"]); strings.Join(got, ",") != "1h" {
+		t.Fatalf("leading tool cache ttl was downgraded: %v", got)
+	}
+	messages := anySlice(body["messages"])
+	if got := cacheControlTTLs(asMap(messages[0])["content"]); strings.Join(got, ",") != "1h" {
+		t.Fatalf("leading system cache ttl was downgraded: %v", got)
+	}
+	if got := cacheControlTTLs(asMap(messages[1])["content"]); strings.Join(got, ",") != "5m" {
+		t.Fatalf("trailing short cache ttl was rewritten: %v", got)
+	}
+}
+
+func TestNormalizedCompatibleChatBodyOrdersSystemMessagesFirst(t *testing.T) {
+	// Anthropic bridges lift system messages into the system array, so a one
+	// hour system marker must survive a five minute marker that appears
+	// earlier in the OpenAI message list.
+	encoded, err := normalizedCompatibleChatBody([]byte(`{
+		"model": "claude-opus-5",
+		"messages": [
+			{"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "ttl": "5m"}}]},
+			{"role": "system", "content": [{"type": "text", "text": "rules", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}
+		]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	messages := anySlice(body["messages"])
+	if got := cacheControlTTLs(asMap(messages[1])["content"]); strings.Join(got, ",") != "1h" {
+		t.Fatalf("system cache ttl was downgraded despite being processed first: %v", got)
+	}
+}
+
+func TestNormalizeAnthropicCacheControlTTLWalksToolsSystemThenMessages(t *testing.T) {
+	var body map[string]any
+	if err := json.Unmarshal([]byte(`{
+		"model": "claude-opus-5",
+		"tools": [{"name": "read", "cache_control": {"type": "ephemeral", "ttl": "5m"}}],
+		"system": [{"type": "text", "text": "rules", "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
+		"messages": [{"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}]
+	}`), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !normalizeAnthropicCacheControlTTL(body) {
+		t.Fatal("normalization reported no change for a violating request")
+	}
+	if got := cacheControlTTLs(body["tools"]); strings.Join(got, ",") != "5m" {
+		t.Fatalf("tool cache ttl was rewritten: %v", got)
+	}
+	if got := cacheControlTTLs(body["system"]); strings.Join(got, ",") != "5m" {
+		t.Fatalf("system cache ttl was not downgraded: %v", got)
+	}
+	if got := cacheControlTTLs(body["messages"]); strings.Join(got, ",") != "5m" {
+		t.Fatalf("message cache ttl was not downgraded: %v", got)
+	}
+}
+
+func TestNormalizeAnthropicCacheControlTTLLeavesCompliantRequestsAlone(t *testing.T) {
+	for _, raw := range []string{
+		`{"messages":[{"role":"user","content":"hi"}]}`,
+		`{"system":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"5m"}}]}]}`,
+	} {
+		var body map[string]any
+		if err := json.Unmarshal([]byte(raw), &body); err != nil {
+			t.Fatal(err)
+		}
+		if normalizeAnthropicCacheControlTTL(body) {
+			t.Fatalf("compliant request was rewritten: %s", raw)
+		}
+	}
+}

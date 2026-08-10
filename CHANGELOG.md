@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.43
+
+- Normalize `cache_control` prompt-cache markers so a `ttl="1h"` block never follows a shorter one. Claude Code mixes one-hour and five-minute cache markers in the same request, and Anthropic upstreams reject that ordering with `a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block`, which surfaced as a bare HTTP 400 on every interactive session routed through an OpenAI-compatible Claude channel.
+- Walk the markers in the order the upstream processes them — tools, then system, then the remaining messages — including OpenAI-compatible bodies, whose system-role messages are lifted into the Anthropic system array before the rest of the conversation.
+- Resolve violations by downgrading the offending block to `5m` rather than promoting the earlier blocks, so a request never caches anything for longer than the client asked for. Compliant requests, and requests without any `cache_control`, are forwarded byte-for-byte as before, and transparent passthrough providers are untouched.
+
 ## V1.42
 
 - Upgrade quality detection from a generic gateway-key probe to a one-time targeted run. Administrators now choose the declared GPT-5.6 model, the exact upstream channel, and the exact channel credential/API-key card before starting a low, medium, or high detector preset.

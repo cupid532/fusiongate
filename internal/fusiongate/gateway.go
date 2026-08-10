@@ -1248,6 +1248,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 				copyBody[key] = value
 			}
 			copyBody["model"] = z.Route.UpstreamModel
+			normalizeAnthropicCacheControlTTL(copyBody)
 			var encodeErr error
 			encoded, encodeErr = json.Marshal(copyBody)
 			if encodeErr != nil {
