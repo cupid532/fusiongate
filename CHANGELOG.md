@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.50
+
+- Fix collapsed channel form fields. The provider form was caught between the generic narrow-screen form-grid rule (6 columns at max-width 1180px) and conflicting span overrides, which made priority, default model, default egress, and every advanced/balance field unpredictable. The provider form now always uses a 12-column grid regardless of viewport, span-4 fields take a third of the row on wide screens and half at mid-width, and the whole connection + runtime card layout is stable.
+
+
 ## V1.49
 
 - Rebuild the add/edit channel “运行设置” card with generous full-width rows: priority, default model and default egress each take a quarter of the form, notes span the full width, and every advanced field (weight, concurrency, timeout, thresholds, circuit breaker, health checks) is now a quarter-width input instead of the cramped sixth-width boxes. The manual balance card uses the same quarter-width layout for the balance and the five category multipliers.
