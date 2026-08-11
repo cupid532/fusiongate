@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.52
+
+- Fix the upstream-channel page. The provider form section was closed one tag too early in index.html, which let the channel-list table and the health-check panel escape the page providers section and rest under the document body. On screen the page header was followed by a large empty area, and you had to scroll down to reach the channels. Restoring the missing closing tag keeps the table-card and the health-check panel inside the providers section, so the channels now appear right below the page head.
+
+
 ## V1.51
 
 - Fix the provider-channel form layout: add the missing `.field > span` label styling that had disappeared, causing label text to render with default browser spacing and making the form look broken. Widen the modal to 980px, increase form input height to 50px, bump interior form padding, and re-size the section step-badges.
