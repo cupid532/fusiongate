@@ -210,15 +210,29 @@ func TestProviderStatusFiltersFollowSchedulingStates(t *testing.T) {
 	}
 }
 
+// The edit path must never send key_name: the PATCH endpoint rejects unknown
+// fields, so a stray key_name made every “渠道设置” save fail with a cryptic
+// JSON error and made channel addresses appear uneditable.
+func TestProviderEditPayloadOmitsKeyName(t *testing.T) {
+	js := string(adminJS)
+	for _, required := range []string{
+		`if(editing){delete payload.key_name;if(!String(o.credential||'').trim())delete payload.credential}`,
+	} {
+		if !strings.Contains(js, required) {
+			t.Fatalf("provider edit payload must omit key_name, missing %q", required)
+		}
+	}
+}
+
 func TestLightThemeUsesHighContrastCoolPalette(t *testing.T) {
 	html := adminSource()
 	for _, required := range []string{
 		`/* Crisp visual system: strong hierarchy, compact controls, explicit status. */`,
-		`html[data-theme="light"]{--bg:#f3f6fa;--sidebar:#0d1726;--surface:#fff;--surface-2:#f6f8fb;--surface-3:#e9eef5`,
-		`--text:#172033;--muted:#526176;--muted-2:#758399;--accent:#087f70;--accent-strong:#0a927f`,
+		`html[data-theme="light"]{--bg:#eef3fb;--sidebar:#0d1a30;--surface:#fff;--surface-2:#f4f8fe;--surface-3:#e8effa`,
+		`--text:#16233a;--muted:#556783;--muted-2:#8193ae;--accent:#2563eb;--accent-strong:#1d4ed8`,
 		// The light sidebar stays dark, but through a token rather than a
 		// per-component override.
-		`--sidebar-bg:linear-gradient(180deg,#0d1726,#101c2e)`,
+		`--sidebar-bg:linear-gradient(180deg,#0e1c34,#0b1526)`,
 		`background:var(--sidebar-bg)`,
 		`notice(next==='light'?'已切换到高对比日间主题':'已切换到深色主题')`,
 		`<strong>运行正常</strong><small>LOCAL · SQLITE</small>`,

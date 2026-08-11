@@ -1,5 +1,14 @@
 # Changelog
 
+## V1.47
+
+- Refresh the console toward a blue glassmorphism visual language: softer borders, translucent frosted surfaces, rounded grouped cards, blue primary actions, and a lighter, airier light theme — while keeping the same two-token theme layer and dark sidebar.
+- Group the add/edit channel form into two clear cards (“连接信息” and “运行设置”) with a step badge, wider focus rings, and a sticky glassy action bar so the page no longer feels cramped or cluttered.
+- Restore a direct “渠道设置” edit button on each channel row. The previous layout renamed the key manager button to “渠道设置” and hid the real edit button, which made it impossible to change an upstream API address without deleting and re-adding the channel.
+- Show the exact reason when model discovery fails after creating a channel. The panel stays open in edit mode, lists every failed key with its upstream error, and offers a one-click “重试识别模型”; changing the API address and saving again now updates the same channel instead of requiring a re-add.
+- Include per-key discovery errors in the create and re-run discovery responses so both paths can render one clear error per credential card.
+- Add inline form error banners for save-time failures such as rejected upstream URLs, so the reason stays visible instead of flashing in a toast.
+
 ## V1.46
 
 - Add an independent per-provider “本周期累计” cost cycle in the console. Channels without a configured balance start accumulating from the upgrade moment, OAuth credential files each accumulate on their own, and the running total is stored in its own table so ledger retention pruning can never shrink it.

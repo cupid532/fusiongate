@@ -403,7 +403,11 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if in.AutoDiscover == nil || *in.AutoDiscover {
 			discovery, discoveryErr := a.discoverProviderModels(r.Context(), id)
 			if discoveryErr != nil {
-				response["model_discovery"] = map[string]any{"status": "failed", "error": discoveryErr.Error()}
+				failed := map[string]any{"status": "failed", "error": discoveryErr.Error()}
+				if len(discovery.Keys) > 0 {
+					failed["keys"] = discovery.Keys
+				}
+				response["model_discovery"] = failed
 			} else {
 				response["model_discovery"] = map[string]any{"status": "ok", "discovered": discovery.Discovered, "skipped": discovery.Skipped, "models": discovery.Models}
 			}
@@ -714,7 +718,11 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		}
 		result, err := a.discoverProviderModels(r.Context(), id)
 		if err != nil {
-			fail(w, discoveryErrorStatus(err), "model_discovery_failed", err.Error())
+			body := map[string]any{"error": map[string]any{"message": err.Error(), "type": "model_discovery_failed", "code": "model_discovery_failed"}}
+			if len(result.Keys) > 0 {
+				body["keys"] = result.Keys
+			}
+			writeJSON(w, discoveryErrorStatus(err), body)
 			return
 		}
 		writeJSON(w, http.StatusOK, result)
