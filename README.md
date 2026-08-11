@@ -140,7 +140,7 @@ docker compose up -d --build
 
 Compose 默认绑定 `127.0.0.1:8787`；请使用 Tailscale/WireGuard 或配置了 TLS 与访问控制的反向代理，而不是直接将后台暴露到公网。
 
-Compose 同时构建质量检测侧车，并与 FusionGate 共享网络命名空间。检测器自身仍只监听 `127.0.0.1`，不会新增公开端口；运行状态保存在独立 Docker volume。构建固定到已审查的上游提交与 SHA-256，升级检测器必须显式更新 `deploy/quality-detector.Dockerfile`。
+Compose 同时构建质量检测侧车，并与 FusionGate 共享网络命名空间。检测器自身仍只监听 `127.0.0.1`，不会新增公开端口；运行状态保存在独立 Docker volume。重建 FusionGate 主容器会替换这个网络命名空间，因此必须同时重建 `fusiongate` 与 `quality-detector`；`fusiongatectl restart`、更新流程和容器健康检查会共同保证这一点。构建固定到已审查的上游提交与 SHA-256，升级检测器必须显式更新 `deploy/quality-detector.Dockerfile`。
 
 质量检测页面可以按“声明模型 → 上游渠道 → 具体渠道凭据/Key”启动一次性定向检测。真实上游密钥不会发送给浏览器或检测侧车；FusionGate 会为本次任务生成仅回环可用、绑定到所选模型/路由/渠道/Key 且带有时限和请求上限的临时令牌。
 

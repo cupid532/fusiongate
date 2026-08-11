@@ -366,6 +366,36 @@ func TestQualityDetectorConfigurationRequiresLoopback(t *testing.T) {
 	}
 }
 
+func TestReadinessCanIncludeQualityDetector(t *testing.T) {
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/detector/status" {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "idle"})
+	}))
+	cfg := testConfig(t)
+	cfg.QualityDetectorURL = sidecar.URL
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	recorder := httptest.NewRecorder()
+	a.readyHealth(recorder, httptest.NewRequest(http.MethodGet, "/readyz?include=quality-detector", nil))
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"quality_detector":"idle"`) {
+		t.Fatalf("ready status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	sidecar.Close()
+	recorder = httptest.NewRecorder()
+	a.readyHealth(recorder, httptest.NewRequest(http.MethodGet, "/readyz?include=quality-detector", nil))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "quality_detector_unavailable") {
+		t.Fatalf("disconnected status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestQualityDetectorRedactsSidecarErrors(t *testing.T) {
 	sidecar, capture := newQualityDetectorFixture(t)
 	defer sidecar.Close()

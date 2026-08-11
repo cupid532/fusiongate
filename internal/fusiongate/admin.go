@@ -201,7 +201,22 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"status": "degraded", "service": "fusiongate", "time": now(), "database": "busy"})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"status": "ok", "service": "fusiongate", "time": now()})
+	response := map[string]any{"status": "ok", "service": "fusiongate", "time": now()}
+	if r.URL.Query().Get("include") == "quality-detector" {
+		if a.qualityDetectorClient == nil {
+			fail(w, http.StatusServiceUnavailable, "quality_detector_unavailable", "quality detector is not configured")
+			return
+		}
+		detectorCtx, detectorCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer detectorCancel()
+		status, err := a.qualityDetectorSidecarStatus(r.Clone(detectorCtx))
+		if err != nil {
+			fail(w, http.StatusServiceUnavailable, "quality_detector_unavailable", "quality detector is not ready")
+			return
+		}
+		response["quality_detector"] = status
+	}
+	writeJSON(w, 200, response)
 }
 
 func validProviderType(t string) bool {

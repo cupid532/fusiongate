@@ -177,6 +177,12 @@ docker compose \
   -f "$FUSIONGATE_HOME/app/deploy/compose.production.yml" \
   up -d --build --remove-orphans
 
+docker compose \
+  --project-directory "$FUSIONGATE_HOME/app" \
+  --env-file "$FUSIONGATE_HOME/config/compose.env" \
+  -f "$FUSIONGATE_HOME/app/deploy/compose.production.yml" \
+  up -d --force-recreate --no-deps quality-detector
+
 if [[ "${GENERATED_ADMIN_PASSWORD:-false}" == true ]]; then
   printf '\nGenerated administrator password (shown once):\n%s\n\n' "$FUSIONGATE_ADMIN_PASSWORD"
 fi
@@ -184,7 +190,12 @@ fi
 log "Waiting for the HTTPS endpoint"
 healthy=false
 for _ in $(seq 1 36); do
-  if curl -fsS --connect-timeout 5 "https://$FUSIONGATE_DOMAIN/healthz" >/dev/null 2>&1; then
+  if curl -fsS --connect-timeout 5 "https://$FUSIONGATE_DOMAIN/healthz?include=quality-detector" >/dev/null 2>&1 && \
+    docker compose \
+      --project-directory "$FUSIONGATE_HOME/app" \
+      --env-file "$FUSIONGATE_HOME/config/compose.env" \
+      -f "$FUSIONGATE_HOME/app/deploy/compose.production.yml" \
+      exec -T fusiongate /usr/local/bin/fusiongate-healthcheck >/dev/null 2>&1; then
     healthy=true
     break
   fi

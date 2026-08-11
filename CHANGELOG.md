@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.45
+
+- Fix quality-detector disconnection after recreating the FusionGate container. The detector shares FusionGate's network namespace, so leaving the old sidecar running binds it to the removed container namespace even though Docker still reports the sidecar itself as healthy.
+- Verify both `/readyz` and the configured detector status from inside FusionGate's current network namespace. Docker health, `fusiongatectl health`, and installer deployment checks now fail when the console would otherwise show “detector disconnected”.
+- Make `fusiongatectl restart` recreate FusionGate and the quality-detector together, and document the same requirement for custom deployment procedures.
+
 ## V1.44
 
 - Send normalized OpenAI Chat Completions, Responses, and Anthropic Messages text-generation requests upstream as streams even when the downstream client requested JSON. FusionGate now consumes SSE internally and rebuilds the original non-streaming response, preserving text, tool calls, stop reasons, usage, public model names, and existing client contracts.

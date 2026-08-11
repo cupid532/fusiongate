@@ -70,7 +70,7 @@ sudo fusiongatectl backup
 
 An update downloads the configured repository and Git ref, replaces only the managed application source, rebuilds the image, and preserves configuration, secrets, database files, and Caddy state.
 
-The optional quality-detector sidecar shares the FusionGate network namespace and binds only to loopback. Production Compose should set `FUSIONGATE_QUALITY_DETECTOR_URL=http://127.0.0.1:18789` and `FUSIONGATE_QUALITY_DETECTOR_BASE_URL=http://127.0.0.1:8787/v1`; do not publish port `18789`.
+The optional quality-detector sidecar shares the FusionGate network namespace and binds only to loopback. Production Compose should set `FUSIONGATE_QUALITY_DETECTOR_URL=http://127.0.0.1:18789` and `FUSIONGATE_QUALITY_DETECTOR_BASE_URL=http://127.0.0.1:8787/v1`; do not publish port `18789`. Recreating the FusionGate container replaces that network namespace, so always recreate `fusiongate` and `quality-detector` together. `fusiongatectl restart` and `fusiongatectl update` enforce this, and the container health check verifies both loopback services from FusionGate's current namespace.
 
 After every update, verify both process readiness and the public TLS endpoint:
 

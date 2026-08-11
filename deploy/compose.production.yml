@@ -35,7 +35,7 @@ services:
       - fusiongate_master_key
       - fusiongate_admin_password
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/readyz"]
+      test: ["CMD", "/usr/local/bin/fusiongate-healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 5

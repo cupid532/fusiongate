@@ -11,6 +11,22 @@ compose() {
   docker compose --project-directory "$APP_DIR" --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" "$@"
 }
 
+verify_services() {
+  compose exec -T fusiongate /usr/local/bin/fusiongate-healthcheck >/dev/null
+}
+
+recreate_runtime() {
+  compose up -d --force-recreate fusiongate quality-detector
+  for _ in $(seq 1 30); do
+    if verify_services; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "FusionGate or its quality detector did not become ready" >&2
+  return 1
+}
+
 verify_database() {
   local database="$1" result
   result="$(sqlite3 "$database" 'PRAGMA quick_check; PRAGMA foreign_key_check;')"
@@ -37,10 +53,15 @@ require_root() {
 cmd="${1:-help}"
 shift || true
 case "$cmd" in
-  start|stop|restart)
+  start|stop)
     require_root "$cmd"
     require_install
     compose "$cmd"
+    ;;
+  restart)
+    require_root "$cmd"
+    require_install
+    recreate_runtime
     ;;
   status)
     require_install
@@ -53,7 +74,7 @@ case "$cmd" in
   health)
     require_install
     domain="$(sed -n 's/^FUSIONGATE_DOMAIN=//p' "$COMPOSE_ENV" | head -1)"
-    curl -fsS "https://${domain}/healthz"
+    curl -fsS "https://${domain}/healthz?include=quality-detector"
     echo
     ;;
   update)
@@ -111,7 +132,7 @@ case "$cmd" in
     chmod 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/quality-detector-data" "$FUSIONGATE_HOME/config"
     compose start fusiongate quality-detector
     for _ in $(seq 1 30); do
-      if compose exec -T fusiongate wget -qO- http://127.0.0.1:8787/readyz >/dev/null 2>&1; then
+      if verify_services; then
         trap - EXIT
         rm -rf "$work"
         echo "Restored $archive; previous data preserved at $safety"
