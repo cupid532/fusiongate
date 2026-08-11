@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.51
+
+- Fix the provider-channel form layout: add the missing `.field > span` label styling that had disappeared, causing label text to render with default browser spacing and making the form look broken. Widen the modal to 980px, increase form input height to 50px, bump interior form padding, and re-size the section step-badges.
+- All `.provider-form-section` form-grids are now locked to 12 columns regardless of viewport, and span-4 fields keep one-third row width with proper fallbacks.
+
 ## V1.50
 
 - Fix collapsed channel form fields. The provider form was caught between the generic narrow-screen form-grid rule (6 columns at max-width 1180px) and conflicting span overrides, which made priority, default model, default egress, and every advanced/balance field unpredictable. The provider form now always uses a 12-column grid regardless of viewport, span-4 fields take a third of the row on wide screens and half at mid-width, and the whole connection + runtime card layout is stable.
