@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.48
+
+- Make the Base URL and first API Key fields full-width and taller in the add/edit channel form, so the connection inputs no longer feel like cramped half-row boxes. The channel name and provider type share one row, the API key gets two-thirds width with the key label beside it, and the URL/key inputs use a larger 50px height with wider padding and a softer focus ring.
+- Add the missing `span-8` column rule and a narrow-screen fallback so the credential row never collapses on smaller viewports.
+
 ## V1.47
 
 - Refresh the console toward a blue glassmorphism visual language: softer borders, translucent frosted surfaces, rounded grouped cards, blue primary actions, and a lighter, airier light theme — while keeping the same two-token theme layer and dark sidebar.

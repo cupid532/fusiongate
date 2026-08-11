@@ -249,3 +249,17 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 
 .modal-close:hover{transform:rotate(90deg)}
 .toast{border-radius:12px;box-shadow:var(--shadow)}
 @media(prefers-reduced-motion:reduce){.provider-discovery-result:not(.hidden){animation:none}}
+
+/* Larger, more comfortable inputs in the provider form. */
+.provider-form-section .field input,.provider-form-section .field select{min-height:46px;padding:12px 14px;border-radius:11px}
+.provider-form-section .field .provider-url-input,.provider-form-section .field .provider-key-input{min-height:50px;font-size:14.5px;padding:13px 15px;letter-spacing:.1px;border-radius:12px}
+.provider-form-section .field .provider-url-input:focus,.provider-form-section .field .provider-key-input:focus{box-shadow:0 0 0 4px var(--accent-bg)}
+
+/* Provider form column spans. */
+.span-6{grid-column:span 6}
+.span-8{grid-column:span 8}
+@media(max-width:1180px){
+  .provider-form-section .field.span-6{grid-column:span 3}
+  .provider-form-section .field.span-8{grid-column:span 6}
+  .provider-form-section .field.span-4{grid-column:span 3}
+}
