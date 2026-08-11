@@ -44,7 +44,7 @@ func TestReasoningEffortIsRecordedOnTheLedger(t *testing.T) {
 	key := authKey{ID: 1}
 	route := resolvedRoute{Route: Route{ID: 1, PublicName: "gpt-5", UpstreamModel: "gpt-5"}, Provider: Provider{ID: 1}}
 	attemptID := a.startLedger(key, route, "openai_chat", true, "127.0.0.1", "req_effort", "high", 1, "")
-	a.endLedger(attemptID, key.ID, true, 200, "", time.Now(), Usage{Reported: true})
+	a.endLedger(attemptID, route.Provider.ID, key.ID, "openai", route.Route.UpstreamModel, true, 200, "", time.Now(), Usage{Reported: true})
 	a.flushLedgerWrites()
 
 	var effort string

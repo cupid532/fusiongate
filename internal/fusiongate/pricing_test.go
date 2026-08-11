@@ -416,8 +416,8 @@ func TestAPIKeyBudgetAndExpiryStopAuthentication(t *testing.T) {
 		t.Fatal("key should authenticate before its budget is spent")
 	}
 	// Spend is settled onto the key's running total, which is what admission reads.
-	a.endLedger(a.startLedger(authKey{ID: keyID}, resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "m"}, Provider: Provider{ID: 1}}, "test", false, "127.0.0.1", "req_spent", "", 1, ""),
-		keyID, true, 200, "", time.Now(), Usage{CostMicros: 1_000_000, CostType: "estimated", Reported: true})
+	a.endLedger(a.startLedger(authKey{ID: keyID}, resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "m"}, Provider: Provider{ID: 1}}, "test", false, "127.0.0.1", "req_spent", "", 1, ""), 1, keyID, "openai", "m",
+		true, 200, "", time.Now(), Usage{CostMicros: 1_000_000, CostType: "estimated", Reported: true})
 	a.flushLedgerWrites()
 	if _, ok := a.authenticateKey(req); ok {
 		t.Fatal("budget-exhausted key authenticated")

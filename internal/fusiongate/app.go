@@ -601,6 +601,19 @@ func (a *App) migrate(ctx context.Context) error {
     first_byte_ms INTEGER, usage_reported INTEGER NOT NULL DEFAULT 0, client_ip TEXT NOT NULL DEFAULT '',
     api_key_name TEXT NOT NULL DEFAULT '', api_key_prefix TEXT NOT NULL DEFAULT '', provider_name TEXT NOT NULL DEFAULT '');
   CREATE INDEX IF NOT EXISTS idx_ledger_created ON request_ledger(created_at DESC);
+  CREATE TABLE IF NOT EXISTS provider_cost_cycles (
+    provider_id INTEGER PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    reset_reason TEXT NOT NULL DEFAULT 'tracking_started',
+    official_reset_at TEXT NOT NULL DEFAULT '',
+    requests INTEGER NOT NULL DEFAULT 0,
+    priced_requests INTEGER NOT NULL DEFAULT 0,
+    cost_micros INTEGER NOT NULL DEFAULT 0,
+    openai_micros INTEGER NOT NULL DEFAULT 0,
+    claude_micros INTEGER NOT NULL DEFAULT 0,
+    grok_micros INTEGER NOT NULL DEFAULT 0,
+    gemini_micros INTEGER NOT NULL DEFAULT 0,
+    other_micros INTEGER NOT NULL DEFAULT 0);
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
 	CREATE INDEX IF NOT EXISTS idx_model_route_exclusions_public ON model_route_exclusions(public_name);
   `)
@@ -706,6 +719,9 @@ func (a *App) migrate(ctx context.Context) error {
 		if _, err := a.db.ExecContext(ctx, `UPDATE api_keys SET spent_micros=COALESCE((SELECT SUM(cost_micros) FROM request_ledger WHERE api_key_id=api_keys.id AND completed_at IS NOT NULL),0)`); err != nil {
 			return err
 		}
+	}
+	if err := a.seedCostCycles(ctx); err != nil {
+		return err
 	}
 	// Older builds permanently disabled a provider after five failures. Those
 	// rows are distinguishable from an administrator toggle by their status.

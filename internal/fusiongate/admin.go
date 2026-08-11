@@ -988,6 +988,14 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
+		if in.ManualBalanceUSD != nil {
+			// Saving a balance starts a fresh local accumulation period. The
+			// official Codex marker (if any) is preserved so the next quota
+			// refresh still detects official window rollovers.
+			if resetErr := a.resetCostCycle(r.Context(), id, "manual_balance_added", ""); resetErr != nil {
+				a.log.Warn("cost cycle reset failed after balance save", "provider_id", id, "error", resetErr)
+			}
+		}
 	}
 	if in.ResetHealth || resetOnEnable || connectionChanged {
 		_, err = a.db.Exec(`UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)

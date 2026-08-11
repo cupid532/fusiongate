@@ -31,6 +31,7 @@ type providerBalanceResponse struct {
 	ProviderID int64 `json:"provider_id"`
 	ProviderUpstreamBalance
 	EstimatedSpend providerSpend               `json:"estimated_spend"`
+	Cycle          *costCycle                  `json:"cycle,omitempty"`
 	Manual         *providerManualBalance      `json:"manual,omitempty"`
 	ModelGroups    []providerBalanceModelGroup `json:"model_groups"`
 }
@@ -98,6 +99,11 @@ func (a *App) providerBalance(ctx context.Context, id int64, refresh bool) (prov
 	}
 	multipliers := balanceMultipliers(openaiMultiplier, claudeMultiplier, grokMultiplier, geminiMultiplier, otherMultiplier)
 
+	cycle, err := a.readCostCycle(ctx, id, providerType, multipliers)
+	if err != nil {
+		return providerBalanceResponse{}, err
+	}
+
 	spend := providerSpend{}
 	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN cost_type<>'unknown' THEN 1 ELSE 0 END),0),COALESCE(SUM(cost_micros),0) FROM request_ledger WHERE provider_id=? AND completed_at IS NOT NULL`, id).Scan(&spend.Requests, &spend.PricedRequests, &spend.CostMicros); err != nil {
 		return providerBalanceResponse{}, err
@@ -106,7 +112,7 @@ func (a *App) providerBalance(ctx context.Context, id int64, refresh bool) (prov
 		spend.CostCoverage = float64(spend.PricedRequests) * 100 / float64(spend.Requests)
 	}
 
-	response := providerBalanceResponse{ProviderID: id, EstimatedSpend: spend, ModelGroups: []providerBalanceModelGroup{}}
+	response := providerBalanceResponse{ProviderID: id, EstimatedSpend: spend, Cycle: cycle, ModelGroups: []providerBalanceModelGroup{}}
 	modelsByCategory := map[string][]string{}
 	rows, err := a.db.QueryContext(ctx, `SELECT DISTINCT upstream_model FROM model_routes WHERE provider_id=? AND enabled=1 ORDER BY upstream_model`, id)
 	if err != nil {
@@ -200,6 +206,9 @@ func (a *App) providerBalance(ctx context.Context, id int64, refresh bool) (prov
 	} else if quota, ok := result.(*codexAccountQuota); ok {
 		upstream.Status = "available"
 		upstream.Quota = quota
+		if _, observeErr := a.observeCodexQuota(ctx, id, quota); observeErr != nil {
+			a.log.Warn("cost cycle official reset detection failed", "provider_id", id, "error", observeErr)
+		}
 	} else {
 		upstream.Message = "upstream quota response was invalid"
 	}

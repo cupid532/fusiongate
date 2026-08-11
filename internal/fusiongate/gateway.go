@@ -603,12 +603,15 @@ func (a *App) recordFirstByte(attemptID string, start time.Time) {
 	a.queueLedgerWrite(`UPDATE request_ledger SET first_byte_ms=? WHERE request_id=? AND first_byte_ms IS NULL`, elapsed, attemptID)
 }
 
-func (a *App) endLedger(attemptID string, apiKeyID int64, success bool, status int, errorType string, start time.Time, usage Usage) {
+func (a *App) endLedger(attemptID string, providerID, apiKeyID int64, providerType, upstreamModel string, success bool, status int, errorType string, start time.Time, usage Usage) {
 	if attemptID == "" {
 		return
 	}
 	if apiKeyID > 0 && usage.CostMicros > 0 {
 		a.queueLedgerWrite(`UPDATE api_keys SET spent_micros=spent_micros+? WHERE id=?`, usage.CostMicros, apiKeyID)
+	}
+	if providerID > 0 {
+		a.queueCostCycleWrite(providerID, providerType, upstreamModel, usage)
 	}
 	a.queueLedgerWrite(`UPDATE request_ledger SET completed_at=?,success=?,status_code=?,error_type=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_tokens=?,reasoning_tokens=?,cost_micros=?,cost_type=?,usage_reported=? WHERE request_id=?`, now(), boolInt(success), status, errorType, time.Since(start).Milliseconds(), usage.Input, usage.Output, usage.Cached, usage.Reasoning, usage.CostMicros, usage.CostType, boolInt(usage.Reported), attemptID)
 }
@@ -896,7 +899,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		if reason == "" && status >= 400 {
 			reason = retryReason(status, result.Err)
 		}
-		a.endLedger(attemptID, key.ID, result.Handled && status < 400 && result.Err == nil, status, reason, started, result.Usage)
+		a.endLedger(attemptID, z.Provider.ID, key.ID, z.Provider.Type, z.Route.UpstreamModel, result.Handled && status < 400 && result.Err == nil, status, reason, started, result.Usage)
 		if result.Handled {
 			finalStatus = status
 			finalSuccess = status < 400 && result.Err == nil

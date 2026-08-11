@@ -1,5 +1,12 @@
 # Changelog
 
+## V1.46
+
+- Add an independent per-provider “本周期累计” cost cycle in the console. Channels without a configured balance start accumulating from the upgrade moment, OAuth credential files each accumulate on their own, and the running total is stored in its own table so ledger retention pruning can never shrink it.
+- Restart the local cycle whenever a balance is saved (the balance baseline semantics stay unchanged), and reset local totals on balance additions, official quota rollovers, and redeemed reset cards — `request_ledger` history (“用量与费用”) is never rewritten.
+- Detect official Codex quota period rollovers from the stable upstream `reset_at` window marker: the first observation records it, a later change resets the local cycle, and a window derived from `reset_after_seconds` is ignored because it moves on every refresh. Redeeming a GPT reset card now also zeroes the local cycle immediately.
+- Seed existing manual-balance providers from their current baseline on upgrade so the new cycle matches the period the balance card already reports; every other provider starts tracking at upgrade time.
+
 ## V1.45
 
 - Fix quality-detector disconnection after recreating the FusionGate container. The detector shares FusionGate's network namespace, so leaving the old sidecar running binds it to the removed container namespace even though Docker still reports the sidecar itself as healthy.

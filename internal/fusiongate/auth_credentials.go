@@ -156,6 +156,11 @@ type codexUsageWindow struct {
 	LimitWindowSeconds int64   `json:"limit_window_seconds,omitempty"`
 	ResetAfterSeconds  int64   `json:"reset_after_seconds,omitempty"`
 	ResetAt            string  `json:"reset_at,omitempty"`
+	// ResetKey is the stable official reset identifier, kept only when the
+	// upstream actually supplied reset_at. It is never derived from
+	// reset_after_seconds, which would move on every refresh and make cycle
+	// change detection reset the local total for no reason.
+	ResetKey string `json:"-"`
 }
 
 type codexResetCard struct {
@@ -1866,12 +1871,15 @@ func parseCodexUsageWindow(raw map[string]any) *codexUsageWindow {
 	switch v := raw["reset_at"].(type) {
 	case float64:
 		win.ResetAt = formatUnixTimestamp(int64(v))
+		win.ResetKey = win.ResetAt
 	case json.Number:
 		n, _ := v.Int64()
 		win.ResetAt = formatUnixTimestamp(n)
+		win.ResetKey = win.ResetAt
 	case string:
 		if strings.TrimSpace(v) != "" {
 			win.ResetAt = strings.TrimSpace(v)
+			win.ResetKey = win.ResetAt
 		}
 	}
 	if win.ResetAt == "" && win.ResetAfterSeconds > 0 {
@@ -2306,6 +2314,11 @@ func (a *App) authQuota(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			a.writeQuotaError(w, err)
 			return
 		}
+		if quota, ok := result.(*codexAccountQuota); ok {
+			if _, observeErr := a.observeCodexQuota(r.Context(), id, quota); observeErr != nil {
+				a.log.Warn("cost cycle official reset detection failed", "provider_id", id, "error", observeErr)
+			}
+		}
 		writeJSON(w, http.StatusOK, result)
 	case (action == "reset" || action == "redeem") && r.Method == http.MethodPost:
 		var in struct {
@@ -2321,7 +2334,15 @@ func (a *App) authQuota(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			}
 			quota, quotaErr := a.fetchCodexAccountQuotaViaNode(r.Context(), credential.AccessToken, credential.AccountID, nodeID)
 			if quotaErr != nil {
+				// The official window still rolled over even if reading the fresh
+				// quota failed, so the local cycle must reset regardless.
+				if resetErr := a.resetCostCycle(r.Context(), id, "reset_card", ""); resetErr != nil {
+					a.log.Warn("cost cycle reset failed after reset card", "provider_id", id, "error", resetErr)
+				}
 				return map[string]any{"redeemed": redeemed, "quota": nil, "warning": quotaErr.Error()}, nil
+			}
+			if resetErr := a.resetCostCycle(r.Context(), id, "reset_card", officialCodexResetAt(quota)); resetErr != nil {
+				a.log.Warn("cost cycle reset failed after reset card", "provider_id", id, "error", resetErr)
 			}
 			return map[string]any{"ok": true, "redeemed": redeemed, "quota": quota}, nil
 		})
