@@ -919,14 +919,24 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 	body := raw
 	var err error
 	upstreamSSE := false
-	bufferResponsesSSE := false
+	bufferSSE := false
+	var sseTransform func([]byte) ([]byte, string, Usage, error)
 	if !transparent {
 		if z.Provider.Type == "codex_oauth" && endpoint == "/v1/responses" {
 			body, err = normalizedCodexResponsesBody(raw, z.Route.UpstreamModel)
 			upstreamSSE = true
-			bufferResponsesSSE = !stream
+			bufferSSE = !stream
+			sseTransform = completedResponsesSSE
 		} else {
-			body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, stream, z.Provider.Type != "codex_oauth")
+			upstreamStream := stream || endpoint == "/v1/chat/completions" || endpoint == "/v1/responses"
+			body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, upstreamStream, z.Provider.Type != "codex_oauth")
+			upstreamSSE = upstreamStream
+			bufferSSE = upstreamStream && !stream
+			if endpoint == "/v1/responses" {
+				sseTransform = completedResponsesSSE
+			} else if endpoint == "/v1/chat/completions" {
+				sseTransform = completedChatCompletionFromSSE
+			}
 			if err == nil && z.Provider.Type == "openai_compatible" && endpoint == "/v1/chat/completions" {
 				body, err = normalizedCompatibleChatBody(body)
 			}
@@ -935,7 +945,7 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 			return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 		}
 	}
-	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: upstreamSSE, BufferResponsesSSE: bufferResponsesSSE})
+	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: upstreamSSE, BufferSSE: bufferSSE, SSETransform: sseTransform})
 }
 
 func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
@@ -977,8 +987,13 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 			if err != nil {
 				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 			}
-			return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/responses", RawBody: encoded, Stream: stream, UsageFormat: "openai", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferResponsesSSE: true, ResponsesTransform: func(completed []byte) ([]byte, string, error) {
-				return codexChatResponse(completed, stream, z.Route.PublicName)
+			return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/responses", RawBody: encoded, Stream: stream, UsageFormat: "openai", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferSSE: true, SSETransform: func(body []byte) ([]byte, string, Usage, error) {
+				completed, usage, err := completedResponseFromSSE(body)
+				if err != nil {
+					return nil, "", usage, err
+				}
+				transformed, contentType, err := codexChatResponse(completed, stream, z.Route.PublicName)
+				return transformed, contentType, usage, err
 			}})
 		case "anthropic", "claude_oauth":
 			if stream || z.Provider.PassthroughMode == "transparent" {
@@ -1255,7 +1270,19 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: encodeErr}
 			}
 		}
-		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, UsageFormat: "anthropic", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte})
+		upstreamStream := stream || !transparent
+		if upstreamStream && !transparent {
+			var streamed map[string]any
+			if err := json.Unmarshal(encoded, &streamed); err != nil {
+				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+			}
+			streamed["stream"] = true
+			encoded, err = json.Marshal(streamed)
+			if err != nil {
+				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+			}
+		}
+		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, UsageFormat: "anthropic", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: upstreamStream && !transparent, BufferSSE: upstreamStream && !stream, SSETransform: completedAnthropicMessageFromSSE})
 	})
 }
 

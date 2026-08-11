@@ -330,6 +330,20 @@ func TestOpenAICompatibleResponsesPreserveMaxOutputTokens(t *testing.T) {
 	}
 }
 
+func TestNormalizedOpenAIBodyDoesNotAddStreamToNonStreamingEndpointBody(t *testing.T) {
+	encoded, err := normalizedOpenAIBody([]byte(`{"model":"public","prompt":"draw a fox"}`), "upstream", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := body["stream"]; exists {
+		t.Fatalf("stream was added to a request that did not declare it: %s", encoded)
+	}
+}
+
 func TestCodexResponsesNonStreamBuffersCompletedEvent(t *testing.T) {
 	var received map[string]any
 	var accept string

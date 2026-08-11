@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,9 +18,27 @@ const maxAnthropicBridgeEvent = 4 << 20
 // OpenAI-compatible Chat Completions provider. Native Anthropic routes continue
 // to use the transparent proxy path in messages().
 func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Request, body map[string]any, z resolvedRoute, rid string, stream bool, onFirstByte func()) attemptResult {
-	encoded, err := anthropicMessagesRequestToOpenAI(body, z.Route.UpstreamModel, stream, z.Provider.Type != "openai_compatible")
+	encoded, err := anthropicMessagesRequestToOpenAI(body, z.Route.UpstreamModel, true, z.Provider.Type != "openai_compatible")
 	if err != nil {
 		return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+	}
+	if !stream {
+		return a.proxyUpstream(w, incoming, z, proxyOptions{
+			Endpoint: "/v1/chat/completions", RawBody: encoded, UsageFormat: "openai", GatewayID: rid,
+			SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferSSE: true,
+			SSETransform: func(body []byte) ([]byte, string, Usage, error) {
+				chat, _, usage, err := completedChatCompletionFromSSE(body)
+				if err != nil {
+					return nil, "", usage, err
+				}
+				completed, err := openAIAsAnthropicJSON(chat, z, rid)
+				return completed, "application/json", usage, err
+			},
+			JSONTransform: func(body []byte) ([]byte, string, error) {
+				completed, err := openAIAsAnthropicJSON(body, z, rid)
+				return completed, "application/json", err
+			},
+		})
 	}
 	if err := a.ensureFreshProviderCredential(incoming.Context(), &z); err != nil {
 		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "auth_expired", Err: err}
@@ -28,7 +47,7 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
-	ctx, cancel := providerContext(incoming.Context(), z.Provider)
+	ctx, cancel := context.WithCancel(incoming.Context())
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	if err != nil {
@@ -43,11 +62,7 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 		req.Header.Set("User-Agent", "")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if stream {
-		req.Header.Set("Accept", "text/event-stream")
-	} else {
-		req.Header.Set("Accept", "application/json")
-	}
+	req.Header.Set("Accept", "text/event-stream")
 	if err := setProviderAuth(req, z); err != nil {
 		return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "route_configuration_error", Err: err}
 	}
@@ -70,10 +85,7 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 	if resp.StatusCode >= 400 {
 		return writeAnthropicBridgeError(w, resp)
 	}
-	if stream {
-		return streamOpenAIAsAnthropic(w, resp.Body, z, rid)
-	}
-	return writeOpenAIAsAnthropic(w, resp.Body, z, rid)
+	return streamOpenAIAsAnthropic(w, resp.Body, z, rid)
 }
 
 func anthropicMessagesRequestToOpenAI(body map[string]any, upstreamModel string, stream, includeStreamUsage bool) ([]byte, error) {
@@ -312,9 +324,35 @@ func writeOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRou
 	if err := json.NewDecoder(body).Decode(&source); err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: err}
 	}
+	encoded, err := openAIAsAnthropicJSONMap(source, z, rid)
+	if err != nil {
+		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: err}
+	}
+	usage := parseOpenAIUsage(source)
+	cost(z, &usage)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, writeErr := w.Write(encoded)
+	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage, Reason: func() string {
+		if writeErr != nil {
+			return "downstream_write_error"
+		}
+		return ""
+	}(), Err: writeErr}
+}
+
+func openAIAsAnthropicJSON(body []byte, z resolvedRoute, rid string) ([]byte, error) {
+	var source map[string]any
+	if err := json.Unmarshal(body, &source); err != nil {
+		return nil, err
+	}
+	return openAIAsAnthropicJSONMap(source, z, rid)
+}
+
+func openAIAsAnthropicJSONMap(source map[string]any, z resolvedRoute, rid string) ([]byte, error) {
 	choices, ok := source["choices"].([]any)
 	if !ok || len(choices) == 0 {
-		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: errors.New("missing choices")}
+		return nil, errors.New("missing choices")
 	}
 	choice, _ := choices[0].(map[string]any)
 	message, _ := choice["message"].(map[string]any)
@@ -334,15 +372,12 @@ func writeOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRou
 			content = append(content, map[string]any{"type": "tool_use", "id": call["id"], "name": function["name"], "input": input})
 		}
 	}
-	usage := parseOpenAIUsage(source)
-	cost(z, &usage)
 	stopReason := anthropicStopReason(choice["finish_reason"])
-	writeJSON(w, http.StatusOK, map[string]any{
+	return json.Marshal(map[string]any{
 		"id": "msg_" + rid, "type": "message", "role": "assistant", "model": z.Route.PublicName,
 		"content": content, "stop_reason": stopReason, "stop_sequence": nil,
-		"usage": map[string]any{"input_tokens": usage.Input, "output_tokens": usage.Output},
+		"usage": map[string]any{"input_tokens": num(asMap(source["usage"])["prompt_tokens"]), "output_tokens": num(asMap(source["usage"])["completion_tokens"])},
 	})
-	return attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
 }
 
 func openAIMessageText(value any) string {

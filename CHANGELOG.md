@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.44
+
+- Send normalized OpenAI Chat Completions, Responses, and Anthropic Messages text-generation requests upstream as streams even when the downstream client requested JSON. FusionGate now consumes SSE internally and rebuilds the original non-streaming response, preserving text, tool calls, stop reasons, usage, public model names, and existing client contracts.
+- Keep true streaming clients on the low-latency passthrough path, retain transparent providers and non-text endpoints unchanged, and fall back to the existing JSON transforms when an OpenAI-compatible upstream ignores `stream=true`.
+- Apply stream idle protection to internally buffered responses, retain provider-scale startup tolerance for non-streaming callers, cap buffered output at 32 MiB, and remove the production Caddy template's fixed 130-second response-header deadline for long JSON responses.
+
 ## V1.43
 
 - Normalize `cache_control` prompt-cache markers so a `ttl="1h"` block never follows a shorter one. Claude Code mixes one-hour and five-minute cache markers in the same request, and Anthropic upstreams reject that ordering with `a ttl='1h' cache_control block must not come after a ttl='5m' cache_control block`, which surfaced as a bare HTTP 400 on every interactive session routed through an OpenAI-compatible Claude channel.

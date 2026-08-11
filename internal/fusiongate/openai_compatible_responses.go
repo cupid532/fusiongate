@@ -44,7 +44,10 @@ func compatibleResponsesBodyFromRequest(raw []byte, upstreamModel string) ([]byt
 	if len(messages) == 0 {
 		return nil, downstreamStream, errors.New("Responses input could not be converted to chat messages")
 	}
-	body := map[string]any{"model": upstreamModel, "messages": messages, "stream": false}
+	body := map[string]any{
+		"model": upstreamModel, "messages": messages, "stream": true,
+		"stream_options": map[string]any{"include_usage": true},
+	}
 	for _, key := range []string{"temperature", "top_p", "parallel_tool_calls", "seed", "stop", "user", "service_tier"} {
 		if value, ok := source[key]; ok {
 			body[key] = value
@@ -332,7 +335,15 @@ func (a *App) compatibleResponsesProxy(w http.ResponseWriter, r *http.Request, r
 	}
 	return a.proxyUpstream(w, r, z, proxyOptions{
 		Endpoint: "/v1/chat/completions", RawBody: body, Stream: false, UsageFormat: "openai", GatewayID: gatewayID,
-		SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte,
+		SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferSSE: true,
+		SSETransform: func(body []byte) ([]byte, string, Usage, error) {
+			chat, _, usage, err := completedChatCompletionFromSSE(body)
+			if err != nil {
+				return nil, "", usage, err
+			}
+			completed, contentType, err := compatibleResponsesFromChat(chat, z.Route.PublicName, stream)
+			return completed, contentType, usage, err
+		},
 		JSONTransform: func(body []byte) ([]byte, string, error) {
 			return compatibleResponsesFromChat(body, z.Route.PublicName, stream)
 		},

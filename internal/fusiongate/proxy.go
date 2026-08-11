@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,8 +31,8 @@ type proxyOptions struct {
 	SafeTransportRetry bool
 	OnFirstByte        func()
 	UpstreamSSE        bool
-	BufferResponsesSSE bool
-	ResponsesTransform func([]byte) ([]byte, string, error)
+	BufferSSE          bool
+	SSETransform       func([]byte) ([]byte, string, Usage, error)
 	JSONTransform      func([]byte) ([]byte, string, error)
 	OutputStartTimeout time.Duration
 	IdleTimeout        time.Duration
@@ -443,6 +444,11 @@ func normalizedOpenAIBody(raw []byte, upstreamModel string, stream, includeStrea
 		return nil, err
 	}
 	body["model"] = upstreamModel
+	if stream {
+		body["stream"] = true
+	} else if _, exists := body["stream"]; exists {
+		body["stream"] = false
+	}
 	if !includeStreamUsage {
 		// The ChatGPT Codex backend rejects OpenAI API stream_options.
 		delete(body, "stream_options")
@@ -792,6 +798,291 @@ func completedResponseFromSSE(body []byte) ([]byte, Usage, error) {
 	return encoded, parseOpenAIUsage(completed), nil
 }
 
+func completedResponsesSSE(body []byte) ([]byte, string, Usage, error) {
+	completed, usage, err := completedResponseFromSSE(body)
+	return completed, "application/json", usage, err
+}
+
+type chatCompletionChoice struct {
+	index        int
+	message      map[string]any
+	toolCalls    map[int]map[string]any
+	finishReason any
+	logprobs     any
+}
+
+func completedChatCompletionFromSSE(body []byte) ([]byte, string, Usage, error) {
+	choices := map[int]*chatCompletionChoice{}
+	usage := Usage{CostType: "unknown"}
+	id := ""
+	model := ""
+	var created any
+	var systemFingerprint any
+	var serviceTier any
+	var rawUsage map[string]any
+	for _, payload := range sseEventPayloads(body) {
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return nil, "", usage, err
+		}
+		if upstreamError := asMap(chunk["error"]); upstreamError != nil {
+			return nil, "", usage, fmt.Errorf("upstream stream error: %s", firstNonEmpty(asString(upstreamError["message"]), "unknown error"))
+		}
+		if value := asString(chunk["id"]); value != "" {
+			id = value
+		}
+		if value := asString(chunk["model"]); value != "" {
+			model = value
+		}
+		if value, ok := chunk["created"]; ok {
+			created = value
+		}
+		if value, ok := chunk["system_fingerprint"]; ok {
+			systemFingerprint = value
+		}
+		if value, ok := chunk["service_tier"]; ok {
+			serviceTier = value
+		}
+		mergeUsage(&usage, parseOpenAIUsage(chunk))
+		if value := asMap(chunk["usage"]); value != nil {
+			rawUsage = cloneMap(value)
+		}
+		for _, rawChoice := range anySlice(chunk["choices"]) {
+			piece := asMap(rawChoice)
+			index := int(num(piece["index"]))
+			choice := choices[index]
+			if choice == nil {
+				choice = &chatCompletionChoice{index: index, message: map[string]any{"role": "assistant", "content": nil}, toolCalls: map[int]map[string]any{}}
+				choices[index] = choice
+			}
+			if reason, ok := piece["finish_reason"]; ok && reason != nil {
+				choice.finishReason = reason
+			}
+			if logprobs, ok := piece["logprobs"]; ok && logprobs != nil {
+				choice.logprobs = logprobs
+			}
+			delta := asMap(piece["delta"])
+			if len(delta) == 0 {
+				delta = asMap(piece["message"])
+			}
+			appendStringField(choice.message, "content", delta["content"])
+			appendStringField(choice.message, "refusal", delta["refusal"])
+			appendStringField(choice.message, "reasoning_content", delta["reasoning_content"])
+			if role := asString(delta["role"]); role != "" {
+				choice.message["role"] = role
+			}
+			if audio, ok := delta["audio"]; ok {
+				choice.message["audio"] = audio
+			}
+			for _, rawCall := range anySlice(delta["tool_calls"]) {
+				pieceCall := asMap(rawCall)
+				callIndex := int(num(pieceCall["index"]))
+				call := choice.toolCalls[callIndex]
+				if call == nil {
+					call = map[string]any{"type": "function", "function": map[string]any{}}
+					choice.toolCalls[callIndex] = call
+				}
+				if callID := asStringValue(pieceCall["id"]); callID != "" {
+					call["id"] = callID
+				}
+				if callType := asString(pieceCall["type"]); callType != "" {
+					call["type"] = callType
+				}
+				function := asMap(call["function"])
+				pieceFunction := asMap(pieceCall["function"])
+				appendStringField(function, "name", pieceFunction["name"])
+				appendStringField(function, "arguments", pieceFunction["arguments"])
+			}
+			if pieceFunction := asMap(delta["function_call"]); pieceFunction != nil {
+				function := asMap(choice.message["function_call"])
+				if function == nil {
+					function = map[string]any{}
+					choice.message["function_call"] = function
+				}
+				appendStringField(function, "name", pieceFunction["name"])
+				appendStringField(function, "arguments", pieceFunction["arguments"])
+			}
+		}
+	}
+	if len(choices) == 0 {
+		return nil, "", usage, errors.New("upstream stream ended without chat completion choices")
+	}
+	indices := make([]int, 0, len(choices))
+	for index := range choices {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	completedChoices := make([]any, 0, len(indices))
+	for _, index := range indices {
+		choice := choices[index]
+		if choice.finishReason == nil {
+			return nil, "", usage, fmt.Errorf("upstream stream ended before choice %d completed", index)
+		}
+		if len(choice.toolCalls) > 0 {
+			callIndices := make([]int, 0, len(choice.toolCalls))
+			for callIndex := range choice.toolCalls {
+				callIndices = append(callIndices, callIndex)
+			}
+			sort.Ints(callIndices)
+			calls := make([]any, 0, len(callIndices))
+			for _, callIndex := range callIndices {
+				calls = append(calls, choice.toolCalls[callIndex])
+			}
+			choice.message["tool_calls"] = calls
+		}
+		completed := map[string]any{"index": choice.index, "message": choice.message, "finish_reason": choice.finishReason}
+		if choice.logprobs != nil {
+			completed["logprobs"] = choice.logprobs
+		}
+		completedChoices = append(completedChoices, completed)
+	}
+	response := map[string]any{"id": id, "object": "chat.completion", "model": model, "choices": completedChoices}
+	if created != nil {
+		response["created"] = created
+	}
+	if systemFingerprint != nil {
+		response["system_fingerprint"] = systemFingerprint
+	}
+	if serviceTier != nil {
+		response["service_tier"] = serviceTier
+	}
+	if usage.Reported {
+		if rawUsage == nil {
+			rawUsage = openAIUsagePayload(usage)
+		}
+		response["usage"] = rawUsage
+	}
+	encoded, err := json.Marshal(response)
+	return encoded, "application/json", usage, err
+}
+
+func appendStringField(target map[string]any, key string, value any) {
+	text, ok := value.(string)
+	if !ok || text == "" {
+		return
+	}
+	target[key] = asStringValue(target[key]) + text
+}
+
+func asStringValue(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func openAIUsagePayload(usage Usage) map[string]any {
+	return map[string]any{
+		"prompt_tokens": usage.Input, "completion_tokens": usage.Output, "total_tokens": usage.Input + usage.Output,
+		"prompt_tokens_details":     map[string]any{"cached_tokens": usage.Cached},
+		"completion_tokens_details": map[string]any{"reasoning_tokens": usage.Reasoning},
+	}
+}
+
+func completedAnthropicMessageFromSSE(body []byte) ([]byte, string, Usage, error) {
+	message := map[string]any{"type": "message", "role": "assistant", "content": []any{}, "stop_reason": nil, "stop_sequence": nil}
+	blocks := map[int]map[string]any{}
+	partialJSON := map[int]*strings.Builder{}
+	usageFields := map[string]int64{}
+	stopped := false
+	for _, payload := range sseEventPayloads(body) {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			return nil, "", Usage{CostType: "unknown"}, err
+		}
+		switch asString(event["type"]) {
+		case "error":
+			upstreamError := asMap(event["error"])
+			return nil, "", Usage{CostType: "unknown"}, fmt.Errorf("upstream stream error: %s", firstNonEmpty(asString(upstreamError["message"]), "unknown error"))
+		case "message_start":
+			started := asMap(event["message"])
+			for _, key := range []string{"id", "type", "role", "model", "stop_reason", "stop_sequence"} {
+				if value, ok := started[key]; ok {
+					message[key] = value
+				}
+			}
+			mergeNumericFields(usageFields, asMap(started["usage"]))
+			for index, rawBlock := range anySlice(started["content"]) {
+				blocks[index] = cloneMap(asMap(rawBlock))
+			}
+		case "content_block_start":
+			index := int(num(event["index"]))
+			blocks[index] = cloneMap(asMap(event["content_block"]))
+		case "content_block_delta":
+			index := int(num(event["index"]))
+			block := blocks[index]
+			if block == nil {
+				block = map[string]any{}
+				blocks[index] = block
+			}
+			delta := asMap(event["delta"])
+			switch asString(delta["type"]) {
+			case "text_delta":
+				appendStringField(block, "text", delta["text"])
+			case "thinking_delta":
+				appendStringField(block, "thinking", delta["thinking"])
+			case "signature_delta":
+				appendStringField(block, "signature", delta["signature"])
+			case "input_json_delta":
+				builder := partialJSON[index]
+				if builder == nil {
+					builder = &strings.Builder{}
+					partialJSON[index] = builder
+				}
+				builder.WriteString(asStringValue(delta["partial_json"]))
+			default:
+				for key, value := range delta {
+					if key != "type" {
+						block[key] = value
+					}
+				}
+			}
+		case "message_delta":
+			for key, value := range asMap(event["delta"]) {
+				message[key] = value
+			}
+			mergeNumericFields(usageFields, asMap(event["usage"]))
+		case "message_stop":
+			stopped = true
+		}
+	}
+	if !stopped {
+		return nil, "", Usage{CostType: "unknown"}, errors.New("upstream stream ended without message_stop")
+	}
+	indices := make([]int, 0, len(blocks))
+	for index := range blocks {
+		indices = append(indices, index)
+	}
+	sort.Ints(indices)
+	content := make([]any, 0, len(indices))
+	for _, index := range indices {
+		block := blocks[index]
+		if builder := partialJSON[index]; builder != nil {
+			var input any
+			if err := json.Unmarshal([]byte(builder.String()), &input); err != nil {
+				return nil, "", Usage{CostType: "unknown"}, fmt.Errorf("invalid tool input JSON: %w", err)
+			}
+			block["input"] = input
+		}
+		content = append(content, block)
+	}
+	message["content"] = content
+	usagePayload := make(map[string]any, len(usageFields))
+	for key, value := range usageFields {
+		usagePayload[key] = value
+	}
+	message["usage"] = usagePayload
+	usage := parseAnthropicUsage(message)
+	encoded, err := json.Marshal(message)
+	return encoded, "application/json", usage, err
+}
+
+func mergeNumericFields(target map[string]int64, source map[string]any) {
+	for key, value := range source {
+		if number := num(value); number > target[key] {
+			target[key] = number
+		}
+	}
+}
+
 func providerContext(parent context.Context, p Provider) (context.Context, context.CancelFunc) {
 	timeout := p.RequestTimeoutMS
 	if timeout <= 0 {
@@ -821,7 +1112,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	}
 	var ctx context.Context
 	var cancel context.CancelFunc
-	if options.Stream || options.BufferResponsesSSE {
+	if options.Stream || options.BufferSSE {
 		ctx, cancel = context.WithCancel(incoming.Context())
 	} else {
 		ctx, cancel = providerContext(incoming.Context(), z.Provider)
@@ -835,11 +1126,19 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		if startTimeout <= 0 {
 			startTimeout = defaultFailoverStartTimeout
 		}
-		if !options.Stream && !options.BufferResponsesSSE && z.Provider.RequestTimeoutMS > 0 {
+		if !options.Stream && !options.BufferSSE && z.Provider.RequestTimeoutMS > 0 {
 			// A non-streaming request often does not receive headers until the full
 			// reasoning pass has completed. Honor the provider timeout instead of
 			// applying the much shorter streaming first-output deadline.
 			startTimeout = time.Duration(z.Provider.RequestTimeoutMS) * time.Millisecond
+		}
+		if options.BufferSSE && z.Provider.RequestTimeoutMS > 0 {
+			// Internal streaming must not make a non-streaming client less tolerant
+			// than it was before the gateway forced stream=true upstream.
+			providerTimeout := time.Duration(z.Provider.RequestTimeoutMS) * time.Millisecond
+			if providerTimeout > startTimeout {
+				startTimeout = providerTimeout
+			}
 		}
 	}
 	started := time.Now()
@@ -907,12 +1206,12 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: reason, Err: copyErr}
 	}
 
-	if options.BufferResponsesSSE {
+	if options.BufferSSE && strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type"))), "text/event-stream") {
 		var buffered bytes.Buffer
 		var readErr error
-		observer := semanticStreamObserver{format: "openai"}
+		observer := semanticStreamObserver{format: options.UsageFormat}
 		outputDeadline := started.Add(startTimeout)
-		for !hasSemanticStreamOutput(buffered.Bytes(), "openai") {
+		for !hasSemanticStreamOutput(buffered.Bytes(), options.UsageFormat) {
 			remaining := time.Until(outputDeadline)
 			if remaining <= 0 {
 				return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: context.DeadlineExceeded}
@@ -920,6 +1219,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			chunk, err := readStreamChunk(resp.Body, 32<<10, remaining)
 			if len(chunk) > 0 {
 				_, _ = buffered.Write(chunk)
+				if buffered.Len() > maxBufferedUpstreamBody {
+					return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_response_too_large", Err: fmt.Errorf("buffered SSE response exceeded %d bytes", maxBufferedUpstreamBody)}
+				}
 				observer.observe(chunk)
 			}
 			readErr = err
@@ -956,6 +1258,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			chunk, err := readStreamChunk(resp.Body, 32<<10, remaining)
 			if len(chunk) > 0 {
 				_, _ = buffered.Write(chunk)
+				if buffered.Len() > maxBufferedUpstreamBody {
+					return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_response_too_large", Err: fmt.Errorf("buffered SSE response exceeded %d bytes", maxBufferedUpstreamBody)}
+				}
 				if observer.observe(chunk) {
 					idleDeadline = time.Now().Add(idleTimeout)
 				}
@@ -974,23 +1279,16 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			}
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_stream_interrupted", Err: readErr}
 		}
-		body := buffered.Bytes()
-		if len(body) > maxBufferedUpstreamBody {
-			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_response_too_large", Err: fmt.Errorf("buffered Responses stream exceeded %d bytes", maxBufferedUpstreamBody)}
+		if options.SSETransform == nil {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "route_configuration_error", Err: errors.New("buffered SSE transform is not configured")}
 		}
-		completed, usage, parseErr := completedResponseFromSSE(body)
+		completed, contentType, usage, parseErr := options.SSETransform(buffered.Bytes())
 		if parseErr != nil {
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_stream", Err: parseErr}
 		}
 		cost(z, &usage)
-		contentType := "application/json"
-		if options.ResponsesTransform != nil {
-			completed, contentType, parseErr = options.ResponsesTransform(completed)
-			if parseErr != nil {
-				return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: parseErr}
-			}
-		}
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
+		w.Header().Del("Content-Encoding")
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(completed)))
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)

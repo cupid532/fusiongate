@@ -204,6 +204,8 @@ sudo bash install.sh
 | `FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS` | 仅可信开发环境可设 `true`，允许私有网络上游。 |
 | `FUSIONGATE_SING_BOX_PATH` | 可选，sing-box 可执行文件路径；官方 Docker 镜像已内置固定版本，本机运行仅在启用 IP 池节点时需要安装。 |
 
+OpenAI-compatible 与 Anthropic 文本生成路由会始终向上游请求流式响应。协议不变且客户端请求 `stream=true` 时实时透传；请求 `stream=false` 时，FusionGate 在内部消费 SSE 并重建原协议 JSON。这样长回答不再受上游整段生成的固定总超时限制，同时保持现有非流式客户端兼容。透明透传路由与图片等非文本生成接口不会改写请求模式。非流式客户端仍需等待完整 JSON，因此外层反向代理不能设置短响应头总时限；仓库提供的 Caddy 模板只限制连接建立，不限制响应头等待时间。
+
 ## IP 池与渠道网络出口
 
 IP 池由 FusionGate 管理节点元数据与渠道绑定，实际多协议网络栈由镜像内固定版本的 [sing-box](https://sing-box.sagernet.org/) 提供：

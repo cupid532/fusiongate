@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"compress/gzip"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -237,6 +238,51 @@ func TestMessagesUsesOpenAICompatibleRoute(t *testing.T) {
 	}
 }
 
+func TestMessagesNonStreamUsesOpenAIUpstreamSSE(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		if r.Header.Get("Accept") != "text/event-stream" {
+			t.Errorf("accept=%q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-anthropic\",\"model\":\"provider-claude\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"pong\"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-anthropic\",\"model\":\"provider-claude\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "streamed-openai-claude", "openai_compatible", upstream.URL, "upstream-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "claude-test", "provider-claude", "chat,stream", 1)
+	key := insertTestKey(t, a, false)
+	rec := gatewayRequest(t, a, "/v1/messages", key, `{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`, "claude-cli/1")
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("status=%d type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	if received["stream"] != true {
+		t.Fatalf("upstream request=%#v", received)
+	}
+	var completed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &completed); err != nil {
+		t.Fatal(err)
+	}
+	content := anySlice(completed["content"])
+	tool := asMap(content[1])
+	if asMap(content[0])["text"] != "pong" || completed["stop_reason"] != "tool_use" || tool["name"] != "lookup" || asInt64(asMap(tool["input"])["q"]) != 1 {
+		t.Fatalf("completed=%#v", completed)
+	}
+	if asInt64(asMap(completed["usage"])["input_tokens"]) != 8 || asInt64(asMap(completed["usage"])["output_tokens"]) != 4 {
+		t.Fatalf("usage=%#v", completed["usage"])
+	}
+}
+
 func TestMessagesKeepsNativeAnthropicRoute(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
@@ -249,11 +295,16 @@ func TestMessagesKeepsNativeAnthropicRoute(t *testing.T) {
 		if body["model"] != "native-claude" {
 			t.Errorf("model=%#v", body["model"])
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"id": "msg_native", "type": "message", "role": "assistant", "model": "native-claude",
-			"content": []any{map[string]any{"type": "text", "text": "native"}}, "stop_reason": "end_turn",
-			"usage": map[string]any{"input_tokens": 2, "output_tokens": 1},
-		})
+		if body["stream"] != true || r.Header.Get("Accept") != "text/event-stream" {
+			t.Errorf("stream=%#v accept=%q", body["stream"], r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_native\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"native-claude\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":2,\"output_tokens\":0}}}\n\n")
+		_, _ = io.WriteString(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		_, _ = io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"native\"}}\n\n")
+		_, _ = io.WriteString(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		_, _ = io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer upstream.Close()
 

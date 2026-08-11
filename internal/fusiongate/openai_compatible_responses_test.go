@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"io"
@@ -94,8 +95,11 @@ func TestCompatibleResponsesBodyFromRequest(t *testing.T) {
 	if err := json.Unmarshal(encoded, &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["model"] != "upstream" || body["stream"] != false || asInt64(body["max_completion_tokens"]) != 64 || body["reasoning_effort"] != "low" {
+	if body["model"] != "upstream" || body["stream"] != true || asInt64(body["max_completion_tokens"]) != 64 || body["reasoning_effort"] != "low" {
 		t.Fatalf("unexpected converted body: %s", encoded)
+	}
+	if asMap(body["stream_options"])["include_usage"] != true {
+		t.Fatalf("stream usage was not requested: %s", encoded)
 	}
 	messages := anySlice(body["messages"])
 	if len(messages) != 3 || asMap(messages[0])["role"] != "system" || asMap(messages[2])["role"] != "tool" {
@@ -153,7 +157,7 @@ func TestCompatibleResponsesProxyDecodesGzipAndBridgesChat(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Error(err)
 		}
-		if body["model"] != "upstream" || body["stream"] != false || asMap(anySlice(body["messages"])[0])["role"] != "system" {
+		if body["model"] != "upstream" || body["stream"] != true || asMap(anySlice(body["messages"])[0])["role"] != "system" {
 			t.Errorf("unexpected upstream body: %#v", body)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -191,6 +195,53 @@ func TestCompatibleResponsesProxyDecodesGzipAndBridgesChat(t *testing.T) {
 	}
 	if response["object"] != "response" || textContent(asMap(anySlice(response["output"])[0])["content"]) != "OK" {
 		t.Fatalf("unexpected downstream response: %s", rec.Body.String())
+	}
+}
+
+func TestCompatibleResponsesNonStreamUsesChatSSEUpstream(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		if r.Header.Get("Accept") != "text/event-stream" {
+			t.Errorf("accept=%q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-responses\",\"created\":123,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"OK\"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-responses\",\"created\":123,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":6,\"completion_tokens\":2}}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	z := resolvedRoute{
+		Route:      Route{PublicName: "public", UpstreamModel: "upstream"},
+		Provider:   Provider{Type: "openai_compatible", BaseURL: upstream.URL, RequestTimeoutMS: 5000},
+		Credential: "secret",
+	}
+	raw := []byte(`{"model":"public","input":"hello","stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(raw))
+	result := a.compatibleResponsesProxy(rec, req, raw, z, "request-id", false, true, nil)
+	if result.Status != http.StatusOK || !result.Handled || result.Err != nil {
+		t.Fatalf("result=%+v body=%s", result, rec.Body.String())
+	}
+	if received["stream"] != true || asMap(received["stream_options"])["include_usage"] != true {
+		t.Fatalf("upstream request=%#v", received)
+	}
+	var completed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &completed); err != nil {
+		t.Fatal(err)
+	}
+	output := asMap(anySlice(completed["output"])[0])
+	part := asMap(anySlice(output["content"])[0])
+	if completed["object"] != "response" || part["text"] != "OK" || asInt64(asMap(completed["usage"])["input_tokens"]) != 6 {
+		t.Fatalf("completed=%#v", completed)
 	}
 }
 

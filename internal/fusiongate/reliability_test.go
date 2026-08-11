@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -884,5 +885,52 @@ func TestConnectionFailureFailsOverBeforeAnyResponse(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatalf("attempts=%d, want 2", attempts)
+	}
+}
+
+func TestNonStreamingChatUsesUpstreamSSEAndReturnsJSON(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		if r.Header.Get("Accept") != "text/event-stream" {
+			t.Errorf("accept=%q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"long \"},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"answer\",\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"q\\\":\"}}]},\"finish_reason\":null}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"created\":123,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"upstream\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "streamed-chat", "openai_compatible", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "public", "upstream", "chat,stream", 1)
+	key := insertTestKey(t, a, false)
+	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"public","stream":false,"messages":[{"role":"user","content":"hello"}]}`, "test/1")
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("status=%d type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	if received["stream"] != true || asMap(received["stream_options"])["include_usage"] != true {
+		t.Fatalf("upstream request=%#v", received)
+	}
+	var completed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &completed); err != nil {
+		t.Fatal(err)
+	}
+	choice := asMap(anySlice(completed["choices"])[0])
+	message := asMap(choice["message"])
+	function := asMap(asMap(anySlice(message["tool_calls"])[0])["function"])
+	if message["content"] != "long answer" || choice["finish_reason"] != "tool_calls" || function["arguments"] != `{"q":1}` {
+		t.Fatalf("completed=%#v", completed)
+	}
+	if asInt64(asMap(completed["usage"])["prompt_tokens"]) != 11 || asInt64(asMap(completed["usage"])["completion_tokens"]) != 7 {
+		t.Fatalf("usage=%#v", completed["usage"])
 	}
 }
