@@ -1,5 +1,12 @@
 # Changelog
 
+## V1.49
+
+- Rebuild the add/edit channel “运行设置” card with generous full-width rows: priority, default model and default egress each take a quarter of the form, notes span the full width, and every advanced field (weight, concurrency, timeout, thresholds, circuit breaker, health checks) is now a quarter-width input instead of the cramped sixth-width boxes. The manual balance card uses the same quarter-width layout for the balance and the five category multipliers.
+- Fix the root cause of the collapsed runtime settings: the `span-5` column class used by “渠道默认模型” and “渠道默认出口” was never defined in the stylesheet, so those two fields fell back to auto width while the section still read as broken. They now use a defined quarter-width class and the field height in the whole form is bumped to 48px for a steadier visual rhythm.
+- Add helper text under the advanced and balance inputs so each runtime setting explains itself instead of appearing as a row of tiny unexplained boxes.
+
+
 ## V1.48
 
 - Make the Base URL and first API Key fields full-width and taller in the add/edit channel form, so the connection inputs no longer feel like cramped half-row boxes. The channel name and provider type share one row, the API key gets two-thirds width with the key label beside it, and the URL/key inputs use a larger 50px height with wider padding and a softer focus ring.
