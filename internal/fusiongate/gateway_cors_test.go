@@ -143,3 +143,58 @@ func TestImageGenerationWorksFromCrossOriginBrowserClient(t *testing.T) {
 		t.Fatalf("image response=%s", rec.Body.String())
 	}
 }
+
+func TestUpstreamCannotOverwriteGatewayResponsePolicyHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("Content-Security-Policy", "default-src *")
+		w.Header().Set("Referrer-Policy", "unsafe-url")
+		w.Header().Set("X-Content-Type-Options", "off")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("Access-Control-Allow-Origin", "https://upstream.example")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Upstream-Secret")
+		w.Header().Set("Vary", "X-Upstream-Variant")
+		w.Header().Set("X-Upstream-Metadata", "forwarded")
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": "ok"}}}})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "header-policy", "openai_compatible", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "header-model", "upstream-model", "chat", 1)
+	key := insertTestKey(t, a, false)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"header-model","messages":[]}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "https://browser-client.example")
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	want := map[string]string{
+		"Cache-Control":                 "no-store",
+		"Referrer-Policy":               "no-referrer",
+		"X-Content-Type-Options":        "nosniff",
+		"X-Frame-Options":               "DENY",
+		"Access-Control-Allow-Origin":   "*",
+		"Access-Control-Expose-Headers": "Content-Type, Retry-After, X-FusionGate-Request-ID",
+		"X-Upstream-Metadata":           "forwarded",
+	}
+	for header, expected := range want {
+		if got := rec.Header().Get(header); got != expected {
+			t.Errorf("%s=%q, want %q", header, got, expected)
+		}
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); !strings.Contains(got, "default-src 'self'") {
+		t.Errorf("Content-Security-Policy=%q", got)
+	}
+	if vary := strings.Join(rec.Header().Values("Vary"), ","); !strings.Contains(vary, "Origin") || !strings.Contains(vary, "X-Upstream-Variant") {
+		t.Errorf("Vary=%q", vary)
+	}
+}

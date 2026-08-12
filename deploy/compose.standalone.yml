@@ -1,15 +1,19 @@
 name: fusiongate
 
+# Production template for hosts that already provide their own reverse proxy.
+# All application code and service behavior come from the checked-out commit;
+# host-specific paths and the loopback port remain configurable environment data.
 services:
   fusiongate:
     build:
-      context: ${FUSIONGATE_SOURCE_PATH}
+      context: ..
       dockerfile: Dockerfile
       args:
-        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:-unknown}
+        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:?set the exact Git commit}
         FUSIONGATE_BUILD_SOURCE: ${FUSIONGATE_BUILD_SOURCE:-https://github.com/cupid532/fusiongate}
-        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:-dev}
-    image: fusiongate:production
+        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:?set the FusionGate version}
+    image: fusiongate:${FUSIONGATE_BUILD_REVISION}
+    container_name: fusiongate
     restart: unless-stopped
     stop_grace_period: 30s
     logging:
@@ -18,7 +22,7 @@ services:
         max-size: "10m"
         max-file: "5"
     env_file:
-      - ${FUSIONGATE_ENV_FILE}
+      - ${FUSIONGATE_ENV_FILE:-/opt/fusiongate/config/fusiongate.env}
     environment:
       FUSIONGATE_ADDR: 0.0.0.0:8787
       FUSIONGATE_DATA_DIR: /data
@@ -26,10 +30,12 @@ services:
       FUSIONGATE_QUALITY_DETECTOR_BASE_URL: http://127.0.0.1:8787/v1
       FUSIONGATE_MASTER_KEY_FILE: /run/secrets/fusiongate_master_key
       FUSIONGATE_ADMIN_PASSWORD_FILE: /run/secrets/fusiongate_admin_password
-    expose:
-      - "8787"
+    ports:
+      - "127.0.0.1:${FUSIONGATE_PORT:-18787}:8787"
     volumes:
-      - ${FUSIONGATE_DATA_PATH:-../../data}:/data
+      - ${FUSIONGATE_DATA_PATH:-/opt/fusiongate/data}:/data
+      - ${FUSIONGATE_MASTER_KEY_PATH:-/opt/fusiongate/config/master_key}:/run/secrets/fusiongate_master_key:ro
+      - ${FUSIONGATE_ADMIN_PASSWORD_PATH:-/opt/fusiongate/config/admin_password}:/run/secrets/fusiongate_admin_password:ro
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
@@ -41,27 +47,23 @@ services:
     mem_reservation: 256m
     cpus: 2.0
     pids_limit: 256
-    secrets:
-      - fusiongate_master_key
-      - fusiongate_admin_password
     healthcheck:
       test: ["CMD", "/usr/local/bin/fusiongate-healthcheck"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 15s
-    networks:
-      - internal
 
   quality-detector:
     build:
-      context: ${FUSIONGATE_SOURCE_PATH}
+      context: ..
       dockerfile: deploy/quality-detector.Dockerfile
       args:
-        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:-unknown}
+        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:?set the exact Git commit}
         FUSIONGATE_BUILD_SOURCE: ${FUSIONGATE_BUILD_SOURCE:-https://github.com/cupid532/fusiongate}
-        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:-dev}
-    image: fusiongate-quality-detector:4.0.1
+        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:?set the FusionGate version}
+    image: fusiongate-quality-detector:${FUSIONGATE_BUILD_REVISION}
+    container_name: fusiongate-quality-detector
     restart: unless-stopped
     stop_grace_period: 20s
     logging:
@@ -74,7 +76,7 @@ services:
       fusiongate:
         condition: service_started
     volumes:
-      - ${FUSIONGATE_QUALITY_DETECTOR_DATA_PATH:-../../quality-detector-data}:/runs
+      - ${FUSIONGATE_QUALITY_DETECTOR_DATA_PATH:-/opt/fusiongate/quality-detector-data}:/runs
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev
@@ -86,47 +88,3 @@ services:
     mem_reservation: 256m
     cpus: 2.0
     pids_limit: 256
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    stop_grace_period: 30s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-    depends_on:
-      fusiongate:
-        condition: service_healthy
-    environment:
-      FUSIONGATE_DOMAIN: ${FUSIONGATE_DOMAIN}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ${FUSIONGATE_CADDYFILE_PATH}:/etc/caddy/Caddyfile:ro
-      - ${CADDY_DATA_PATH:-../../caddy-data}:/data
-      - ${CADDY_CONFIG_PATH:-../../caddy-config}:/config
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: 256m
-    cpus: 1.0
-    pids_limit: 128
-    networks:
-      - internal
-
-networks:
-  internal:
-    driver: bridge
-
-secrets:
-  fusiongate_master_key:
-    file: ${FUSIONGATE_MASTER_KEY_PATH}
-  fusiongate_admin_password:
-    file: ${FUSIONGATE_ADMIN_PASSWORD_PATH}

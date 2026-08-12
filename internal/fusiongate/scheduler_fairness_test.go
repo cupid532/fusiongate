@@ -221,16 +221,15 @@ func TestBudgetedKeyStopsOnlyWhenBudgetIsSpent(t *testing.T) {
 	a.endLedger(a.startLedger(authKey{ID: keyID}, route, "openai_chat", false, "127.0.0.1", "req_spent", "", 1, ""), route.Provider.ID, keyID, "openai", route.Route.UpstreamModel,
 		true, 200, "", time.Now(), Usage{CostMicros: 1_000_000, CostType: "estimated", Reported: true})
 	a.flushLedgerWrites()
-	handler := a.api(func(w http.ResponseWriter, r *http.Request, _ authKey) {
-		t.Fatal("an exhausted budget must not reach the gateway handler")
-	})
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+raw)
 	rec := httptest.NewRecorder()
-	handler(rec, req)
-	// An exhausted budget fails authentication outright, so the key reads as invalid.
-	if rec.Code != http.StatusPaymentRequired && rec.Code != http.StatusUnauthorized {
-		t.Fatalf("exhausted budget returned %d, want 402 or 401", rec.Code)
+	a.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusPaymentRequired {
+		t.Fatalf("exhausted budget returned %d, want 402; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"budget_exceeded"`) {
+		t.Fatalf("exhausted budget body=%s, want exact budget_exceeded code", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "budget_request_inflight") {
 		t.Fatal("budget enforcement must never reject a request for being concurrent")

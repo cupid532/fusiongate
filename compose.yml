@@ -1,8 +1,19 @@
 services:
   fusiongate:
-    build: .
+    build:
+      context: .
+      args:
+        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:-local}
+        FUSIONGATE_BUILD_SOURCE: ${FUSIONGATE_BUILD_SOURCE:-https://github.com/cupid532/fusiongate}
+        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:-dev}
     image: fusiongate:local
     restart: unless-stopped
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     env_file: .env
     environment:
       FUSIONGATE_ADDR: 0.0.0.0:8787
@@ -27,8 +38,18 @@ services:
     build:
       context: .
       dockerfile: deploy/quality-detector.Dockerfile
+      args:
+        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:-local}
+        FUSIONGATE_BUILD_SOURCE: ${FUSIONGATE_BUILD_SOURCE:-https://github.com/cupid532/fusiongate}
+        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:-dev}
     image: fusiongate-quality-detector:4.0.1
     restart: unless-stopped
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     network_mode: service:fusiongate
     depends_on:
       fusiongate:

@@ -94,9 +94,10 @@ type providerBackupImportResult struct {
 }
 
 type providerBackupPending struct {
-	ID         int64
-	Provider   providerBackupProvider
-	Credential []byte
+	ID          int64
+	Provider    providerBackupProvider
+	Credential  []byte
+	Initialized int
 }
 
 func (a *App) providerBackupExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
@@ -107,7 +108,7 @@ func (a *App) providerBackupExport(w http.ResponseWriter, r *http.Request, _ adm
 	rows, err := a.db.Query(`
 SELECT p.id,p.name,p.type,p.base_url,p.notes,p.enabled,p.priority,p.weight,p.passthrough_mode,p.client_policy,
        p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.default_model,p.group_sort_order,
-       COALESCE(g.name,''),COALESCE(n.name,''),p.credential
+       COALESCE(g.name,''),COALESCE(n.name,''),p.credential,p.multi_key_initialized
 FROM providers p
 LEFT JOIN provider_groups g ON g.id=p.group_id
 LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id
@@ -124,7 +125,7 @@ ORDER BY p.priority DESC,p.id`)
 		if err := rows.Scan(&item.ID, &item.Provider.Name, &item.Provider.Type, &item.Provider.BaseURL, &item.Provider.Notes,
 			&enabled, &item.Provider.Priority, &item.Provider.Weight, &item.Provider.PassthroughMode, &item.Provider.ClientPolicy,
 			&item.Provider.MaxConcurrency, &item.Provider.RequestTimeoutMS, &item.Provider.FailureThreshold, &item.Provider.CooldownSeconds, &healthCheckEnabled,
-			&item.Provider.DefaultModel, &item.Provider.GroupSortOrder, &item.Provider.GroupName, &item.Provider.IPPoolNodeName, &item.Credential); err != nil {
+			&item.Provider.DefaultModel, &item.Provider.GroupSortOrder, &item.Provider.GroupName, &item.Provider.IPPoolNodeName, &item.Credential, &item.Initialized); err != nil {
 			rows.Close()
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -213,6 +214,9 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 			provider.Keys = append(provider.Keys, key)
 		}
 		if len(provider.Keys) == 0 {
+			if strBool(item.Initialized) {
+				continue
+			}
 			legacy, decryptErr := a.decrypt(item.Credential)
 			if decryptErr != nil {
 				fail(w, http.StatusInternalServerError, "credential_error", "could not decrypt a provider credential")

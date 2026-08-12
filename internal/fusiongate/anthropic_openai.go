@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const maxAnthropicBridgeEvent = 4 << 20
@@ -49,6 +50,17 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 	}
 	ctx, cancel := context.WithCancel(incoming.Context())
 	defer cancel()
+	startTimeout := a.cfg.StreamStartTimeout
+	if startTimeout <= 0 {
+		startTimeout = DefaultStreamStartTimeout
+	}
+	idleTimeout := a.cfg.StreamIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = defaultFailoverIdleTimeout
+	}
+	outputDeadline := time.Now().Add(startTimeout)
+	startTimer := time.AfterFunc(startTimeout, cancel)
+	defer startTimer.Stop()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "route_configuration_error", Err: err}
@@ -72,20 +84,30 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 		if downstreamCanceled(incoming) {
 			return attemptResult{Status: http.StatusBadGateway, Reason: "downstream_canceled", Err: err}
 		}
+		if ctx.Err() != nil || time.Now().After(outputDeadline) {
+			return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: context.DeadlineExceeded}
+		}
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: retryReason(0, err), Err: err}
 	}
 	defer resp.Body.Close()
 	resp.Body = observeFirstByte(resp.Body, onFirstByte)
 
 	if retryableStatus(resp.StatusCode) {
+		startTimer.Stop()
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
 		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
-	w.Header().Set("X-FusionGate-Request-ID", rid)
 	if resp.StatusCode >= 400 {
+		startTimer.Stop()
+		w.Header().Set("X-FusionGate-Request-ID", rid)
 		return writeAnthropicBridgeError(w, resp)
 	}
-	return streamOpenAIAsAnthropic(w, resp.Body, z, rid)
+	startTimer.Stop()
+	result := streamOpenAIAsAnthropic(w, resp.Body, z, rid, time.Until(outputDeadline), idleTimeout)
+	if result.Err != nil && downstreamCanceled(incoming) {
+		return attemptResult{Status: http.StatusBadGateway, Handled: result.Handled, Reason: "downstream_canceled", Err: result.Err, Usage: result.Usage}
+	}
+	return result
 }
 
 func anthropicMessagesRequestToOpenAI(body map[string]any, upstreamModel string, stream, includeStreamUsage bool) ([]byte, error) {
@@ -422,66 +444,170 @@ type openAIToolStream struct {
 }
 
 type anthropicBridgeStream struct {
-	w             http.ResponseWriter
-	flusher       http.Flusher
-	model         string
-	messageID     string
-	textOpen      bool
-	textIndex     int
-	nextIndex     int
-	tools         map[int]*openAIToolStream
-	toolOrder     []int
-	finish        any
-	usage         Usage
-	writeError    error
-	failureReason string
+	w          http.ResponseWriter
+	flusher    http.Flusher
+	model      string
+	messageID  string
+	textOpen   bool
+	textIndex  int
+	nextIndex  int
+	tools      map[int]*openAIToolStream
+	toolOrder  []int
+	finish     any
+	usage      Usage
+	writeError error
 }
 
-func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRoute, rid string) attemptResult {
+type anthropicBridgeTimedReader struct {
+	body      io.Reader
+	remaining func() time.Duration
+}
+
+func (r *anthropicBridgeTimedReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	timeout := r.remaining()
+	if timeout <= 0 {
+		return 0, context.DeadlineExceeded
+	}
+	chunk, err := readStreamChunk(r.body, len(p), timeout)
+	return copy(p, chunk), err
+}
+
+func hasAnthropicBridgeSemanticOutput(event map[string]any) bool {
+	for _, value := range anySlice(event["choices"]) {
+		choice, _ := value.(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		if text, _ := delta["content"].(string); text != "" {
+			return true
+		}
+		if len(anySlice(delta["tool_calls"])) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRoute, rid string, startTimeout, idleTimeout time.Duration) attemptResult {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return attemptResult{Status: http.StatusInternalServerError, Reason: "streaming_unsupported", Err: errors.New("response writer does not support flushing")}
 	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
 	state := &anthropicBridgeStream{w: w, flusher: flusher, model: z.Route.PublicName, messageID: "msg_" + rid, textIndex: -1, tools: map[int]*openAIToolStream{}}
-	state.event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
-		"id": state.messageID, "type": "message", "role": "assistant", "model": state.model,
-		"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
-		"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
-	}})
-	if state.writeError != nil {
-		return attemptResult{Status: http.StatusOK, Handled: true, Reason: "downstream_write_error", Err: state.writeError}
+	if startTimeout <= 0 {
+		return attemptResult{Status: http.StatusGatewayTimeout, Retryable: true, Reason: "upstream_output_timeout", Err: context.DeadlineExceeded}
+	}
+	if idleTimeout <= 0 {
+		idleTimeout = defaultFailoverIdleTimeout
+	}
+	pending := make([]map[string]any, 0)
+	committed := false
+	sawPayload := false
+	pendingBytes := 0
+	deadline := time.Now().Add(startTimeout)
+
+	commit := func() error {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-FusionGate-Request-ID", rid)
+		w.WriteHeader(http.StatusOK)
+		committed = true
+		state.event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+			"id": state.messageID, "type": "message", "role": "assistant", "model": state.model,
+			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
+			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
+		}})
+		if state.writeError != nil {
+			return state.writeError
+		}
+		for _, event := range pending {
+			state.consume(event)
+			if state.writeError != nil {
+				return state.writeError
+			}
+		}
+		pending = nil
+		deadline = time.Now().Add(idleTimeout)
+		return nil
 	}
 
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 64<<10), maxAnthropicBridgeEvent)
 	var dataLines []string
-	finishEvent := func() bool {
+	finishEvent := func() (bool, error) {
 		if len(dataLines) == 0 {
-			return false
+			return false, nil
 		}
 		payload := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		sawPayload = true
 		if payload == "[DONE]" {
-			return true
+			if !committed {
+				return false, errors.New("upstream stream ended before model output")
+			}
+			return true, nil
 		}
-		var chunk map[string]any
-		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
-			state.writeError = fmt.Errorf("invalid upstream SSE event: %w", err)
-			state.failureReason = "upstream_invalid_response"
-			return true
+		var event map[string]any
+		if err := json.Unmarshal([]byte(payload), &event); err != nil {
+			return false, fmt.Errorf("invalid upstream SSE event: %w", err)
 		}
-		state.consume(chunk)
-		return state.writeError != nil
+		if upstreamError, exists := event["error"]; exists && upstreamError != nil {
+			encoded, _ := json.Marshal(upstreamError)
+			return false, fmt.Errorf("upstream error event: %s", encoded)
+		}
+		semantic := hasAnthropicBridgeSemanticOutput(event)
+		if !committed {
+			pending = append(pending, event)
+			if !semantic {
+				return false, nil
+			}
+			return false, commit()
+		}
+		state.consume(event)
+		if semantic {
+			deadline = time.Now().Add(idleTimeout)
+		}
+		return false, state.writeError
 	}
+
+	fail := func(reason string, err error) attemptResult {
+		if committed {
+			status := http.StatusBadGateway
+			if errors.Is(err, context.DeadlineExceeded) {
+				status = http.StatusGatewayTimeout
+				reason = "upstream_stalled"
+			}
+			if state.writeError != nil {
+				reason = "downstream_write_error"
+			}
+			return attemptResult{Status: status, Handled: true, Reason: reason, Err: err, Usage: state.usage}
+		}
+		status := http.StatusBadGateway
+		if errors.Is(err, context.DeadlineExceeded) {
+			status = http.StatusGatewayTimeout
+			reason = "upstream_output_timeout"
+		}
+		return attemptResult{Status: status, Retryable: true, Reason: reason, Err: err}
+	}
+
+	timedBody := &anthropicBridgeTimedReader{body: body, remaining: func() time.Duration { return time.Until(deadline) }}
+	scanner := bufio.NewScanner(timedBody)
+	scanner.Buffer(make([]byte, 64<<10), maxAnthropicBridgeEvent)
 	stop := false
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if !committed {
+			pendingBytes += len(line) + 1
+			if pendingBytes > maxPendingStreamOutput {
+				return fail("upstream_no_output", fmt.Errorf("upstream sent more than %d bytes without model output", maxPendingStreamOutput))
+			}
+		}
 		if line == "" {
-			if finishEvent() {
+			done, err := finishEvent()
+			if err != nil {
+				return fail("upstream_invalid_response", err)
+			}
+			if done {
 				stop = true
 				break
 			}
@@ -491,27 +617,25 @@ func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRo
 			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 	}
+	if scanErr := scanner.Err(); scanErr != nil {
+		return fail("upstream_stream_interrupted", scanErr)
+	}
 	if !stop && len(dataLines) > 0 {
-		_ = finishEvent()
-	}
-	if scanErr := scanner.Err(); scanErr != nil && state.writeError == nil {
-		state.writeError = scanErr
-		state.failureReason = "upstream_stream_interrupted"
-	}
-	if state.writeError != nil {
-		reason := state.failureReason
-		if reason == "" {
-			reason = "downstream_write_error"
+		if _, err := finishEvent(); err != nil {
+			return fail("upstream_invalid_response", err)
 		}
-		return attemptResult{Status: http.StatusOK, Handled: true, Reason: reason, Err: state.writeError, Usage: state.usage}
 	}
+	if !committed {
+		reason := "upstream_no_output"
+		if !sawPayload {
+			reason = "upstream_empty_stream"
+		}
+		return fail(reason, io.EOF)
+	}
+
 	state.finishStream()
 	if state.writeError != nil {
-		reason := state.failureReason
-		if reason == "" {
-			reason = "downstream_write_error"
-		}
-		return attemptResult{Status: http.StatusOK, Handled: true, Reason: reason, Err: state.writeError, Usage: state.usage}
+		return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: state.writeError, Usage: state.usage}
 	}
 	cost(z, &state.usage)
 	return attemptResult{Status: http.StatusOK, Handled: true, Usage: state.usage}

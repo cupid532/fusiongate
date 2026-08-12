@@ -134,10 +134,10 @@ func (a *App) pricing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 }
 
 func (a *App) syncOfficialPricing(ctx context.Context) (pricingSyncResult, error) {
-	return a.syncOfficialPricingTarget(ctx, "")
+	return a.syncOfficialPricingTarget(ctx, "", false)
 }
 
-func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) (pricingSyncResult, error) {
+func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string, overwriteManual bool) (pricingSyncResult, error) {
 	a.pricingSyncMu.Lock()
 	defer a.pricingSyncMu.Unlock()
 	result := pricingSyncResult{SyncedAt: now()}
@@ -154,7 +154,6 @@ func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) 
 		{"openrouter", openRouterPricingURL, parseOpenRouterPricing},
 	}
 	catalogs := map[string]map[string]officialModelPrice{}
-	client := &http.Client{Timeout: 25 * time.Second}
 	for _, source := range sources {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source.url, nil)
 		if err != nil {
@@ -163,7 +162,7 @@ func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) 
 		}
 		req.Header.Set("Accept", "application/json,text/markdown,text/html;q=0.9")
 		req.Header.Set("User-Agent", "FusionGate pricing-sync/1.0")
-		resp, err := client.Do(req)
+		resp, err := a.pricingClient.Do(req)
 		if err != nil {
 			result.Errors = append(result.Errors, source.name+": "+err.Error())
 			continue
@@ -198,7 +197,7 @@ func (a *App) syncOfficialPricingTarget(ctx context.Context, publicName string) 
 		return result, err
 	}
 
-	updated, applyErrors, err := a.applyOfficialPricing(ctx, catalogs, publicName)
+	updated, applyErrors, err := a.applyOfficialPricing(ctx, catalogs, publicName, overwriteManual)
 	if err != nil {
 		return result, err
 	}
@@ -216,7 +215,7 @@ type pricingRouteTarget struct {
 	publicName, model, providerType, pricingSource string
 }
 
-func (a *App) applyOfficialPricing(ctx context.Context, catalogs map[string]map[string]officialModelPrice, publicName string) (int64, []string, error) {
+func (a *App) applyOfficialPricing(ctx context.Context, catalogs map[string]map[string]officialModelPrice, publicName string, overwriteManual bool) (int64, []string, error) {
 	query := `SELECT r.public_name,r.upstream_model,p.type,r.pricing_source FROM model_routes r JOIN providers p ON p.id=r.provider_id`
 	args := []any{}
 	if strings.TrimSpace(publicName) != "" {
@@ -258,7 +257,13 @@ func (a *App) applyOfficialPricing(ctx context.Context, catalogs map[string]map[
 		if !ok {
 			continue
 		}
-		res, updateErr := a.db.ExecContext(ctx, `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE LOWER(public_name)=? AND pricing_source<>?`, price.InputMicros, price.CachedMicros, price.OutputMicros, price.LongContextThreshold, price.LongInputMicros, price.LongCachedMicros, price.LongOutputMicros, price.Source, stamp, stamp, name, manualPricingSource)
+		query := `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE LOWER(public_name)=?`
+		updateArgs := []any{price.InputMicros, price.CachedMicros, price.OutputMicros, price.LongContextThreshold, price.LongInputMicros, price.LongCachedMicros, price.LongOutputMicros, price.Source, stamp, stamp, name}
+		if !overwriteManual {
+			query += ` AND pricing_source<>?`
+			updateArgs = append(updateArgs, manualPricingSource)
+		}
+		res, updateErr := a.db.ExecContext(ctx, query, updateArgs...)
 		if updateErr != nil {
 			applyErrors = append(applyErrors, fmt.Sprintf("model %s: %v", name, updateErr))
 			continue
@@ -770,6 +775,10 @@ func (a *App) updateModelPricing(w http.ResponseWriter, r *http.Request, name st
 		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
+	// Serialize manual writes with official restores so whichever operation starts
+	// second observes and replaces the first operation's complete result.
+	a.pricingSyncMu.Lock()
+	defer a.pricingSyncMu.Unlock()
 	stamp := now()
 	res, err := a.db.ExecContext(r.Context(), `UPDATE model_routes SET input_price_micros=?,cached_price_micros=?,output_price_micros=?,long_context_threshold=?,long_input_price_micros=?,long_cached_price_micros=?,long_output_price_micros=?,pricing_source=?,pricing_updated_at=?,updated_at=? WHERE public_name=?`, in.InputPriceMicros, in.CachedPriceMicros, in.OutputPriceMicros, in.LongContextThreshold, in.LongInputPriceMicros, in.LongCachedPriceMicros, in.LongOutputPriceMicros, manualPricingSource, stamp, stamp, name)
 	if err != nil {
@@ -785,24 +794,24 @@ func (a *App) updateModelPricing(w http.ResponseWriter, r *http.Request, name st
 }
 
 func (a *App) restoreModelOfficialPricing(w http.ResponseWriter, r *http.Request, name string) {
-	res, err := a.db.ExecContext(r.Context(), `UPDATE model_routes SET pricing_source='',pricing_updated_at='',updated_at=? WHERE public_name=?`, now(), name)
-	if err != nil {
+	var routes int64
+	if err := a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM model_routes WHERE public_name=?`, name).Scan(&routes); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	updated, _ := res.RowsAffected()
-	if updated == 0 {
+	if routes == 0 {
 		fail(w, http.StatusNotFound, "not_found", "model not found")
 		return
 	}
-	result, syncErr := a.syncOfficialPricingTarget(r.Context(), name)
-	var matched int64
-	_ = a.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM model_routes WHERE public_name=? AND pricing_source<>'' AND pricing_source<>?`, name, manualPricingSource).Scan(&matched)
-	if matched == 0 && syncErr != nil {
+	result, syncErr := a.syncOfficialPricingTarget(r.Context(), name, true)
+	if result.UpdatedRoutes == 0 {
+		if syncErr == nil {
+			syncErr = errors.New("no official pricing match found")
+		}
 		fail(w, http.StatusBadGateway, "pricing_sync_failed", syncErr.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": name, "updated_routes": matched, "sync": result})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "model": name, "updated_routes": result.UpdatedRoutes, "sync": result})
 }
 
 func (a *App) adminModels(w http.ResponseWriter, r *http.Request, _ adminCtx) {

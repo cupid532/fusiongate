@@ -535,6 +535,27 @@ func TestRetryAfterImmediatelyOpensProviderCircuit(t *testing.T) {
 	}
 }
 
+func TestRetryAfterCircuitCooldownIsCapped(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "capped-rate-limit", "openai_compatible", "http://rate-limit.test", "secret", 1, 1, "normalized", "any", 0, 3, 30)
+	z := resolvedRoute{
+		Route:    Route{ID: 1, ProviderID: providerID},
+		Provider: Provider{ID: providerID, FailureThreshold: 3, CooldownSeconds: 30},
+	}
+	started := time.Now()
+	a.completeRoute(z, attemptResult{Status: http.StatusTooManyRequests, Retryable: true, RetryAfter: 24 * time.Hour, Reason: "upstream_rate_limited"}, time.Millisecond)
+	a.routeMu.Lock()
+	openUntil := a.stateForLocked(z.Provider).CircuitOpenUntil
+	a.routeMu.Unlock()
+	if remaining := openUntil.Sub(started); remaining < 9*time.Minute+55*time.Second || remaining > 10*time.Minute+time.Second {
+		t.Fatalf("capped circuit cooldown=%s, open until %s", remaining, openUntil)
+	}
+}
+
 func TestRateLimitWithoutRetryAfterImmediatelyOpensProviderCircuit(t *testing.T) {
 	var primaryCalls, backupCalls atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

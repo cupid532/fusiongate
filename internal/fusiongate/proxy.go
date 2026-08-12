@@ -339,6 +339,24 @@ var hopByHopHeaders = map[string]bool{
 	"Upgrade":             true,
 }
 
+// These headers express gateway policy, not upstream application metadata. They
+// are set before proxying by security and API middleware and must survive response
+// forwarding unchanged.
+var gatewayOwnedResponseHeaders = map[string]bool{
+	"Access-Control-Allow-Credentials":     true,
+	"Access-Control-Allow-Headers":         true,
+	"Access-Control-Allow-Methods":         true,
+	"Access-Control-Allow-Origin":          true,
+	"Access-Control-Allow-Private-Network": true,
+	"Access-Control-Expose-Headers":        true,
+	"Access-Control-Max-Age":               true,
+	"Cache-Control":                        true,
+	"Content-Security-Policy":              true,
+	"Referrer-Policy":                      true,
+	"X-Content-Type-Options":               true,
+	"X-Frame-Options":                      true,
+}
+
 func connectionHeaders(h http.Header) map[string]bool {
 	out := map[string]bool{}
 	for _, value := range h.Values("Connection") {
@@ -375,7 +393,13 @@ func copyUpstreamResponseHeaders(dst, src http.Header) {
 	connectionSpecific := connectionHeaders(src)
 	for key, values := range src {
 		canonical := http.CanonicalHeaderKey(key)
-		if hopByHopHeaders[canonical] || connectionSpecific[canonical] || strings.EqualFold(canonical, "Set-Cookie") {
+		if hopByHopHeaders[canonical] || connectionSpecific[canonical] || gatewayOwnedResponseHeaders[canonical] || strings.EqualFold(canonical, "Set-Cookie") {
+			continue
+		}
+		if canonical == "Vary" {
+			for _, value := range values {
+				dst.Add(canonical, value)
+			}
 			continue
 		}
 		dst.Del(canonical)

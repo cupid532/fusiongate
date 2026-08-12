@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -184,6 +185,118 @@ func TestEditProviderValidatesConnectionFields(t *testing.T) {
 		})
 	}
 }
+
+func TestEditProviderDuplicateNameRollsBackCredential(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	id := insertTestProvider(t, a, "original-name", "openai_compatible", "http://original.test", "original-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestProvider(t, a, "existing-name", "openai_compatible", "http://existing.test", "existing-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	if err := a.migrateProviderAPIKeys(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := patchProviderForTest(t, a, id, `{"name":"existing-name","credential":"replacement-secret"}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "provider_conflict") {
+		t.Fatalf("patch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var name string
+	var providerCredential, keyCredential []byte
+	if err := a.db.QueryRow(`SELECT name,credential FROM providers WHERE id=?`, id).Scan(&name, &providerCredential); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT credential FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1`, id).Scan(&keyCredential); err != nil {
+		t.Fatal(err)
+	}
+	providerSecret, err := a.decrypt(providerCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keySecret, err := a.decrypt(keyCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "original-name" || providerSecret != "original-secret" || keySecret != "original-secret" {
+		t.Fatalf("name=%q provider credential=%q key credential=%q", name, providerSecret, keySecret)
+	}
+}
+
+func TestEditProviderDuplicateCredentialReturnsConflict(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	id := insertTestProvider(t, a, "duplicate-key", "openai_compatible", "http://duplicate-key.test", "first-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	if err := a.migrateProviderAPIKeys(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	insertProviderKeyForTest(t, a, id, "second-secret", "second", "", providerKeyEgressInherit, nil, 1, 1)
+
+	rec := patchProviderForTest(t, a, id, `{"credential":"second-secret","notes":"must roll back"}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "duplicate_api_key") {
+		t.Fatalf("patch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var encrypted []byte
+	var notes string
+	if err := a.db.QueryRow(`SELECT credential,notes FROM providers WHERE id=?`, id).Scan(&encrypted, &notes); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := a.decrypt(encrypted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret != "first-secret" || notes != "" {
+		t.Fatalf("provider credential=%q notes=%q", secret, notes)
+	}
+}
+
+func TestEditProviderLaterMutationFailureRollsBackProvider(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	id := insertTestProvider(t, a, "rollback-later", "openai_compatible", "http://original.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	if err := a.migrateProviderAPIKeys(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var keyID int64
+	if err := a.db.QueryRow(`SELECT id FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1`, id).Scan(&keyID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at) VALUES(?,?,?,?,?)`, keyID, "stable-model", "Stable Model", "chat", now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`CREATE TRIGGER fail_provider_inventory_cleanup BEFORE DELETE ON provider_api_key_models BEGIN SELECT RAISE(ABORT, 'forced inventory cleanup failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := patchProviderForTest(t, a, id, `{"baseURL":"http://replacement.test","notes":"must roll back"}`)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "forced inventory cleanup failure") {
+		t.Fatalf("patch status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var baseURL, notes string
+	var modelCount int
+	if err := a.db.QueryRow(`SELECT base_url,notes FROM providers WHERE id=?`, id).Scan(&baseURL, &notes); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM provider_api_key_models WHERE provider_key_id=? AND model='stable-model'`, keyID).Scan(&modelCount); err != nil {
+		t.Fatal(err)
+	}
+	if baseURL != "http://original.test" || notes != "" || modelCount != 1 {
+		t.Fatalf("base URL=%q notes=%q model count=%d", baseURL, notes, modelCount)
+	}
+}
+
 func TestProviderHealthCheckToggle(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

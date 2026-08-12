@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -81,6 +82,13 @@ func TestReadinessDropsBeforeShutdown(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("ready status=%d", recorder.Code)
 	}
+	var ready map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &ready); err != nil {
+		t.Fatal(err)
+	}
+	if ready["version"] != Version || ready["revision"] != BuildRevision {
+		t.Fatalf("ready build identity=%#v", ready)
+	}
 	a.BeginShutdown()
 	recorder = httptest.NewRecorder()
 	a.readyHealth(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
@@ -91,6 +99,23 @@ func TestReadinessDropsBeforeShutdown(t *testing.T) {
 	a.live(recorder, httptest.NewRequest(http.MethodGet, "/livez", nil))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("liveness status=%d", recorder.Code)
+	}
+}
+
+func TestReadinessFailsWhenDatabaseRemainsUnavailable(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	a.flushLedgerWrites()
+	if err := a.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	a.readyHealth(recorder, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "database_unavailable") {
+		t.Fatalf("database-down readiness status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

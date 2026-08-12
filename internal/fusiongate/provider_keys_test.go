@@ -184,9 +184,13 @@ func TestProviderKeyAdminMasksSecretsRejectsDuplicateAndDeletesLast(t *testing.T
 			t.Fatalf("delete key %d status=%d body=%s", keyID, recorder.Code, recorder.Body.String())
 		}
 	}
-	var initialized int
-	if err := a.db.QueryRow(`SELECT multi_key_initialized FROM providers WHERE id=?`, providerID).Scan(&initialized); err != nil || initialized != 1 {
-		t.Fatalf("initialized=%d err=%v", initialized, err)
+	var credential []byte
+	var initialized, providerEnabled int
+	if err := a.db.QueryRow(`SELECT credential,multi_key_initialized,enabled FROM providers WHERE id=?`, providerID).Scan(&credential, &initialized, &providerEnabled); err != nil {
+		t.Fatal(err)
+	}
+	if len(credential) != 0 || initialized != 1 || providerEnabled != 0 {
+		t.Fatalf("credential bytes=%d initialized=%d enabled=%d", len(credential), initialized, providerEnabled)
 	}
 	if _, err := a.selectProviderKey(context.Background(), providerID, "gpt-mini", nil, nil, true); err == nil {
 		t.Fatal("deleted last card fell back to hidden legacy credential")

@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -356,7 +357,7 @@ func TestOfficialPricingDoesNotOverwriteManualModelPrice(t *testing.T) {
 		}
 	}
 	catalogs := map[string]map[string]officialModelPrice{"claude": {"claude-sonnet-4-5": {Model: "claude-sonnet-4-5", InputMicros: 3_000_000, CachedMicros: 300_000, OutputMicros: 15_000_000, Source: claudePricingURL}}}
-	updated, applyErrors, err := a.applyOfficialPricing(t.Context(), catalogs, "claude-sonnet-4-5")
+	updated, applyErrors, err := a.applyOfficialPricing(t.Context(), catalogs, "claude-sonnet-4-5", false)
 	if err != nil || len(applyErrors) != 0 {
 		t.Fatalf("apply err=%v errors=%v", err, applyErrors)
 	}
@@ -372,6 +373,110 @@ func TestOfficialPricingDoesNotOverwriteManualModelPrice(t *testing.T) {
 	}
 	if manualInput != 9 || automaticInput != 3_000_000 {
 		t.Fatalf("manual=%d automatic=%d", manualInput, automaticInput)
+	}
+}
+
+type pricingRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f pricingRoundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func insertManualPricingRoute(t *testing.T, a *App, model string) int64 {
+	t.Helper()
+	providerID := insertTestProvider(t, a, "manual-pricing", "openai_compatible", "https://api.example", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	routeID := insertTestRoute(t, a, providerID, model, model, "chat", 0)
+	if _, err := a.db.Exec(`UPDATE model_routes SET input_price_micros=111,cached_price_micros=22,output_price_micros=333,pricing_source=?,pricing_updated_at='manual-stamp' WHERE id=?`, manualPricingSource, routeID); err != nil {
+		t.Fatal(err)
+	}
+	return routeID
+}
+
+func assertManualPricingUnchanged(t *testing.T, a *App, routeID int64) {
+	t.Helper()
+	var input, cached, output int64
+	var source, updatedAt string
+	if err := a.db.QueryRow(`SELECT input_price_micros,cached_price_micros,output_price_micros,pricing_source,pricing_updated_at FROM model_routes WHERE id=?`, routeID).Scan(&input, &cached, &output, &source, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if input != 111 || cached != 22 || output != 333 || source != manualPricingSource || updatedAt != "manual-stamp" {
+		t.Fatalf("manual pricing changed to input=%d cached=%d output=%d source=%q updated_at=%q", input, cached, output, source, updatedAt)
+	}
+}
+
+func TestRestoreOfficialPricingPreservesManualValuesWhenSourcesFail(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routeID := insertManualPricingRoute(t, a, "manual-model")
+	a.pricingClient = &http.Client{Transport: pricingRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, io.ErrUnexpectedEOF
+	})}
+
+	rec := httptest.NewRecorder()
+	a.restoreModelOfficialPricing(rec, httptest.NewRequest(http.MethodPost, "/api/admin/models/manual-model/pricing/official", nil), "manual-model")
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "pricing_sync_failed") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertManualPricingUnchanged(t, a, routeID)
+}
+
+func TestRestoreOfficialPricingPreservesManualValuesWithoutMatch(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routeID := insertManualPricingRoute(t, a, "manual-model")
+	a.pricingClient = &http.Client{Transport: pricingRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		status := http.StatusBadGateway
+		body := "unavailable"
+		if r.URL.String() == openRouterPricingURL {
+			status = http.StatusOK
+			body = `{"data":[{"id":"vendor/other-model","canonical_slug":"vendor/other-model","pricing":{"prompt":"0.000001","completion":"0.000002","input_cache_read":"0"}}]}`
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})}
+
+	rec := httptest.NewRecorder()
+	a.restoreModelOfficialPricing(rec, httptest.NewRequest(http.MethodPost, "/api/admin/models/manual-model/pricing/official", nil), "manual-model")
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "pricing_sync_failed") {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	assertManualPricingUnchanged(t, a, routeID)
+}
+
+func TestRestoreOfficialPricingReplacesManualValuesAfterMatch(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routeID := insertManualPricingRoute(t, a, "manual-model")
+	a.pricingClient = &http.Client{Transport: pricingRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		status := http.StatusBadGateway
+		body := "unavailable"
+		if r.URL.String() == openRouterPricingURL {
+			status = http.StatusOK
+			body = `{"data":[{"id":"vendor/manual-model","canonical_slug":"vendor/manual-model","pricing":{"prompt":"0.000001","completion":"0.000002","input_cache_read":"0.00000025"}}]}`
+		}
+		return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})}
+
+	rec := httptest.NewRecorder()
+	a.restoreModelOfficialPricing(rec, httptest.NewRequest(http.MethodPost, "/api/admin/models/manual-model/pricing/official", nil), "manual-model")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var input, cached, output int64
+	var source string
+	if err := a.db.QueryRow(`SELECT input_price_micros,cached_price_micros,output_price_micros,pricing_source FROM model_routes WHERE id=?`, routeID).Scan(&input, &cached, &output, &source); err != nil {
+		t.Fatal(err)
+	}
+	if input != 1_000_000 || cached != 250_000 || output != 2_000_000 || source != openRouterPricingURL {
+		t.Fatalf("official pricing input=%d cached=%d output=%d source=%q", input, cached, output, source)
 	}
 }
 
@@ -397,7 +502,7 @@ func TestModelPricingPatchRejectsInvalidPriceAndMissingModel(t *testing.T) {
 	}
 }
 
-func TestAPIKeyBudgetAndExpiryStopAuthentication(t *testing.T) {
+func TestAPIKeyBudgetAndExpiryAdmission(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -419,8 +524,13 @@ func TestAPIKeyBudgetAndExpiryStopAuthentication(t *testing.T) {
 	a.endLedger(a.startLedger(authKey{ID: keyID}, resolvedRoute{Route: Route{ID: 1, PublicName: "m", UpstreamModel: "m"}, Provider: Provider{ID: 1}}, "test", false, "127.0.0.1", "req_spent", "", 1, ""), 1, keyID, "openai", "m",
 		true, 200, "", time.Now(), Usage{CostMicros: 1_000_000, CostType: "estimated", Reported: true})
 	a.flushLedgerWrites()
-	if _, ok := a.authenticateKey(req); ok {
-		t.Fatal("budget-exhausted key authenticated")
+	if _, ok := a.authenticateKey(req); !ok {
+		t.Fatal("budget-exhausted valid key must authenticate so Router can return budget_exceeded")
+	}
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusPaymentRequired || !strings.Contains(rec.Body.String(), `"code":"budget_exceeded"`) {
+		t.Fatalf("exhausted key status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if _, err := a.db.Exec(`UPDATE api_keys SET budget_micros=0,expires_at=? WHERE id=?`, time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), keyID); err != nil {
 		t.Fatal(err)
@@ -484,7 +594,7 @@ func TestOfficialPricingUpdatesUnifiedModelAcrossCompatibleChannels(t *testing.T
 	catalogs := map[string]map[string]officialModelPrice{
 		"openai": {"gpt-unified": {Model: "gpt-unified", InputMicros: 2_000_000, CachedMicros: 200_000, OutputMicros: 8_000_000, Source: openAIPricingURL}},
 	}
-	updated, warnings, err := a.applyOfficialPricing(t.Context(), catalogs, "gpt-unified")
+	updated, warnings, err := a.applyOfficialPricing(t.Context(), catalogs, "gpt-unified", false)
 	if err != nil || len(warnings) != 0 || updated != 2 {
 		t.Fatalf("updated=%d warnings=%v err=%v", updated, warnings, err)
 	}
@@ -521,7 +631,7 @@ func TestOpenRouterPricingFallbackUpdatesCompatibleModel(t *testing.T) {
 	catalogs := map[string]map[string]officialModelPrice{
 		"openrouter": {"kimi-k2.5": {Model: "moonshotai/kimi-k2.5", InputMicros: 500_000, OutputMicros: 2_500_000, Source: openRouterPricingURL}},
 	}
-	updated, warnings, err := a.applyOfficialPricing(t.Context(), catalogs, "kimi-k2.5")
+	updated, warnings, err := a.applyOfficialPricing(t.Context(), catalogs, "kimi-k2.5", false)
 	if err != nil || len(warnings) != 0 || updated != 1 {
 		t.Fatalf("updated=%d warnings=%v err=%v", updated, warnings, err)
 	}

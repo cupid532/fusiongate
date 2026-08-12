@@ -9,6 +9,12 @@ RUN curl -fsSL "https://github.com/chen-006/gpt56_api_detector/archive/${DETECTO
     && test "$(cat /detector/VERSION)" = "4.0.1"
 
 FROM node:24-alpine
+ARG FUSIONGATE_BUILD_REVISION=unknown
+ARG FUSIONGATE_BUILD_SOURCE=https://github.com/cupid532/fusiongate
+ARG FUSIONGATE_BUILD_VERSION=dev
+LABEL org.opencontainers.image.revision="$FUSIONGATE_BUILD_REVISION" \
+      org.opencontainers.image.source="$FUSIONGATE_BUILD_SOURCE" \
+      org.opencontainers.image.version="$FUSIONGATE_BUILD_VERSION"
 RUN apk add --no-cache python3 ca-certificates \
     && addgroup -S -g 10002 detector \
     && adduser -S -D -H -u 10002 -G detector detector \

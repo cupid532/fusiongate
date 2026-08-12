@@ -224,6 +224,97 @@ func TestProviderEditPayloadOmitsKeyName(t *testing.T) {
 	}
 }
 
+func TestProviderEditorUsesSingleAccessibleTabbedSurface(t *testing.T) {
+	html := string(adminHTML)
+	for _, required := range []string{
+		`class="provider-form-tabs" role="tablist" aria-label="渠道设置"`,
+		`id="providerTabConnectionButton" type="button" role="tab"`,
+		`aria-controls="providerTabConnection" aria-selected="true"`,
+		`id="providerTabKeysButton" type="button" role="tab"`,
+		`aria-controls="providerTabKeys" aria-selected="false" aria-disabled="true"`,
+		`id="providerTabRuntimeButton" type="button" role="tab"`,
+		`role="tabpanel" aria-labelledby="providerTabConnectionButton" data-tab="connection"`,
+		`role="tabpanel" aria-labelledby="providerTabKeysButton" data-tab="keys"`,
+		`role="tabpanel" aria-labelledby="providerTabRuntimeButton" data-tab="runtime"`,
+		`id="providerKeyAdd" class="btn btn-primary" type="button" onclick="addProviderKeyCard()" disabled`,
+		`id="providerFormActions" class="form-actions span-12"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("unified provider editor is missing %q", required)
+		}
+	}
+	if strings.Contains(html, `id="providerKeysModal"`) {
+		t.Fatal("the obsolete standalone provider key modal is still present")
+	}
+	if got := strings.Count(html, `<symbol id="i-activity"`); got != 1 {
+		t.Fatalf("i-activity symbol count = %d, want 1", got)
+	}
+	seen := map[string]bool{}
+	for _, match := range regexp.MustCompile(`\bid="([^"]+)"`).FindAllStringSubmatch(html, -1) {
+		if seen[match[1]] {
+			t.Fatalf("admin shell contains duplicate id %q", match[1])
+		}
+		seen[match[1]] = true
+	}
+}
+
+func TestProviderEditorGuardsStateAndAsyncLoads(t *testing.T) {
+	js := string(adminJS)
+	for _, required := range []string{
+		`balance.dataset.original='';delete balance.dataset.clear`,
+		`balanceInput.dataset.original=balanceValue;delete balanceInput.dataset.clear`,
+		`event.target.name==='manualBalanceUSD'&&String(event.target.value).trim()!==''`,
+		`delete event.target.dataset.clear`,
+		`providerPanelGeneration++`,
+		`generation!==providerPanelGeneration||Number(providerKeyManager.providerId)!==providerId`,
+		`generation===providerPanelGeneration&&Number(providerEditId)===Number(id)`,
+		`generation!==providerBalanceLoadGeneration||Number(providerBalanceEditId)!==Number(id)`,
+		`setProviderKeysLoading(provider.api_key_count)`,
+		`providerKeyManager={providerId:Number(id),items:[],revealed:new Map()}`,
+		`if(!providerKeyManager.providerId)return notice('请先保存渠道，再添加 Key',true)`,
+		`$('#keyTabCount').textContent=String(items.length)`,
+		`$('#providerFormActions').classList.toggle('hidden',keys)`,
+		`$('#providerSubmit').disabled=keys`,
+		`if(!force&&(providerFormDirty||providerKeyDirty)&&!confirm(`,
+		`current==='keys'&&name!=='keys'&&providerKeyDirty`,
+		`current!=='keys'&&name==='keys'&&providerFormDirty`,
+		`const panel=field.closest('.provider-tab-panel')`,
+		`switchProviderTab(panel.dataset.tab,true)`,
+		`field.reportValidity()`,
+	} {
+		if !strings.Contains(js, required) {
+			t.Fatalf("provider editor lifecycle guard is missing %q", required)
+		}
+	}
+}
+
+func TestProviderEditorKeepsFinalMobileAndRenderingOverrides(t *testing.T) {
+	css := string(adminCSS)
+	js := string(adminJS)
+	if strings.Contains(css, `.provider-keys-modal`) {
+		t.Fatal("standalone provider key modal CSS is still present")
+	}
+	mobile := strings.LastIndex(css, "@media(max-width:780px){\n  .provider-form-modal")
+	desktopRefresh := strings.LastIndex(css, `.provider-form-modal .form-actions{bottom:-22px`)
+	if mobile < 0 || mobile <= desktopRefresh {
+		t.Fatalf("final provider mobile override is not last/effective: mobile=%d desktop=%d", mobile, desktopRefresh)
+	}
+	if got := strings.Count(js, `$$('#providers button[onclick^="openProviderEdit("]').forEach`); got != 1 {
+		t.Fatalf("provider edit button decoration loop count = %d, want 1", got)
+	}
+	for _, forbidden := range []string{
+		`</div></div></td></tr>`,
+		`$('#ipPoolSubmit').innerHTML=icon('i-check')+'保存渠道'`,
+	} {
+		if strings.Contains(js, forbidden) {
+			t.Fatalf("provider UI still contains obsolete rendering fragment %q", forbidden)
+		}
+	}
+	if !strings.Contains(js, `$('#ipPoolSubmit').innerHTML=icon('i-check')+'保存节点'`) {
+		t.Fatal("IP node editor save label is not 保存节点")
+	}
+}
+
 func TestLightThemeUsesHighContrastCoolPalette(t *testing.T) {
 	html := adminSource()
 	for _, required := range []string{

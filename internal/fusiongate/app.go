@@ -46,6 +46,7 @@ type App struct {
 	cfg                      Config
 	aead                     cipher.AEAD
 	client                   *http.Client
+	pricingClient            *http.Client
 	qualityDetectorClient    *qualityDetectorClient
 	qualityDetectorControlMu sync.Mutex
 	qualityDetectorMu        sync.Mutex
@@ -281,7 +282,7 @@ func New(cfg Config) (*App, error) {
 	}
 	db.SetMaxOpenConns(1)
 	a := &App{
-		db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg),
+		db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), pricingClient: &http.Client{Timeout: 25 * time.Second},
 		log:  slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 		rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{},
 		providerKeyCooldowns: map[int64]time.Time{}, roundRobinCursor: map[string]int{},

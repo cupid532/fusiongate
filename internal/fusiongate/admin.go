@@ -179,7 +179,7 @@ func (a *App) live(w http.ResponseWriter, r *http.Request) {
 		fail(w, 405, "method_not_allowed", "GET required")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"status": "ok", "service": "fusiongate", "time": now()})
+	writeJSON(w, 200, map[string]any{"status": "ok", "service": "fusiongate", "version": Version, "revision": BuildRevision, "time": now()})
 }
 
 func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
@@ -191,17 +191,30 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusServiceUnavailable, "service_not_ready", "service is not ready")
 		return
 	}
-	// Use the same budget as SQLite busy_timeout. A tighter deadline makes
-	// rolling deploys flake when the previous process is still releasing WAL.
+	// Use the same budget as SQLite busy_timeout so a rolling handoff has time for
+	// the previous process to release WAL. Retry once within that budget, but
+	// persistent database unavailability must return a non-ready status.
 	pingCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	if err := a.db.PingContext(pingCtx); err != nil {
-		// If the process is marked ready, prefer live-over-ready during brief
-		// SQLite handoff instead of forcing Docker into an unhealthy restart loop.
-		writeJSON(w, 200, map[string]any{"status": "degraded", "service": "fusiongate", "time": now(), "database": "busy"})
+	var pingErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		pingErr = a.db.PingContext(pingCtx)
+		if pingErr == nil {
+			break
+		}
+		if attempt == 0 {
+			select {
+			case <-pingCtx.Done():
+				pingErr = pingCtx.Err()
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	if pingErr != nil {
+		fail(w, http.StatusServiceUnavailable, "database_unavailable", "database is not ready")
 		return
 	}
-	response := map[string]any{"status": "ok", "service": "fusiongate", "time": now()}
+	response := map[string]any{"status": "ok", "service": "fusiongate", "version": Version, "revision": BuildRevision, "time": now()}
 	if r.URL.Query().Get("include") == "quality-detector" {
 		if a.qualityDetectorClient == nil {
 			fail(w, http.StatusServiceUnavailable, "quality_detector_unavailable", "quality detector is not configured")
@@ -937,11 +950,18 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 	if in.IPPoolNodeID != nil && *in.IPPoolNodeID > 0 {
 		ipPoolNodeArg = *in.IPPoolNodeID
 	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	defer tx.Rollback()
 	if credentialUpdated {
 		var firstKeyID int64
-		if err := a.db.QueryRow(`SELECT id FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1`, id).Scan(&firstKeyID); err == nil {
+		err := tx.QueryRowContext(r.Context(), `SELECT id FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1`, id).Scan(&firstKeyID)
+		if err == nil {
 			raw := strings.TrimSpace(*in.Credential)
-			if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=?,fingerprint=?,key_hint=?,status='untested',last_error='',updated_at=? WHERE id=?`, encryptedCredential, a.providerKeyFingerprint(raw), providerKeyHint(raw), now(), firstKeyID); err != nil {
+			if _, err := tx.ExecContext(r.Context(), `UPDATE provider_api_keys SET credential=?,fingerprint=?,key_hint=?,status='untested',last_error='',updated_at=? WHERE id=?`, encryptedCredential, a.providerKeyFingerprint(raw), providerKeyHint(raw), now(), firstKeyID); err != nil {
 				if strings.Contains(strings.ToLower(err.Error()), "unique") {
 					fail(w, http.StatusConflict, "duplicate_api_key", "this API key already exists in the provider")
 				} else {
@@ -949,11 +969,19 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 				}
 				return
 			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
 		}
 	}
-	res, err := a.db.Exec(`UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, now(), id)
+	res, err := tx.ExecContext(r.Context(), `UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, now(), id)
 	if err != nil {
-		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		lowerErr := strings.ToLower(err.Error())
+		if in.Name != nil && strings.Contains(lowerErr, "unique") && strings.Contains(lowerErr, "providers.name") {
+			fail(w, http.StatusConflict, "provider_conflict", "a provider with that name already exists")
+		} else {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		}
 		return
 	}
 	n, _ := res.RowsAffected()
@@ -966,17 +994,17 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		if !*in.HealthCheckEnabled {
 			status, message = "disabled", "health checks disabled for this provider"
 		}
-		if _, err := a.db.Exec(`UPDATE providers SET health_check_status=?,health_check_error=?,updated_at=? WHERE id=?`, status, message, now(), id); err != nil {
+		if _, err := tx.ExecContext(r.Context(), `UPDATE providers SET health_check_status=?,health_check_error=?,updated_at=? WHERE id=?`, status, message, now(), id); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
 	}
 	if discoveryConnectionChanged {
-		if _, err := a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, id); err != nil {
+		if _, err := tx.ExecContext(r.Context(), `DELETE FROM provider_api_key_models WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, id); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		if _, err := a.db.Exec(`UPDATE provider_api_keys SET status='untested',last_error='',updated_at=? WHERE provider_id=?`, now(), id); err != nil {
+		if _, err := tx.ExecContext(r.Context(), `UPDATE provider_api_keys SET status='untested',last_error='',updated_at=? WHERE provider_id=?`, now(), id); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -991,26 +1019,33 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 			balance = nil
 			baseline = nil
 		}
-		_, err = a.db.Exec(`UPDATE providers SET manual_balance_micros=CASE WHEN ? THEN ? ELSE manual_balance_micros END,balance_baseline_at=CASE WHEN ? THEN ? ELSE balance_baseline_at END,balance_multiplier_openai=COALESCE(?,balance_multiplier_openai),balance_multiplier_claude=COALESCE(?,balance_multiplier_claude),balance_multiplier_grok=COALESCE(?,balance_multiplier_grok),balance_multiplier_gemini=COALESCE(?,balance_multiplier_gemini),balance_multiplier_other=COALESCE(?,balance_multiplier_other),updated_at=? WHERE id=?`, in.ManualBalanceUSD != nil || in.ClearManualBalance, balance, in.ManualBalanceUSD != nil || in.ClearManualBalance, baseline, in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther, now(), id)
+		_, err = tx.ExecContext(r.Context(), `UPDATE providers SET manual_balance_micros=CASE WHEN ? THEN ? ELSE manual_balance_micros END,balance_baseline_at=CASE WHEN ? THEN ? ELSE balance_baseline_at END,balance_multiplier_openai=COALESCE(?,balance_multiplier_openai),balance_multiplier_claude=COALESCE(?,balance_multiplier_claude),balance_multiplier_grok=COALESCE(?,balance_multiplier_grok),balance_multiplier_gemini=COALESCE(?,balance_multiplier_gemini),balance_multiplier_other=COALESCE(?,balance_multiplier_other),updated_at=? WHERE id=?`, in.ManualBalanceUSD != nil || in.ClearManualBalance, balance, in.ManualBalanceUSD != nil || in.ClearManualBalance, baseline, in.BalanceMultiplierOpenAI, in.BalanceMultiplierClaude, in.BalanceMultiplierGrok, in.BalanceMultiplierGemini, in.BalanceMultiplierOther, now(), id)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
-		}
-		if in.ManualBalanceUSD != nil {
-			// Saving a balance starts a fresh local accumulation period. The
-			// official Codex marker (if any) is preserved so the next quota
-			// refresh still detects official window rollovers.
-			if resetErr := a.resetCostCycle(r.Context(), id, "manual_balance_added", ""); resetErr != nil {
-				a.log.Warn("cost cycle reset failed after balance save", "provider_id", id, "error", resetErr)
-			}
 		}
 	}
-	if in.ResetHealth || resetOnEnable || connectionChanged {
-		_, err = a.db.Exec(`UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)
+	resetRuntime := in.ResetHealth || resetOnEnable || connectionChanged
+	if resetRuntime {
+		_, err = tx.ExecContext(r.Context(), `UPDATE providers SET status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id=?`, now(), id)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	if in.ManualBalanceUSD != nil {
+		// Saving a balance starts a fresh local accumulation period. The
+		// official Codex marker (if any) is preserved so the next quota
+		// refresh still detects official window rollovers.
+		if resetErr := a.resetCostCycle(r.Context(), id, "manual_balance_added", ""); resetErr != nil {
+			a.log.Warn("cost cycle reset failed after balance save", "provider_id", id, "error", resetErr)
+		}
+	}
+	if resetRuntime {
 		a.resetProviderRuntime(id)
 		a.resetProviderKeysRuntime(a.providerKeyIDs(id))
 	}

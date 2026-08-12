@@ -1116,7 +1116,10 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 	if name == "" {
 		name = suggestedCredentialName(c, 1)
 	}
-	name = a.uniqueProviderName(ctx, name)
+	name, err = a.uniqueProviderName(ctx, name)
+	if err != nil {
+		return 0, "", err
+	}
 	enabled := status != "expired" && !sharedRisk
 	res, err := a.db.ExecContext(ctx, `INSERT INTO providers(name,type,base_url,credential,enabled,archived,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_account_id,auth_email,auth_expires_at,auth_last_refresh_at,auth_status,auth_fingerprint,auth_has_refresh,created_at,updated_at) SELECT ?,?,?,?,?,0,?,COALESCE(MAX(sort_order),-1)+1,100,'unknown',?,'normalized','any',0,120000,3,30,'oauth',?,?,?,?,?,?,?,?,?,? FROM providers`, name, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, boolInt(enabled), priority, sharedNote, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), now())
 	if err != nil {
@@ -1133,7 +1136,7 @@ func nullableString(value string) any {
 	return value
 }
 
-func (a *App) uniqueProviderName(ctx context.Context, base string) string {
+func (a *App) uniqueProviderName(ctx context.Context, base string) (string, error) {
 	base = strings.TrimSpace(base)
 	if base == "" {
 		base = "授权渠道"
@@ -1144,8 +1147,12 @@ func (a *App) uniqueProviderName(ctx context.Context, base string) string {
 			candidate = fmt.Sprintf("%s (%d)", base, i)
 		}
 		var exists int
-		if err := a.db.QueryRowContext(ctx, `SELECT 1 FROM providers WHERE name=?`, candidate).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
-			return candidate
+		err := a.db.QueryRowContext(ctx, `SELECT 1 FROM providers WHERE name=?`, candidate).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return candidate, nil
+		}
+		if err != nil {
+			return "", err
 		}
 	}
 }
@@ -1965,6 +1972,21 @@ func setCodexQuotaRequestHeaders(req *http.Request, accessToken, accountID strin
 	req.Header.Set("User-Agent", "Codex Desktop")
 }
 
+type codexQuotaHTTPError struct {
+	Endpoint string
+	Status   int
+	Message  string
+}
+
+func (e *codexQuotaHTTPError) Error() string {
+	return fmt.Sprintf("%s returned HTTP %d: %s", e.Endpoint, e.Status, e.Message)
+}
+
+func isCodexQuotaAuthenticationError(err error) bool {
+	var httpErr *codexQuotaHTTPError
+	return errors.As(err, &httpErr) && (httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden)
+}
+
 func (a *App) doCodexQuotaRequestViaNode(ctx context.Context, method, endpoint, accessToken, accountID string, body any, nodeID *int64) (map[string]any, int, error) {
 	var reader io.Reader
 	if body != nil {
@@ -1999,7 +2021,7 @@ func (a *App) doCodexQuotaRequestViaNode(ctx context.Context, method, endpoint, 
 		if msg == "" {
 			msg = resp.Status
 		}
-		return nil, resp.StatusCode, fmt.Errorf("%s returned HTTP %d: %s", endpoint, resp.StatusCode, msg)
+		return nil, resp.StatusCode, &codexQuotaHTTPError{Endpoint: endpoint, Status: resp.StatusCode, Message: msg}
 	}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return map[string]any{}, resp.StatusCode, nil
@@ -2222,7 +2244,7 @@ func (a *App) withCodexCredential(ctx context.Context, id int64, fn func(Provide
 		return nil, err
 	}
 	result, err := fn(credential, nodeID)
-	if err != nil && strings.TrimSpace(credential.RefreshToken) != "" {
+	if isCodexQuotaAuthenticationError(err) && strings.TrimSpace(credential.RefreshToken) != "" {
 		refreshed, refreshErr := a.refreshOAuthCredentialViaNode(ctx, credential, nodeID)
 		if refreshErr == nil && strings.TrimSpace(refreshed.AccessToken) != "" {
 			a.persistOAuthCredential(ctx, id, refreshed)
@@ -2325,7 +2347,22 @@ func (a *App) authQuota(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			CreditID string `json:"credit_id"`
 		}
 		if r.Body != nil {
-			_ = json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in)
+			raw, readErr := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
+			if readErr != nil || len(raw) > 1<<20 {
+				if readErr == nil {
+					readErr = errRequestBodyTooLarge
+				}
+				fail(w, http.StatusBadRequest, "invalid_request", readErr.Error())
+				return
+			}
+			if len(bytes.TrimSpace(raw)) > 0 {
+				request := r.Clone(r.Context())
+				request.Body = io.NopCloser(bytes.NewReader(raw))
+				if decodeErr := readJSON(request, &in); decodeErr != nil {
+					fail(w, http.StatusBadRequest, "invalid_request", decodeErr.Error())
+					return
+				}
+			}
 		}
 		result, err := a.withCodexCredential(r.Context(), id, func(credential ProviderCredential, nodeID *int64) (any, error) {
 			redeemed, redeemErr := a.redeemCodexResetCard(r.Context(), credential.AccessToken, credential.AccountID, strings.TrimSpace(in.CreditID), nodeID)

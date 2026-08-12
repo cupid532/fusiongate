@@ -2,12 +2,15 @@ package fusiongate
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestAnthropicMessagesRequestToOpenAIConvertsToolsAndResults(t *testing.T) {
@@ -142,7 +145,7 @@ func TestStreamOpenAIAsAnthropicEmitsClaudeSSE(t *testing.T) {
 		"",
 	}, "\n")
 	rec := httptest.NewRecorder()
-	result := streamOpenAIAsAnthropic(rec, strings.NewReader(upstream), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "request2")
+	result := streamOpenAIAsAnthropic(rec, strings.NewReader(upstream), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "request2", time.Second, time.Second)
 	if !result.Handled || result.Status != http.StatusOK || result.Usage.Input != 9 || result.Usage.Output != 4 {
 		t.Fatalf("result=%+v body=%s", result, rec.Body.String())
 	}
@@ -159,6 +162,79 @@ func TestStreamOpenAIAsAnthropicEmitsClaudeSSE(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in stream:\n%s", want, body)
 		}
+	}
+}
+
+func TestStreamOpenAIAsAnthropicEmptyStreamDoesNotCommit(t *testing.T) {
+	rec := httptest.NewRecorder()
+	result := streamOpenAIAsAnthropic(rec, strings.NewReader(""), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "empty", time.Second, time.Second)
+	if result.Status != http.StatusBadGateway || !result.Retryable || result.Handled || result.Reason != "upstream_empty_stream" {
+		t.Fatalf("result=%+v", result)
+	}
+	if rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" {
+		t.Fatalf("stream committed downstream response: status=%d headers=%v body=%q", rec.Code, rec.Header(), rec.Body.String())
+	}
+}
+
+func TestStreamOpenAIAsAnthropicAcceptsCRLF(t *testing.T) {
+	upstream := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n"
+	rec := httptest.NewRecorder()
+	result := streamOpenAIAsAnthropic(rec, strings.NewReader(upstream), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "crlf", time.Second, time.Second)
+	if result.Status != http.StatusOK || !result.Handled || result.Err != nil {
+		t.Fatalf("result=%+v body=%s", result, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"text":"hello"`) || !strings.Contains(rec.Body.String(), "event: message_stop") {
+		t.Fatalf("converted stream=%s", rec.Body.String())
+	}
+}
+
+func TestStreamOpenAIAsAnthropicOutputStartTimeoutDoesNotCommit(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	rec := httptest.NewRecorder()
+	result := streamOpenAIAsAnthropic(rec, reader, resolvedRoute{Route: Route{PublicName: "claude-test"}}, "timeout", 20*time.Millisecond, time.Second)
+	if result.Status != http.StatusGatewayTimeout || !result.Retryable || result.Handled || result.Reason != "upstream_output_timeout" {
+		t.Fatalf("result=%+v", result)
+	}
+	if rec.Body.Len() != 0 || rec.Header().Get("Content-Type") != "" {
+		t.Fatalf("stream committed downstream response: status=%d headers=%v body=%q", rec.Code, rec.Header(), rec.Body.String())
+	}
+	_ = reader.Close()
+}
+
+func TestStreamOpenAIAsAnthropicIdleTimeoutAndInterruption(t *testing.T) {
+	valid := `data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n"
+	tests := []struct {
+		name   string
+		error  error
+		reason string
+		status int
+	}{
+		{name: "idle timeout", error: context.DeadlineExceeded, reason: "upstream_stalled", status: http.StatusGatewayTimeout},
+		{name: "interruption", error: errors.New("upstream disconnected"), reason: "upstream_stream_interrupted", status: http.StatusBadGateway},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			reader, writer := io.Pipe()
+			defer writer.Close()
+			go func() {
+				_, _ = io.WriteString(writer, valid)
+				if tc.error == context.DeadlineExceeded {
+					return
+				}
+				_ = writer.CloseWithError(tc.error)
+			}()
+			rec := httptest.NewRecorder()
+			result := streamOpenAIAsAnthropic(rec, reader, resolvedRoute{Route: Route{PublicName: "claude-test"}}, "idle", time.Second, 20*time.Millisecond)
+			if result.Status != tc.status || !result.Handled || result.Reason != tc.reason {
+				t.Fatalf("result=%+v body=%s", result, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if !strings.Contains(body, `"text":"hello"`) || strings.Contains(body, "event: message_stop") {
+				t.Fatalf("incomplete converted stream=%s", body)
+			}
+			_ = reader.Close()
+		})
 	}
 }
 

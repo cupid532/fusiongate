@@ -20,6 +20,10 @@ jobs:
           cache: true
       - name: Format
         run: test -z "$(gofmt -l .)"
+      - name: Deployment scripts parse
+        run: |
+          bash -n deploy/install.sh deploy/fusiongatectl
+          sh -n deploy/healthcheck.sh
       - name: Vet
         run: go vet ./...
       - name: Test
@@ -41,5 +45,9 @@ jobs:
           context: .
           push: false
           tags: fusiongate:ci
+          build-args: |
+            FUSIONGATE_BUILD_REVISION=${{ github.sha }}
+            FUSIONGATE_BUILD_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            FUSIONGATE_BUILD_VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

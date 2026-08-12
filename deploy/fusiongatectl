@@ -6,6 +6,7 @@ APP_DIR="$FUSIONGATE_HOME/app"
 COMPOSE_FILE="$APP_DIR/deploy/compose.production.yml"
 COMPOSE_ENV="$FUSIONGATE_HOME/config/compose.env"
 BACKUP_DIR="${FUSIONGATE_BACKUP_DIR:-/var/backups/fusiongate}"
+BACKUP_KEEP="${FUSIONGATE_BACKUP_KEEP:-14}"
 
 compose() {
   docker compose --project-directory "$APP_DIR" --env-file "$COMPOSE_ENV" -f "$COMPOSE_FILE" "$@"
@@ -34,6 +35,32 @@ verify_database() {
     echo "Database integrity check failed: $result" >&2
     return 1
   }
+}
+
+sha256_digest() {
+  sha256sum -- "$1" | while read -r digest _; do
+    printf '%s\n' "$digest"
+  done
+}
+
+prune_backups() {
+  local archive archives=() keep remove_count i
+  [[ "$BACKUP_KEEP" =~ ^[0-9]+$ ]] || {
+    echo "FUSIONGATE_BACKUP_KEEP must be a positive integer" >&2
+    return 1
+  }
+  keep=$((10#$BACKUP_KEEP))
+  [[ "$keep" -ge 1 ]] || {
+    echo "FUSIONGATE_BACKUP_KEEP must be a positive integer" >&2
+    return 1
+  }
+  for archive in "$BACKUP_DIR"/fusiongate-????????T??????Z.tar.gz; do
+    [[ -f "$archive" ]] && archives+=("$archive")
+  done
+  remove_count=$((${#archives[@]} - keep))
+  for ((i = 0; i < remove_count; i++)); do
+    rm -f -- "${archives[$i]}" "${archives[$i]}.sha256"
+  done
 }
 
 require_install() {
@@ -93,10 +120,11 @@ case "$cmd" in
     verify_database "$FUSIONGATE_HOME/data/fusiongate.db"
     tar -C "$FUSIONGATE_HOME" -czf "$archive" data quality-detector-data config .fusiongate-install
     chmod 0600 "$archive"
-    sha256sum "$archive" > "$archive.sha256"
+    sha256_digest "$archive" > "$archive.sha256"
     chmod 0600 "$archive.sha256"
     compose start fusiongate quality-detector
     trap - EXIT
+    prune_backups
     echo "$archive"
     ;;
   restore)
@@ -105,7 +133,10 @@ case "$cmd" in
     archive="${1:-}"
     [[ -f "$archive" ]] || { echo "Backup archive not found: $archive" >&2; exit 1; }
     [[ -f "$archive.sha256" ]] || { echo "Missing checksum: $archive.sha256" >&2; exit 1; }
-    sha256sum -c "$archive.sha256"
+    read -r expected_checksum _ < "$archive.sha256" || true
+    [[ "$expected_checksum" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Invalid checksum: $archive.sha256" >&2; exit 1; }
+    actual_checksum="$(sha256_digest "$archive")"
+    [[ "${actual_checksum,,}" == "${expected_checksum,,}" ]] || { echo "Checksum mismatch: $archive" >&2; exit 1; }
     work="$(mktemp -d)"
     trap 'rm -rf "$work"' EXIT
     tar -tzf "$archive" | grep -qx 'data/fusiongate.db'

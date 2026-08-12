@@ -1,5 +1,16 @@
 # Changelog
 
+## V1.60
+
+- Repair the unified channel editor introduced in V1.59: isolate asynchronous provider loads, reset balance-clear state between channels, protect unsaved Key edits, expose invalid fields in the correct tab, remove the obsolete duplicate Key modal, restore mobile overrides, and add accessible tab semantics.
+- Prevent deleted provider credentials from surviving through the legacy backup fallback. Deleting the final Key now clears the legacy credential and disables the channel atomically.
+- Fix native Gemini chat response text extraction, OAuth provider-name error handling, Codex reset-card request validation and retry safety, exact budget-exhaustion responses, gateway-owned response headers, route priority ordering, cooldown caps, pricing restore safety, and database readiness signaling.
+- Make deployments traceable to one exact source revision through binary build metadata, OCI image labels, health endpoints, and tracked production Compose templates. Add update rollback, portable backup verification, backup retention, log rotation, and bounded build-cache cleanup.
+
+## V1.59
+
+- Rebuild the unified channel editor after the V1.53-V1.58 rollback sequence, restoring connection, Key management, and runtime tabs on the stable V1.52 console base.
+
 ## V1.53
 
 - Merge the separate key-management modal into the channel-editing form as a tabbed layout. The provider edit form now shows three tabs — connection info, key management (with per-key model checkboxes, discovery and testing), and runtime settings. The channel-list row now has one primary action button (channel settings) that opens this unified editor, eliminating modal-hopping.

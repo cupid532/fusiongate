@@ -1,4 +1,5 @@
 FROM golang:1.25.12-alpine AS build
+ARG FUSIONGATE_BUILD_REVISION=unknown
 RUN apk add --no-cache build-base curl
 ARG SING_BOX_VERSION=1.13.13
 RUN case "$(apk --print-arch)" in \
@@ -14,9 +15,17 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/fusiongate ./cmd/fusiongate
+RUN CGO_ENABLED=1 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -X github.com/fusiongate/fusiongate/internal/fusiongate.BuildRevision=${FUSIONGATE_BUILD_REVISION}" \
+    -o /out/fusiongate ./cmd/fusiongate
 
 FROM alpine:3.22
+ARG FUSIONGATE_BUILD_REVISION=unknown
+ARG FUSIONGATE_BUILD_SOURCE=https://github.com/cupid532/fusiongate
+ARG FUSIONGATE_BUILD_VERSION=dev
+LABEL org.opencontainers.image.revision="$FUSIONGATE_BUILD_REVISION" \
+      org.opencontainers.image.source="$FUSIONGATE_BUILD_SOURCE" \
+      org.opencontainers.image.version="$FUSIONGATE_BUILD_VERSION"
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S -g 10001 fusiongate \
     && adduser -S -D -H -u 10001 -G fusiongate fusiongate \

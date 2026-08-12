@@ -58,6 +58,26 @@ func TestPriorityFailoverUsesProviderPriorityThenConfiguredPosition(t *testing.T
 	}
 }
 
+func TestPriorityFailoverUsesRoutePriorityWithinProviderPriorityTier(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	routes := []resolvedRoute{
+		{Route: Route{ID: 1, ProviderID: 1, PublicName: "model", Priority: 0}, Provider: Provider{ID: 1, Priority: 10, SortOrder: 9}},
+		{Route: Route{ID: 2, ProviderID: 2, PublicName: "model", Priority: 4}, Provider: Provider{ID: 2, Priority: 9, SortOrder: 0}},
+		{Route: Route{ID: 3, ProviderID: 2, PublicName: "model", Priority: 100}, Provider: Provider{ID: 2, Priority: 9, SortOrder: 0}},
+		{Route: Route{ID: 4, ProviderID: 3, PublicName: "model", Priority: 1000}, Provider: Provider{ID: 3, Priority: 9, SortOrder: 1}},
+	}
+	plan := a.prepareRoutes(routes, StrategyPriorityFailover)
+	got := []int64{plan[0].Route.ID, plan[1].Route.ID, plan[2].Route.ID, plan[3].Route.ID}
+	want := []int64{1, 3, 2, 4}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("priority failover order=%v, want %v", got, want)
+	}
+}
+
 func TestSmartRoundRobinRotatesByRequestAndKeepsFailoverOrder(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

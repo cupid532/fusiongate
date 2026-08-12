@@ -58,6 +58,37 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	}
 }
 
+func TestProviderBackupExportDoesNotFallBackToInitializedLegacyCredential(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "backup-no-legacy-fallback", "openai_compatible", "https://backup.example.com", "sk-must-not-export-123456", 1, 100, "normalized", "any", 0, 3, 30)
+	if err := a.migrateProviderAPIKeys(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	a.providerBackupExport(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/providers/export", strings.NewReader(`{}`)), adminCtx{})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "sk-must-not-export-123456") {
+		t.Fatalf("backup exported initialized legacy credential: %s", recorder.Body.String())
+	}
+	var backup providerBackupFile
+	if err := json.Unmarshal(recorder.Body.Bytes(), &backup); err != nil {
+		t.Fatal(err)
+	}
+	if len(backup.Providers) != 0 {
+		t.Fatalf("keyless initialized providers=%#v", backup.Providers)
+	}
+}
+
 func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

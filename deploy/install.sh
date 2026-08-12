@@ -10,6 +10,10 @@ REF_OVERRIDE="${FUSIONGATE_REF:-}"
 REPOSITORY="${REPOSITORY_OVERRIDE:-$DEFAULT_REPOSITORY}"
 REF="${REF_OVERRIDE:-main}"
 UPDATE_ONLY=false
+SOURCE_REVISION=""
+SOURCE_VERSION=""
+rollback_pending=false
+work=""
 [[ "${1:-}" == "--update" ]] && UPDATE_ONLY=true
 
 log() { printf '\033[1;36m[%s]\033[0m %s\n' "$PROJECT_NAME" "$*"; }
@@ -91,17 +95,79 @@ read_admin_password() {
 }
 
 fetch_source() {
-  local destination="$1" api_url headers=()
+  local destination="$1" api_url effective_url headers=()
   api_url="https://api.github.com/repos/$REPOSITORY/tarball/$REF"
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     headers=(-H "Authorization: Bearer $GITHUB_TOKEN")
   fi
-  curl -fL --retry 3 --connect-timeout 15 \
+  effective_url="$(curl -fL --retry 3 --connect-timeout 15 \
     -H "Accept: application/vnd.github+json" \
-    "${headers[@]}" "$api_url" -o "$destination/source.tar.gz"
+    "${headers[@]}" "$api_url" -o "$destination/source.tar.gz" -w '%{url_effective}')"
+  SOURCE_REVISION="${effective_url%%\?*}"
+  SOURCE_REVISION="${SOURCE_REVISION##*/}"
+  [[ "$SOURCE_REVISION" =~ ^[0-9a-fA-F]{40}$ ]] || die "Cannot determine the downloaded source revision"
   mkdir -p "$destination/source"
   tar -xzf "$destination/source.tar.gz" --strip-components=1 -C "$destination/source"
   [[ -f "$destination/source/go.mod" && -f "$destination/source/deploy/compose.production.yml" ]] || die "Downloaded archive is not a FusionGate repository"
+  SOURCE_VERSION="$(sed -n 's/^const Version = "\(V[0-9][0-9]*\.[0-9][0-9]\)"$/\1/p' "$destination/source/internal/fusiongate/version.go")"
+  [[ "$SOURCE_VERSION" =~ ^V[0-9]+\.[0-9]{2}$ ]] || die "Cannot determine the downloaded source version"
+}
+
+compose_release() {
+  docker compose \
+    --project-directory "$FUSIONGATE_HOME/app" \
+    --env-file "$FUSIONGATE_HOME/config/compose.env" \
+    -f "$FUSIONGATE_HOME/app/deploy/compose.production.yml" "$@"
+}
+
+replace_tree() {
+  local source="$1" destination="$2"
+  if command -v rsync >/dev/null 2>&1; then
+    install -d "$destination"
+    rsync -a --delete --exclude='.git' "$source/" "$destination/"
+  else
+    rm -rf -- "$destination"
+    cp -a "$source" "$destination"
+  fi
+}
+
+wait_for_readiness() {
+  for _ in $(seq 1 36); do
+    if curl -fsS --connect-timeout 5 "https://$FUSIONGATE_DOMAIN/healthz?include=quality-detector" >/dev/null 2>&1 && \
+      compose_release exec -T fusiongate /usr/local/bin/fusiongate-healthcheck >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  return 1
+}
+
+rollback_update() {
+  log "Readiness failed; restoring the previous release"
+  compose_release stop quality-detector fusiongate >/dev/null 2>&1 || true
+  replace_tree "$previous/app" "$FUSIONGATE_HOME/app" || return 1
+  cp -a "$previous/compose.env" "$FUSIONGATE_HOME/config/compose.env" || return 1
+  cp -a "$previous/install" "$FUSIONGATE_HOME/.fusiongate-install" || return 1
+  docker image tag "$rollback_app_image" fusiongate:production || return 1
+  docker image tag "$rollback_detector_image" fusiongate-quality-detector:4.0.1 || return 1
+  install -m 0755 "$FUSIONGATE_HOME/app/deploy/fusiongatectl" /usr/local/bin/fusiongatectl || return 1
+  compose_release up -d --force-recreate --no-build fusiongate quality-detector caddy || return 1
+  wait_for_readiness || return 1
+  docker image rm "$rollback_app_image" "$rollback_detector_image" >/dev/null 2>&1 || true
+}
+
+cleanup() {
+  local status=$?
+  trap - EXIT
+  if [[ "$status" -ne 0 && "$rollback_pending" == true ]]; then
+    if rollback_update; then
+      log "The previous release was restored after the update error"
+    else
+      printf '[%s] Automatic rollback also failed; inspect Docker logs immediately\n' "$PROJECT_NAME" >&2
+    fi
+  fi
+  [[ -z "$work" ]] || rm -rf -- "$work"
+  exit "$status"
 }
 
 install_docker
@@ -114,17 +180,38 @@ if ! $UPDATE_ONLY; then
 fi
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap cleanup EXIT
 log "Downloading $REPOSITORY@$REF"
 fetch_source "$work"
+log "Resolved source revision $SOURCE_REVISION ($SOURCE_VERSION)"
 
 if $UPDATE_ONLY; then
   log "Creating a verified pre-update backup"
   /usr/local/bin/fusiongatectl backup >/dev/null
 
   log "Validating the candidate source before replacing the active release"
-  docker build -t fusiongate:update-candidate "$work/source"
-  docker build -f "$work/source/deploy/quality-detector.Dockerfile" -t fusiongate-quality-detector:update-candidate "$work/source"
+  docker build \
+    --build-arg "FUSIONGATE_BUILD_REVISION=$SOURCE_REVISION" \
+    --build-arg "FUSIONGATE_BUILD_SOURCE=https://github.com/$REPOSITORY" \
+    --build-arg "FUSIONGATE_BUILD_VERSION=$SOURCE_VERSION" \
+    -t fusiongate:update-candidate "$work/source"
+  docker build \
+    --build-arg "FUSIONGATE_BUILD_REVISION=$SOURCE_REVISION" \
+    --build-arg "FUSIONGATE_BUILD_SOURCE=https://github.com/$REPOSITORY" \
+    --build-arg "FUSIONGATE_BUILD_VERSION=$SOURCE_VERSION" \
+    -f "$work/source/deploy/quality-detector.Dockerfile" \
+    -t fusiongate-quality-detector:update-candidate "$work/source"
+
+  previous="$work/previous"
+  rollback_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  rollback_app_image="fusiongate:rollback-$rollback_stamp"
+  rollback_detector_image="fusiongate-quality-detector:rollback-$rollback_stamp"
+  mkdir -p "$previous"
+  cp -a "$FUSIONGATE_HOME/app" "$previous/app"
+  cp -a "$FUSIONGATE_HOME/config/compose.env" "$previous/compose.env"
+  cp -a "$FUSIONGATE_HOME/.fusiongate-install" "$previous/install"
+  docker image tag fusiongate:production "$rollback_app_image"
+  docker image tag fusiongate-quality-detector:4.0.1 "$rollback_detector_image"
 fi
 
 install -d -m 0755 "$FUSIONGATE_HOME/app" "$FUSIONGATE_HOME/config"
@@ -132,12 +219,8 @@ install -d -m 0700 "$FUSIONGATE_HOME/data" "$FUSIONGATE_HOME/quality-detector-da
 chown 10001:10001 "$FUSIONGATE_HOME/data"
 chown 10002:10002 "$FUSIONGATE_HOME/quality-detector-data"
 
-if command -v rsync >/dev/null 2>&1; then
-  rsync -a --delete --exclude='.git' "$work/source/" "$FUSIONGATE_HOME/app/"
-else
-  find "$FUSIONGATE_HOME/app" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-  cp -a "$work/source/." "$FUSIONGATE_HOME/app/"
-fi
+$UPDATE_ONLY && rollback_pending=true
+replace_tree "$work/source" "$FUSIONGATE_HOME/app"
 
 if [[ ! -f "$FUSIONGATE_HOME/config/master_key" ]]; then
   master_key="$(openssl rand -base64 32 | tr -d '\n')"
@@ -157,6 +240,9 @@ fi
 cat > "$FUSIONGATE_HOME/config/compose.env" <<ENV
 FUSIONGATE_DOMAIN=$FUSIONGATE_DOMAIN
 FUSIONGATE_SOURCE_PATH=$FUSIONGATE_HOME/app
+FUSIONGATE_BUILD_REVISION=$SOURCE_REVISION
+FUSIONGATE_BUILD_SOURCE=https://github.com/$REPOSITORY
+FUSIONGATE_BUILD_VERSION=$SOURCE_VERSION
 FUSIONGATE_CADDYFILE_PATH=$FUSIONGATE_HOME/app/deploy/Caddyfile
 FUSIONGATE_ENV_FILE=$FUSIONGATE_HOME/config/fusiongate.env
 FUSIONGATE_MASTER_KEY_PATH=$FUSIONGATE_HOME/config/master_key
@@ -171,17 +257,11 @@ printf '%s\n' "$REPOSITORY@$REF" > "$FUSIONGATE_HOME/.fusiongate-install"
 install -m 0755 "$FUSIONGATE_HOME/app/deploy/fusiongatectl" /usr/local/bin/fusiongatectl
 
 log "Building and starting production services"
-docker compose \
-  --project-directory "$FUSIONGATE_HOME/app" \
-  --env-file "$FUSIONGATE_HOME/config/compose.env" \
-  -f "$FUSIONGATE_HOME/app/deploy/compose.production.yml" \
-  up -d --build --remove-orphans
-
-docker compose \
-  --project-directory "$FUSIONGATE_HOME/app" \
-  --env-file "$FUSIONGATE_HOME/config/compose.env" \
-  -f "$FUSIONGATE_HOME/app/deploy/compose.production.yml" \
-  up -d --force-recreate --no-deps quality-detector
+deployment_started=true
+compose_release up -d --build --remove-orphans || deployment_started=false
+if $deployment_started; then
+  compose_release up -d --force-recreate --no-deps quality-detector || deployment_started=false
+fi
 
 if [[ "${GENERATED_ADMIN_PASSWORD:-false}" == true ]]; then
   printf '\nGenerated administrator password (shown once):\n%s\n\n' "$FUSIONGATE_ADMIN_PASSWORD"
@@ -189,22 +269,26 @@ fi
 
 log "Waiting for the HTTPS endpoint"
 healthy=false
-for _ in $(seq 1 36); do
-  if curl -fsS --connect-timeout 5 "https://$FUSIONGATE_DOMAIN/healthz?include=quality-detector" >/dev/null 2>&1 && \
-    docker compose \
-      --project-directory "$FUSIONGATE_HOME/app" \
-      --env-file "$FUSIONGATE_HOME/config/compose.env" \
-      -f "$FUSIONGATE_HOME/app/deploy/compose.production.yml" \
-      exec -T fusiongate /usr/local/bin/fusiongate-healthcheck >/dev/null 2>&1; then
-    healthy=true
-    break
-  fi
-  sleep 5
-done
+if $deployment_started; then
+  wait_for_readiness && healthy=true
+fi
 
 if $healthy; then
+  if $UPDATE_ONLY; then
+    rollback_pending=false
+    docker image rm "$rollback_app_image" "$rollback_detector_image" >/dev/null 2>&1 || true
+  fi
+  docker builder prune --force --filter 'until=168h' --keep-storage 5GB >/dev/null 2>&1 || true
   log "FusionGate is online: https://$FUSIONGATE_DOMAIN"
 else
+  if $UPDATE_ONLY; then
+    if rollback_update; then
+      rollback_pending=false
+      die "Deployment failed readiness checks. The previous release was restored"
+    fi
+    rollback_pending=false
+    die "Deployment and automatic rollback failed. Inspect: docker compose logs"
+  fi
   die "Deployment failed readiness checks. Inspect: fusiongatectl logs"
 fi
 log "Useful commands: fusiongatectl status | logs | health | update | backup"

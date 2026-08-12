@@ -623,8 +623,16 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		}
 		var nextCredential []byte
 		if err := tx.QueryRow(`SELECT credential FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1`, providerID).Scan(&nextCredential); err == nil {
-			_, _ = tx.Exec(`UPDATE providers SET credential=?,updated_at=? WHERE id=?`, nextCredential, now(), providerID)
-		} else if !errors.Is(err, sql.ErrNoRows) {
+			if _, err := tx.Exec(`UPDATE providers SET credential=?,updated_at=? WHERE id=?`, nextCredential, now(), providerID); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+		} else if errors.Is(err, sql.ErrNoRows) {
+			if _, err := tx.Exec(`UPDATE providers SET credential=X'',enabled=0,updated_at=? WHERE id=?`, now(), providerID); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+		} else {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -633,6 +641,7 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			return
 		}
 		a.resetProviderKeyRuntime(keyID)
+		a.resetProviderRuntime(providerID)
 		writeJSON(w, http.StatusOK, map[string]bool{"deleted": true})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")

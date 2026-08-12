@@ -184,9 +184,6 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 			return authKey{}, false
 		}
 		x.SpentMicros = spent
-		if x.SpentMicros >= x.BudgetMicros {
-			return authKey{}, false
-		}
 	}
 	a.markAPIKeyUsed(x.ID)
 	return x, true
@@ -1152,7 +1149,10 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 		candidateContent, _ := candidate["content"].(map[string]any)
 		parts, _ := candidateContent["parts"].([]any)
 		for _, part := range parts {
-			content += textContent(part)
+			part, _ := part.(map[string]any)
+			if text, _ := part["text"].(string); text != "" {
+				content += text
+			}
 		}
 	}
 	return writeChatCompletion(w, z, rid, content, "stop", parseGeminiUsage(source))

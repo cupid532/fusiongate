@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -181,6 +182,25 @@ func TestDuplicateCredentialCanBeSkippedOrUpdated(t *testing.T) {
 	plaintext, _ := a.decrypt(encrypted)
 	if name != "existing" || source != "sub2api" || !strings.Contains(plaintext, "new-access") || strings.Contains(plaintext, "old-access") {
 		t.Fatalf("updated provider name=%q source=%q credential=%s", name, source, plaintext)
+	}
+}
+
+func TestUniqueProviderNameReturnsQueryErrors(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	insertTestProvider(t, a, "duplicate name", "openai", "https://example.com", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+
+	name, err := a.uniqueProviderName(context.Background(), "duplicate name")
+	if err != nil || name != "duplicate name (2)" {
+		t.Fatalf("name=%q err=%v", name, err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := a.uniqueProviderName(canceled, "new name"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled query error=%v", err)
 	}
 }
 
@@ -1269,5 +1289,83 @@ func TestFetchCodexAccountQuotaParsesWhamUsage(t *testing.T) {
 	count, cards := parseCodexResetCards(resetPayload)
 	if count != 3 || len(cards) != 1 {
 		t.Fatalf("reset count=%d cards=%+v", count, cards)
+	}
+}
+
+func TestAuthQuotaRedeemRejectsMalformedJSON(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	for _, action := range []string{"reset", "redeem"} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/auth/quota/1/"+action, strings.NewReader(`{"credit_id":`))
+		a.authQuota(recorder, request, adminCtx{})
+		if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_request") {
+			t.Fatalf("action=%s status=%d body=%s", action, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestAuthQuotaRedeemRetriesOnlyAuthenticationFailures(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		firstStatus int
+		firstBody   string
+		wantStatus  int
+		wantConsume int32
+		wantRefresh int32
+	}{
+		{name: "server error is not replayed", firstStatus: http.StatusInternalServerError, firstBody: `{"error":"first attempt"}`, wantStatus: http.StatusBadGateway, wantConsume: 1, wantRefresh: 0},
+		{name: "malformed success is not replayed", firstStatus: http.StatusOK, firstBody: `{"status":`, wantStatus: http.StatusBadGateway, wantConsume: 1, wantRefresh: 0},
+		{name: "authentication rejection refreshes once", firstStatus: http.StatusUnauthorized, firstBody: `{"error":"first attempt"}`, wantStatus: http.StatusOK, wantConsume: 2, wantRefresh: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, err := New(testConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			providerID, _, err := a.saveOAuthProvider(context.Background(), "quota redeem", 1, ProviderCredential{
+				Version: 1, Kind: "oauth", Platform: "codex", Source: "fusiongate_oauth",
+				AccessToken: "stale-access", RefreshToken: "refresh-token", AccountID: "account-id",
+			}, 0, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var consumeCalls, refreshCalls atomic.Int32
+			a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				switch {
+				case r.URL.String() == codexOAuthTokenURL:
+					refreshCalls.Add(1)
+					return authJSONResponse(http.StatusOK, `{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":3600}`), nil
+				case strings.HasSuffix(r.URL.Path, "/rate-limit-reset-credits/consume"):
+					call := consumeCalls.Add(1)
+					if call == 1 {
+						return authJSONResponse(test.firstStatus, test.firstBody), nil
+					}
+					return authJSONResponse(http.StatusOK, `{"status":"redeemed"}`), nil
+				case strings.HasSuffix(r.URL.Path, "/wham/usage"):
+					return authJSONResponse(http.StatusOK, `{"plan_type":"plus","rate_limit":{"allowed":true}}`), nil
+				case strings.HasSuffix(r.URL.Path, "/rate-limit-reset-credits"):
+					return authJSONResponse(http.StatusOK, `{"available_count":0}`), nil
+				default:
+					t.Fatalf("unexpected request URL=%s", r.URL.String())
+					return nil, errors.New("unexpected request")
+				}
+			})}
+
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/api/admin/auth/quota/"+intString(providerID)+"/redeem", strings.NewReader(`{"credit_id":"RateLimitResetCredit_test"}`))
+			a.authQuota(recorder, request, adminCtx{})
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			if consumeCalls.Load() != test.wantConsume || refreshCalls.Load() != test.wantRefresh {
+				t.Fatalf("consume calls=%d refresh calls=%d", consumeCalls.Load(), refreshCalls.Load())
+			}
+		})
 	}
 }

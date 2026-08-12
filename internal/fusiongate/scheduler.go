@@ -100,9 +100,12 @@ func validRoutingStrategy(v string) bool {
 }
 
 // prepareRoutes builds a deterministic request-local failover plan. Priority mode
-// sorts channels by provider priority from high to low, then by configured position.
-// Ordered mode always starts from the first configured channel. Smart round robin advances the starting channel
-// for every new request while retaining request-local seamless failover.
+// sorts by provider priority descending, provider position, route priority
+// descending, route position, and route ID. Provider priority and position remain
+// authoritative; route priority is the next mapping-level precedence.
+// Ordered mode always starts from the first configured channel. Smart round robin
+// advances the starting channel for every new request while retaining request-local
+// seamless failover.
 func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []resolvedRoute {
 	planned := append([]resolvedRoute(nil), routes...)
 	sort.SliceStable(planned, func(i, j int) bool {
@@ -111,6 +114,9 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 		}
 		if planned[i].Provider.SortOrder != planned[j].Provider.SortOrder {
 			return planned[i].Provider.SortOrder < planned[j].Provider.SortOrder
+		}
+		if strategy == StrategyPriorityFailover && planned[i].Route.Priority != planned[j].Route.Priority {
+			return planned[i].Route.Priority > planned[j].Route.Priority
 		}
 		if planned[i].Route.SortOrder != planned[j].Route.SortOrder {
 			return planned[i].Route.SortOrder < planned[j].Route.SortOrder
@@ -519,6 +525,9 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 			}
 			if result.RetryAfter > cooldown {
 				cooldown = result.RetryAfter
+			}
+			if cooldown > 10*time.Minute {
+				cooldown = 10 * time.Minute
 			}
 			state.CircuitOpenUntil = time.Now().Add(cooldown)
 			openUntil = state.CircuitOpenUntil.UTC().Format(time.RFC3339Nano)
