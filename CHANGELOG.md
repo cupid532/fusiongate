@@ -1,5 +1,13 @@
 # Changelog
 
+## V1.53
+
+- Merge the separate key-management modal into the channel-editing form as a tabbed layout. The provider edit form now shows three tabs — connection info, key management (with per-key model checkboxes, discovery and testing), and runtime settings. The channel-list row now has one primary action button (channel settings) that opens this unified editor, eliminating modal-hopping.
+
+- Add a dedicated `opencode` channel type for routing traffic through OpenCode (Zen and Go), making OpenCode models available on Hermes via FusionGate without wiring the OpenCode key into Hermes itself. OpenCode's upstream is OpenAI-compatible, so the new type reuses the same chat-completions forwarding, model discovery (`/v1/models`), Bearer authentication, health probes, quality-detector support, and OpenRouter/OpenAI-compatible responses bridge as the existing `openai_compatible` type. It is selectable in the provider form (default base URL `https://opencode.ai/zen/v1`; point it at `.../zen/go/v1` for open models) and eligible for both codex_oauth-style Responses bridging and Anthropic-Messages-to-Chat bridge translation.
+- Register the `opencode` type in every provider-type switch across admin validation, gateway routing, model discovery, upstream auth, health checks, and quality detection, so it is created, edited, discovered, health-checked, and load-balanced exactly like an OpenAI-compatible upstream.
+
+
 ## V1.52
 
 - Fix the upstream-channel page. The provider form section was closed one tag too early in index.html, which let the channel-list table and the health-check panel escape the page providers section and rest under the document body. On screen the page header was followed by a large empty area, and you had to scroll down to reach the channels. Restoring the missing closing tag keeps the table-card and the health-check panel inside the providers section, so the channels now appear right below the page head.
