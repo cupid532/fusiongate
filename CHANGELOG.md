@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.69
+
+- Restore a real dark theme. The earlier warm-natural redesign had also recolored the default (`:root`) palette into the same light cream, so toggling the theme had no visible effect. The default theme is now a warm dark palette (deep brown-black surfaces, off-white text, brighter green accent) while the light theme keeps the Octopus-inspired cream palette.
+
 ## V1.68
 
 - Fix a stray closing brace left in the light-theme variable block that made the browser drop the whole `html[data-theme="light"]` rule group and silently discard the content-area padding rules that followed it. Page content (overview heading, stat cards, and every other page) had been rendered flush against the sidebar with no horizontal padding; the content container now applies its intended `34px` side padding and `1680px` max width again.
