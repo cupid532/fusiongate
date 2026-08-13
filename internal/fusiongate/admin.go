@@ -511,16 +511,38 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		return
 	}
 	var in struct {
-		ProviderIDs []int64 `json:"provider_ids"`
-		Action      string  `json:"action"`
+		ProviderIDs  []int64  `json:"provider_ids"`
+		Action       string   `json:"action"`
+		IPPoolNodeID *int64   `json:"ip_pool_node_id"`
+		Models       []string `json:"models"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
 	in.Action = strings.ToLower(strings.TrimSpace(in.Action))
-	if in.Action != "enable" && in.Action != "disable" && in.Action != "delete" {
-		fail(w, http.StatusBadRequest, "invalid_request", "action must be enable, disable, or delete")
+	if in.Action != "enable" && in.Action != "disable" && in.Action != "delete" && in.Action != "egress" && in.Action != "models" {
+		fail(w, http.StatusBadRequest, "invalid_request", "action must be enable, disable, delete, egress, or models")
+		return
+	}
+	if in.Action == "egress" {
+		if in.IPPoolNodeID == nil {
+			fail(w, http.StatusBadRequest, "invalid_request", "ip_pool_node_id is required for egress action")
+			return
+		}
+		if *in.IPPoolNodeID < 0 {
+			fail(w, http.StatusBadRequest, "invalid_request", "ip_pool_node_id must be a non-negative integer")
+			return
+		}
+		if *in.IPPoolNodeID > 0 {
+			if err := a.validateIPPoolNode(*in.IPPoolNodeID); err != nil {
+				fail(w, http.StatusBadRequest, "invalid_ip_pool_node", err.Error())
+				return
+			}
+		}
+	}
+	if in.Action == "models" && len(in.Models) == 0 {
+		fail(w, http.StatusBadRequest, "invalid_request", "models is required for models action")
 		return
 	}
 	if len(in.ProviderIDs) == 0 || len(in.ProviderIDs) > providerBatchMaxItems {
@@ -552,21 +574,23 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := tx.Query(`SELECT id,auth_kind FROM providers WHERE id IN (`+placeholders+`)`, args...)
+	rows, err := tx.Query(`SELECT id,auth_kind,type FROM providers WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
 	found := make(map[int64]string, len(ids))
+	types := make(map[int64]string, len(ids))
 	for rows.Next() {
 		var id int64
-		var authKind string
-		if err := rows.Scan(&id, &authKind); err != nil {
+		var authKind, providerType string
+		if err := rows.Scan(&id, &authKind, &providerType); err != nil {
 			rows.Close()
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
 		found[id] = authKind
+		types[id] = providerType
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -587,6 +611,32 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 			return
 		}
 	}
+	if in.Action == "models" {
+		canonical := types[ids[0]]
+		for _, id := range ids[1:] {
+			if types[id] != canonical {
+				fail(w, http.StatusBadRequest, "invalid_provider_selection", "batch model selection requires authentication files of the same type")
+				return
+			}
+		}
+	}
+
+	if in.Action == "models" {
+		// Model selection runs its own per-provider transactions, so release the
+		// outer transaction before applying to avoid holding SQLite's single
+		// write lock across nested work.
+		if err := tx.Rollback(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		result, err := a.applySelectedModelsBatch(r.Context(), ids, in.Models)
+		if err != nil {
+			fail(w, modelImportErrorStatus(err), "model_selection_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"action": "models", "affected": len(ids), "selected": result.Selected, "added": result.Added, "existing": result.Existing, "removed": result.Removed})
+		return
+	}
 
 	var res sql.Result
 	switch in.Action {
@@ -596,6 +646,13 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	case "disable":
 		updateArgs := append([]any{now()}, args...)
 		res, err = tx.Exec(`UPDATE providers SET enabled=0,updated_at=? WHERE id IN (`+placeholders+`)`, updateArgs...)
+	case "egress":
+		var nodeID any
+		if *in.IPPoolNodeID > 0 {
+			nodeID = *in.IPPoolNodeID
+		}
+		updateArgs := append([]any{nodeID, now()}, args...)
+		res, err = tx.Exec(`UPDATE providers SET ip_pool_node_id=?,status='unknown',consecutive_failures=0,circuit_open_until=NULL,last_error='',last_failure_at=NULL,updated_at=? WHERE id IN (`+placeholders+`)`, updateArgs...)
 	case "delete":
 		res, err = tx.Exec(`DELETE FROM providers WHERE id IN (`+placeholders+`)`, args...)
 	}
@@ -617,6 +674,9 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	}
 	for _, id := range ids {
 		a.resetProviderRuntime(id)
+		if in.Action == "egress" {
+			a.resetProviderKeysRuntime(a.providerKeyIDs(id))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"action": in.Action, "affected": affected})
 }

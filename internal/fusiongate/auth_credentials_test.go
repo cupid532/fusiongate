@@ -1163,6 +1163,115 @@ func TestOAuthProviderBatchSelectionLimit(t *testing.T) {
 	}
 }
 
+func TestOAuthProviderBatchEgress(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	first, _, err := a.saveOAuthProvider(context.Background(), "egress first", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "json", AccessToken: "egress-first", AccountID: "egress-first"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := a.saveOAuthProvider(context.Background(), "egress second", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "json", AccessToken: "egress-second", AccountID: "egress-second"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, _ := a.encrypt("socks5://proxy.example.com:1080")
+	res, err := a.db.Exec(`INSERT INTO ip_pool_nodes(name,protocol,server,share_link,enabled,local_port,status,created_at,updated_at) VALUES('Batch Node','socks5','proxy.example.com:1080',?,1,22000,'ready',?,?)`, link, now(), now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeID, _ := res.LastInsertId()
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{first, second}, "action": "egress", "ip_pool_node_id": nodeID})
+	rec := httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"affected":2`) {
+		t.Fatalf("egress status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var bound int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id IN (?,?) AND ip_pool_node_id=?`, first, second, nodeID).Scan(&bound); err != nil {
+		t.Fatal(err)
+	}
+	if bound != 2 {
+		t.Fatalf("bound providers=%d", bound)
+	}
+
+	body, _ = json.Marshal(map[string]any{"provider_ids": []int64{first, second}, "action": "egress", "ip_pool_node_id": 0})
+	rec = httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("egress direct status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var direct int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id IN (?,?) AND ip_pool_node_id IS NULL`, first, second).Scan(&direct); err != nil {
+		t.Fatal(err)
+	}
+	if direct != 2 {
+		t.Fatalf("direct providers=%d", direct)
+	}
+}
+
+func TestOAuthProviderBatchModels(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.String() == "https://cli-chat-proxy.grok.com/v1/models" {
+			return authJSONResponse(http.StatusOK, `{"data":[{"id":"grok-4.5"},{"id":"grok-4.6"}]}`), nil
+		}
+		return authJSONResponse(http.StatusBadGateway, `{"error":"unexpected"}`), nil
+	})}
+	first, _, err := a.saveOAuthProvider(context.Background(), "models first", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "json", AccessToken: "models-first", AccountID: "models-first"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := a.saveOAuthProvider(context.Background(), "models second", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "json", AccessToken: "models-second", AccountID: "models-second"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{first, second}, "action": "models", "models": []string{"grok-4.5"}})
+	rec := httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"affected":2`) {
+		t.Fatalf("models status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	for _, id := range []int64{first, second} {
+		rows, err := a.db.Query(`SELECT public_name FROM model_routes WHERE provider_id=? ORDER BY public_name`, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close()
+				t.Fatal(err)
+			}
+			names = append(names, name)
+		}
+		rows.Close()
+		if strings.Join(names, ",") != "grok-4.5" {
+			t.Fatalf("provider %d routes = %v", id, names)
+		}
+	}
+
+	claudeID, _, err := a.saveOAuthProvider(context.Background(), "models claude", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "claude", Source: "json", AccessToken: "models-claude", AccountID: "models-claude"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = json.Marshal(map[string]any{"provider_ids": []int64{first, claudeID}, "action": "models", "models": []string{"grok-4.5"}})
+	rec = httptest.NewRecorder()
+	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "same type") {
+		t.Fatalf("mixed models status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAuthModelSyncKeepsCredentialWhenDiscoveryFails(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"upstream-secret-token"}`, http.StatusBadGateway)

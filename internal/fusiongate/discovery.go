@@ -961,21 +961,73 @@ func (a *App) applySelectedModels(parent context.Context, providerID int64, sele
 	if err != nil {
 		return modelSelectionResult{}, err
 	}
-	discovery, err := a.discoverProviderModels(parent, providerID)
+	available, err := a.discoverAvailableModels(parent, providerID)
 	if err != nil {
 		return modelSelectionResult{}, err
+	}
+	return a.applySelectedModelsToProvider(parent, providerID, normalized, available)
+}
+
+// applySelectedModelsBatch applies one desired model set to many providers. It
+// discovers from the first provider as the canonical inventory and reuses it for
+// every sibling, so a 100-account platform is updated with a single upstream
+// discovery instead of one request per account.
+func (a *App) applySelectedModelsBatch(parent context.Context, providerIDs []int64, selected []string) (modelSelectionResult, error) {
+	normalized, err := normalizeModelSelection(selected)
+	if err != nil {
+		return modelSelectionResult{}, err
+	}
+	if len(providerIDs) == 0 {
+		return modelSelectionResult{}, errors.New("select at least one authentication file")
+	}
+	available, err := a.discoverAvailableModels(parent, providerIDs[0])
+	if err != nil {
+		return modelSelectionResult{}, err
+	}
+	if missing := missingSelectedModels(normalized, available); len(missing) > 0 {
+		return modelSelectionResult{Selected: len(normalized), Missing: len(missing)}, fmt.Errorf("%w: %s", errSelectedModelsUnavailable, strings.Join(missing, ", "))
+	}
+	result := modelSelectionResult{Selected: len(normalized)}
+	for _, id := range providerIDs {
+		partial, err := a.applySelectedModelsToProvider(parent, id, normalized, available)
+		if err != nil {
+			return result, err
+		}
+		result.Added += partial.Added
+		result.Existing += partial.Existing
+		result.Removed += partial.Removed
+	}
+	return result, nil
+}
+
+// discoverAvailableModels runs one upstream discovery and indexes the returned
+// models by their normalized public id.
+func (a *App) discoverAvailableModels(parent context.Context, providerID int64) (map[string]discoveredModel, error) {
+	discovery, err := a.discoverProviderModels(parent, providerID)
+	if err != nil {
+		return nil, err
 	}
 	available := make(map[string]discoveredModel, len(discovery.Models))
 	for _, model := range discovery.Models {
 		available[model.ID] = model
 	}
+	return available, nil
+}
+
+func missingSelectedModels(normalized []string, available map[string]discoveredModel) []string {
 	missing := make([]string, 0)
 	for _, id := range normalized {
 		if _, ok := available[id]; !ok {
 			missing = append(missing, id)
 		}
 	}
-	if len(missing) > 0 {
+	return missing
+}
+
+// applySelectedModelsToProvider enforces normalized as the provider's complete
+// model set against the given available-model inventory.
+func (a *App) applySelectedModelsToProvider(parent context.Context, providerID int64, normalized []string, available map[string]discoveredModel) (modelSelectionResult, error) {
+	if missing := missingSelectedModels(normalized, available); len(missing) > 0 {
 		return modelSelectionResult{Selected: len(normalized), Missing: len(missing)}, fmt.Errorf("%w: %s", errSelectedModelsUnavailable, strings.Join(missing, ", "))
 	}
 

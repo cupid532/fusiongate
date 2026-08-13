@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.63
+
+- Add batch actions for authentication files of the same type: batch-select models and batch-change network egress across many accounts at once instead of editing them one by one. Model selection discovers once from the first account and applies the same enabled-model set to every selected account; egress applies one IP pool node (or direct) to all selected accounts in a single transaction.
+
 ## V1.62
 
 - Normalize streamed OpenAI Responses events for strict clients such as OpenCode: add canonical `event:` names, preserve event boundaries, and remove private Codex-only response fields that are not accepted by the public Responses schema.
