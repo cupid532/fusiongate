@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.67
+
+- Add motion and data-viz polish inspired by Octopus: a unified 0.15s smooth transition curve across cards, buttons, and navigation; hover lift with soft shadow on stat/usage/rank cards; animated stat number count-up on the overview and usage pages; and animated SVG charts (bars grow from the baseline, the trend line draws itself, and rank bars fill in).
+
 ## V1.66
 
 - Redesign the console UI with a warm, natural color system inspired by Octopus: cream page background, white surfaces, forest-green accent, and earthy brown text, replacing the previous dark navy/blue palette. Both the default and light themes share the new tokens.

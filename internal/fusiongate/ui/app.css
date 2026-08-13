@@ -289,3 +289,77 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 
   .provider-tab-keys-footer{align-items:stretch;flex-direction:column}
   .provider-tab-keys-footer .btn{width:100%}
 }
+
+/* ============ Octopus-inspired motion & charts ============ */
+
+/* Unified smooth transitions (Octopus timing curve) */
+.btn,.nav-item,.icon-btn,.card,.stat-card,.usage-stat,.rank-card,.modal-close,.provider-status-filter,.credential-item,.oauth-card,.model-option,.auth-tab,.provider-form-tab,.provider-link,.permission-row,.setup-step,.route-row,.simple-route-row{transition:color .15s cubic-bezier(.4,0,.2,1),background-color .15s cubic-bezier(.4,0,.2,1),border-color .15s cubic-bezier(.4,0,.2,1),box-shadow .15s cubic-bezier(.4,0,.2,1),transform .15s cubic-bezier(.4,0,.2,1)}
+
+/* Card lift on hover */
+.stat-card:hover,.usage-stat:hover,.rank-card:hover{cursor:default;transform:translateY(-3px);box-shadow:var(--shadow);border-color:var(--line)}
+.card{transition:border-color .15s cubic-bezier(.4,0,.2,1),box-shadow .15s cubic-bezier(.4,0,.2,1)}
+.card:hover{box-shadow:var(--shadow-sm)}
+
+/* Nav item subtle slide */
+.nav-item:hover{transform:translateX(3px)}
+.nav-item.active{transition:all .15s cubic-bezier(.4,0,.2,1)}
+
+/* Primary button lift + glow */
+.btn-primary{transition:all .15s cubic-bezier(.4,0,.2,1)}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(84,153,87,.28)}
+.btn-primary:active{transform:translateY(0);box-shadow:none}
+
+/* Icon button hover */
+.icon-btn:hover{transform:translateY(-1px)}
+
+/* Provider / credential / model option subtle lift */
+.credential-item:hover,.oauth-card:hover,.model-option:hover{transform:translateY(-1px);border-color:var(--line)}
+
+/* status dot pulse */
+.status-dot{animation:octDotPulse 2s cubic-bezier(.4,0,.2,1) infinite}
+@keyframes octDotPulse{0%,100%{box-shadow:0 0 0 0 currentColor}50%{box-shadow:0 0 0 5px transparent}}
+
+/* usage chart bar grow (from baseline) */
+.usage-chart rect{transform-box:fill-box;transform-origin:center bottom;animation:octBarGrow .65s cubic-bezier(.4,0,.2,1) both}
+@keyframes octBarGrow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+
+/* usage chart trend line draw */
+.usage-chart .total-line{stroke-dasharray:1600;stroke-dashoffset:1600;animation:octLineDraw 1.1s cubic-bezier(.4,0,.2,1) .3s forwards}
+@keyframes octLineDraw{to{stroke-dashoffset:0}}
+
+/* usage chart grid fade in */
+.usage-chart .grid{animation:octFade .5s ease both}
+@keyframes octFade{from{opacity:0}to{opacity:1}}
+
+/* rank fill bar grow */
+.rank-fill{animation:octFillGrow .8s cubic-bezier(.4,0,.2,1) both}
+@keyframes octFillGrow{from{width:0}}
+
+/* health meter fill grow */
+.health-fill{animation:octFillGrow .8s cubic-bezier(.4,0,.2,1) both}
+
+/* page transition enhancement */
+.page.active{animation:octPageIn .28s cubic-bezier(.4,0,.2,1)}
+@keyframes octPageIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* stat value pop on hover */
+.stat-value{transition:transform .15s cubic-bezier(.4,0,.2,1)}
+.stat-card:hover .stat-value{transform:scale(1.04)}
+
+/* table row smooth hover */
+tbody tr{transition:background-color .15s cubic-bezier(.4,0,.2,1)}
+tbody tr:hover td{background:var(--row-hover-bg)}
+
+/* toast entrance uses existing toastIn; add spring */
+.toast{animation:octToastIn .25s cubic-bezier(.34,1.56,.64,1)}
+@keyframes octToastIn{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:none}}
+
+/* modal pop */
+.modal{animation:octModalIn .2s cubic-bezier(.34,1.56,.64,1)}
+@keyframes octModalIn{from{opacity:0;transform:scale(.96) translateY(6px)}to{opacity:1;transform:none}}
+
+/* switch track spring */
+.channel-switch input:checked+.switch-track span{transition:transform .25s cubic-bezier(.34,1.56,.64,1)}
+
+/* chart bar hover highlight */
+.usage-chart g:hover rect{opacity:1!important}
