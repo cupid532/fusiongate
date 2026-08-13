@@ -1,5 +1,11 @@
 # Changelog
 
+## V1.62
+
+- Normalize streamed OpenAI Responses events for strict clients such as OpenCode: add canonical `event:` names, preserve event boundaries, and remove private Codex-only response fields that are not accepted by the public Responses schema.
+- Unify OAuth credentials by platform. Accounts of the same type share one canonical model discovery result and inherit one network egress, preventing model and route drift across large credential pools.
+- Fix container health checks for wildcard-bound services and keep the independently monitored quality-detector sidecar out of the FusionGate core readiness probe.
+
 ## V1.61
 
 - Export authentication files one account per JSON file. A single selected account downloads a standalone JSON; selecting several downloads a ZIP whose entries are one JSON per account, using the same per-account shape the importer accepts.

@@ -34,6 +34,7 @@ type proxyOptions struct {
 	BufferSSE          bool
 	SSETransform       func([]byte) ([]byte, string, Usage, error)
 	JSONTransform      func([]byte) ([]byte, string, error)
+	StreamTransform    func([]byte) ([]byte, error)
 	OutputStartTimeout time.Duration
 	IdleTimeout        time.Duration
 }
@@ -189,6 +190,88 @@ func sseEventPayloads(body []byte) []string {
 		}
 	}
 	return payloads
+}
+
+// normalizeResponsesSSE makes upstream Responses frames safe for strict public
+// API clients. Some gateways omit event lines and ChatGPT Codex adds private
+// response fields that fail OpenCode's discriminated-union validation.
+func normalizeResponsesSSE(body []byte) ([]byte, error) {
+	normalized := bytes.ReplaceAll(body, []byte("\r"), nil)
+	var out bytes.Buffer
+	for _, event := range bytes.Split(normalized, []byte("\n\n")) {
+		var data []string
+		for _, line := range strings.Split(strings.TrimSpace(string(event)), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		payload := strings.Join(data, "\n")
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			out.WriteString("data: [DONE]\n\n")
+			continue
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+			return nil, fmt.Errorf("invalid Responses SSE event: %w", err)
+		}
+		eventType := strings.TrimSpace(asString(decoded["type"]))
+		if eventType == "" {
+			return nil, errors.New("Responses SSE event is missing type")
+		}
+		if response := asMap(decoded["response"]); response != nil {
+			delete(response, "moderation")
+			delete(response, "tool_usage")
+		}
+		encoded, err := json.Marshal(decoded)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&out, "event: %s\ndata: %s\n\n", eventType, encoded)
+	}
+	return out.Bytes(), nil
+}
+
+type sseTransformWriter struct {
+	dst       io.Writer
+	transform func([]byte) ([]byte, error)
+	pending   []byte
+}
+
+func (w *sseTransformWriter) Write(p []byte) (int, error) {
+	w.pending = append(w.pending, bytes.ReplaceAll(p, []byte("\r"), nil)...)
+	for {
+		end := bytes.Index(w.pending, []byte("\n\n"))
+		if end < 0 {
+			break
+		}
+		event := append([]byte(nil), w.pending[:end+2]...)
+		w.pending = w.pending[end+2:]
+		transformed, err := w.transform(event)
+		if err != nil {
+			return len(p), err
+		}
+		if _, err := w.dst.Write(transformed); err != nil {
+			return len(p), err
+		}
+	}
+	return len(p), nil
+}
+
+func (w *sseTransformWriter) Finish() error {
+	if len(bytes.TrimSpace(w.pending)) == 0 {
+		return nil
+	}
+	transformed, err := w.transform(w.pending)
+	if err != nil {
+		return err
+	}
+	_, err = w.dst.Write(transformed)
+	w.pending = nil
+	return err
 }
 
 func hasVisibleModelText(value map[string]any) bool {
@@ -1370,17 +1453,35 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		}
 		startTimer.Stop()
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
+		if options.StreamTransform != nil && !options.Transparent {
+			w.Header().Del("Content-Length")
+			w.Header().Del("Content-Encoding")
+			w.Header().Set("Content-Type", "text/event-stream")
+		}
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
-		w.WriteHeader(resp.StatusCode)
 		var usageObserver *sseUsageObserver
 		out := io.Writer(w)
 		if options.UsageFormat != "" && !options.Transparent {
 			usageObserver = &sseUsageObserver{usage: Usage{CostType: "unknown"}, usageFormat: options.UsageFormat}
 			out = io.MultiWriter(w, usageObserver)
 		}
+		var transformWriter *sseTransformWriter
+		if options.StreamTransform != nil && !options.Transparent {
+			// Observe the normalized public stream, not private upstream fields.
+			transformWriter = &sseTransformWriter{dst: w, transform: options.StreamTransform}
+			if usageObserver != nil {
+				transformWriter.dst = io.MultiWriter(w, usageObserver)
+			}
+			out = transformWriter
+		}
+		w.WriteHeader(resp.StatusCode)
 		if pending.Len() > 0 {
 			if _, err := out.Write(pending.Bytes()); err != nil {
-				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: err}
+				reason := "downstream_write_error"
+				if transformWriter != nil {
+					reason = "upstream_invalid_stream"
+				}
+				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: reason, Err: err}
 			}
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
@@ -1427,6 +1528,11 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 					return attemptResult{Status: http.StatusGatewayTimeout, Handled: true, Reason: "upstream_stalled", Err: copyErr}
 				}
 				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "upstream_stream_interrupted", Err: copyErr}
+			}
+		}
+		if transformWriter != nil {
+			if err := transformWriter.Finish(); err != nil {
+				return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "upstream_invalid_stream", Err: err}
 			}
 		}
 		usage := Usage{CostType: "unknown"}

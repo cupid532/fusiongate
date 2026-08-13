@@ -11,6 +11,23 @@ import (
 	"testing"
 )
 
+func TestNormalizeResponsesSSEAddsEventAndRemovesPrivateFields(t *testing.T) {
+	raw := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[],\"moderation\":null,\"tool_usage\":{\"web_search\":{\"num_requests\":0}}}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n" +
+		"data: [DONE]\n\n")
+	got, err := normalizeResponsesSSE(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Count(text, "event: response.created") != 1 || strings.Count(text, "event: response.completed") != 1 || !strings.Contains(text, "data: [DONE]") {
+		t.Fatalf("normalized stream=%s", text)
+	}
+	if strings.Contains(text, "moderation") || strings.Contains(text, "tool_usage") {
+		t.Fatalf("private response fields leaked: %s", text)
+	}
+}
+
 func TestCopyUpstreamRequestHeadersDropsCodexInternalResponsesLiteHeader(t *testing.T) {
 	src := http.Header{
 		"X-OpenAI-Internal-Codex-Responses-Lite": []string{"1"},

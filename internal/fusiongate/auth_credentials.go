@@ -85,6 +85,7 @@ type credentialImportSession struct {
 type authModelSyncTarget struct {
 	ID   int64
 	Name string
+	Type string
 }
 
 type authModelSyncItem struct {
@@ -529,7 +530,7 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		a.authMu.Lock()
 		delete(a.oauthSessions, sessionID)
 		a.authMu.Unlock()
-		modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName}})
+		modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName, Type: oauthProviderType(credential.Platform)}})
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": modelSync.Items[0]})
 		return
 	}
@@ -565,7 +566,7 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		}
 		return
 	}
-	modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName}})
+	modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName, Type: oauthProviderType(credential.Platform)}})
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": modelSync.Items[0]})
 }
 
@@ -1007,7 +1008,7 @@ func (a *App) authImportCommit(w http.ResponseWriter, r *http.Request, _ adminCt
 		}
 		providers = append(providers, map[string]any{"id": id, "name": name, "platform": item.Credential.Platform})
 		if item.DuplicateID == 0 || a.oauthProviderNeedsModels(r.Context(), id) {
-			syncTargets = append(syncTargets, authModelSyncTarget{ID: id, Name: name})
+			syncTargets = append(syncTargets, authModelSyncTarget{ID: id, Name: name, Type: oauthProviderType(item.Credential.Platform)})
 		}
 	}
 	modelSync := a.syncOAuthModelTargets(r.Context(), syncTargets)
@@ -1020,16 +1021,22 @@ func (a *App) oauthProviderNeedsModels(ctx context.Context, providerID int64) bo
 }
 
 func (a *App) syncOAuthModelTargets(ctx context.Context, targets []authModelSyncTarget) authModelSyncSummary {
-	summary := authModelSyncSummary{Providers: len(targets), Items: make([]authModelSyncItem, len(targets))}
+	summary := authModelSyncSummary{Providers: len(targets), Items: make([]authModelSyncItem, 0, len(targets))}
 	if len(targets) == 0 {
 		return summary
 	}
+	// Credentials of the same platform intentionally share one model inventory
+	// and one egress node. Discover once per type, then clone the canonical route
+	// set to sibling accounts. This prevents hundreds of identical OAuth accounts
+	// from drifting into different model aliases or network exits.
 	type job struct {
 		index  int
 		target authModelSyncTarget
 	}
 	jobs := make(chan job)
-	workers := min(4, len(targets))
+	// There are only three OAuth platform types. Serializing the canonical
+	// discoveries avoids concurrent writes to the shared summary and SQLite.
+	workers := 1
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Add(1)
@@ -1049,11 +1056,21 @@ func (a *App) syncOAuthModelTargets(ctx context.Context, targets []authModelSync
 					item.Existing = imported.Existing
 					item.Skipped = discovery.Skipped
 				}
-				summary.Items[work.index] = item
+				summary.Items = append(summary.Items, item)
+				if err == nil {
+					if cloneErr := a.cloneOAuthPlatformRoutes(ctx, work.target.Type, work.target.ID); cloneErr != nil {
+						a.log.Warn("OAuth shared model inventory clone failed", "source_provider_id", work.target.ID, "provider_type", work.target.Type, "error", cloneErr)
+					}
+				}
 			}
 		}()
 	}
+	dispatched := map[string]bool{}
 	for index, target := range targets {
+		if dispatched[target.Type] {
+			continue
+		}
+		dispatched[target.Type] = true
 		jobs <- job{index: index, target: target}
 	}
 	close(jobs)
@@ -1069,6 +1086,39 @@ func (a *App) syncOAuthModelTargets(ctx context.Context, targets []authModelSync
 		}
 	}
 	return summary
+}
+
+func (a *App) cloneOAuthProviderRoutes(ctx context.Context, sourceID, targetID int64) error {
+	_, err := a.db.ExecContext(ctx, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,cached_price_micros,long_context_threshold,long_input_price_micros,long_cached_price_micros,long_output_price_micros,pricing_source,pricing_updated_at,created_at,updated_at)
+		SELECT public_name,?,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,cached_price_micros,long_context_threshold,long_input_price_micros,long_cached_price_micros,long_output_price_micros,pricing_source,pricing_updated_at,?,?
+		FROM model_routes WHERE provider_id=?
+		ON CONFLICT(public_name,provider_id,upstream_model) DO UPDATE SET capabilities=excluded.capabilities,enabled=excluded.enabled,sort_order=excluded.sort_order,updated_at=excluded.updated_at`, targetID, now(), now(), sourceID)
+	return err
+}
+
+func (a *App) cloneOAuthPlatformRoutes(ctx context.Context, providerType string, sourceID int64) error {
+	rows, err := a.db.QueryContext(ctx, `SELECT id FROM providers WHERE auth_kind='oauth' AND type=? AND id<>?`, providerType, sourceID)
+	if err != nil {
+		return err
+	}
+	var targets []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		targets = append(targets, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, id := range targets {
+		if err := a.cloneOAuthProviderRoutes(ctx, sourceID, id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *App) authModelSync(w http.ResponseWriter, r *http.Request, _ adminCtx) {
@@ -1089,7 +1139,7 @@ func (a *App) authModelSync(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 			requested[id] = true
 		}
 	}
-	rows, err := a.db.QueryContext(r.Context(), `SELECT p.id,p.name FROM providers p
+	rows, err := a.db.QueryContext(r.Context(), `SELECT p.id,p.name,p.type FROM providers p
 		WHERE p.auth_kind='oauth'
 		  AND NOT EXISTS (SELECT 1 FROM model_routes r WHERE r.provider_id=p.id)
 		  AND NOT (
@@ -1106,7 +1156,7 @@ func (a *App) authModelSync(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	targets := []authModelSyncTarget{}
 	for rows.Next() {
 		var target authModelSyncTarget
-		if err := rows.Scan(&target.ID, &target.Name); err != nil {
+		if err := rows.Scan(&target.ID, &target.Name, &target.Type); err != nil {
 			_ = rows.Close()
 			fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be read")
 			return
@@ -1180,6 +1230,15 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		return 0, "", err
 	}
 	id, _ := res.LastInsertId()
+	// New accounts inherit the canonical platform egress and model inventory.
+	// A later explicit platform-wide change updates all siblings together.
+	var canonicalID int64
+	var sharedNode sql.NullInt64
+	if err := a.db.QueryRowContext(ctx, `SELECT id,ip_pool_node_id FROM providers WHERE auth_kind='oauth' AND type=? AND id<>? ORDER BY id LIMIT 1`, oauthProviderType(c.Platform), id).Scan(&canonicalID, &sharedNode); err == nil {
+		if sharedNode.Valid {
+			_, _ = a.db.ExecContext(ctx, `UPDATE providers SET ip_pool_node_id=? WHERE id=?`, sharedNode.Int64, id)
+		}
+	}
 	return id, name, nil
 }
 
