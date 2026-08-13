@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.66
+
+- Redesign the console UI with a warm, natural color system inspired by Octopus: cream page background, white surfaces, forest-green accent, and earthy brown text, replacing the previous dark navy/blue palette. Both the default and light themes share the new tokens.
+- Fix the light-theme variable block so the new palette actually applies when the console is in light mode (the previous build emitted an invalid nested selector and silently fell back to the old colors).
+
 ## V1.65
 
 - Fix the Codex OAuth chat bridge for models such as `gpt-5.6-sol`. The ChatGPT Codex backend streams OpenAI Responses SSE without a `Content-Type` header, so FusionGate skipped its buffered Responses-to-Chat conversion and forwarded raw `response.created` events to Chat Completions clients, which failed strict stream validation. Upstream responses are now treated as SSE whenever the caller declared an SSE upstream, so Codex-backed chat requests are converted back into `chat.completion.chunk` frames.
