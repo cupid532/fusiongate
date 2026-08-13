@@ -492,12 +492,33 @@ func copyUpstreamResponseHeaders(dst, src http.Header) {
 	}
 }
 
+// joinEndpointPath appends an API endpoint to an upstream base path without
+// duplicating the version prefix. OpenAI-compatible upstreams are commonly
+// configured two ways: some store the bare origin (https://congee.pro) while
+// others include the API version in the base URL (https://opencode.ai/zen/v1).
+// When the base path already ends in /v1, /v1beta, or /api/v1 and the endpoint
+// starts with that same version segment, the redundant prefix is dropped so the
+// request lands on the correct upstream route instead of a doubled /v1/v1 path.
+func joinEndpointPath(basePath, endpoint string) string {
+	basePath = strings.TrimRight(basePath, "/")
+	if !strings.HasPrefix(endpoint, "/") {
+		endpoint = "/" + endpoint
+	}
+	for _, version := range []string{"/v1", "/v1beta", "/api/v1"} {
+		if strings.HasSuffix(basePath, version) && strings.HasPrefix(endpoint, version+"/") {
+			endpoint = strings.TrimPrefix(endpoint, version)
+			break
+		}
+	}
+	return basePath + endpoint
+}
+
 func joinURLQuery(base, endpoint, rawQuery string) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return "", err
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + endpoint
+	u.Path = joinEndpointPath(u.Path, endpoint)
 	if rawQuery != "" {
 		if u.RawQuery == "" {
 			u.RawQuery = rawQuery

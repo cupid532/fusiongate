@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.64
+
+- Fix upstream URL construction for OpenAI-compatible channels whose base URL already carries the API version path, such as the OpenCode Zen/Go channel (`https://opencode.ai/zen/go/v1`). Requests were being forwarded to a doubled `/v1/v1/chat/completions` path and failing with HTTP 404, which made OpenCode-served domestic models (DeepSeek, GLM, Kimi, Qwen) unusable through FusionGate. The version prefix is now de-duplicated for request routing and provider health probes alike.
+
 ## V1.63
 
 - Add batch actions for authentication files of the same type: batch-select models and batch-change network egress across many accounts at once instead of editing them one by one. Model selection discovers once from the first account and applies the same enabled-model set to every selected account; egress applies one IP pool node (or direct) to all selected accounts in a single transaction.

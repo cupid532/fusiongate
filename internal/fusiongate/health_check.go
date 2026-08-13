@@ -385,14 +385,7 @@ func healthProbeURL(base, endpoint string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	basePath := strings.TrimRight(u.Path, "/")
-	for _, version := range []string{"/v1", "/v1beta"} {
-		if strings.HasSuffix(basePath, version) && strings.HasPrefix(endpoint, version+"/") {
-			endpoint = strings.TrimPrefix(endpoint, version)
-			break
-		}
-	}
-	u.Path = basePath + endpoint
+	u.Path = joinEndpointPath(u.Path, endpoint)
 	return u.String(), nil
 }
 
@@ -550,17 +543,22 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 }
 
 func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider) string {
-	base := strings.TrimRight(p.BaseURL, "/")
+	var endpoint string
 	switch p.Type {
 	case "anthropic", "claude_oauth":
-		return base + "/v1/messages"
+		endpoint = "/v1/messages"
 	case "grok_oauth":
-		return base + "/v1/responses"
+		endpoint = "/v1/responses"
 	case "codex_oauth":
-		return base + "/responses"
+		endpoint = "/responses"
 	default:
-		return base + "/v1/chat/completions"
+		endpoint = "/v1/chat/completions"
 	}
+	upstreamURL, err := healthProbeURL(p.BaseURL, endpoint)
+	if err != nil {
+		return strings.TrimRight(p.BaseURL, "/") + endpoint
+	}
+	return upstreamURL
 }
 
 func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvider, endpoint string, body map[string]interface{}) (*http.Request, error) {
