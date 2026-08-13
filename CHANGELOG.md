@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.61
+
+- Export authentication files one account per JSON file. A single selected account downloads a standalone JSON; selecting several downloads a ZIP whose entries are one JSON per account, using the same per-account shape the importer accepts.
+
 ## V1.60
 
 - Repair the unified channel editor introduced in V1.59: isolate asynchronous provider loads, reset balance-clear state between channels, protect unsaved Key edits, expose invalid fields in the correct tab, remove the obsolete duplicate Key modal, restore mobile overrides, and add accessible tab semantics.

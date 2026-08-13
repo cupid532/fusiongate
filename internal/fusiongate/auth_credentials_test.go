@@ -1,6 +1,8 @@
 package fusiongate
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -237,14 +239,13 @@ func TestCredentialExportRequiresAcknowledgementAndRoundTripsEncryptedOAuth(t *t
 	if rec.Header().Get("Content-Disposition") == "" {
 		t.Fatal("missing download filename")
 	}
-	var bundle credentialExportBundle
-	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Fatalf("single-account export content type=%q", ct)
+	}
+	var entry credentialExportEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &entry); err != nil {
 		t.Fatal(err)
 	}
-	if bundle.Format != "fusiongate_auth_export" || len(bundle.Credentials) != 1 {
-		t.Fatalf("unexpected bundle: %#v", bundle)
-	}
-	entry := bundle.Credentials[0]
 	if entry.Type != "codex" || entry.Platform != "codex" || entry.Priority != 7 || !entry.Enabled || entry.AccessToken != "export-access-secret" || entry.RefreshToken != "export-refresh-secret" || entry.ChatGPTAccountID != "export-account" {
 		t.Fatalf("unexpected export entry: %#v", entry)
 	}
@@ -294,12 +295,68 @@ func TestCredentialExportGrokShapeAndRejectsNonOAuth(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("grok export status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var bundle credentialExportBundle
-	if err := json.Unmarshal(rec.Body.Bytes(), &bundle); err != nil {
+	var entry credentialExportEntry
+	if err := json.Unmarshal(rec.Body.Bytes(), &entry); err != nil {
 		t.Fatal(err)
 	}
-	if len(bundle.Credentials) != 1 || bundle.Credentials[0].Type != "xai" || bundle.Credentials[0].BaseURL != "https://cli-chat-proxy.grok.com/v1" || bundle.Credentials[0].TokenEndpoint != "" {
-		t.Fatalf("unexpected Grok export: %#v", bundle.Credentials)
+	if entry.Type != "xai" || entry.BaseURL != "https://cli-chat-proxy.grok.com/v1" || entry.TokenEndpoint != "" {
+		t.Fatalf("unexpected Grok export: %#v", entry)
+	}
+}
+
+func TestCredentialExportMultipleAccountsProducesOneJSONPerAccount(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	codexID, _, err := a.saveOAuthProvider(context.Background(), "codex one", 7, ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "cliproxy", AccessToken: "codex-access", RefreshToken: "codex-refresh", AccountID: "acct-codex"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claudeID, _, err := a.saveOAuthProvider(context.Background(), "claude two", 3, ProviderCredential{Version: 1, Kind: "oauth", Platform: "claude", Source: "cliproxy", AccessToken: "claude-access", RefreshToken: "claude-refresh", AccountID: "acct-claude"}, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{codexID, claudeID}, "acknowledge_sensitive_export": true})
+	rec := httptest.NewRecorder()
+	a.authExport(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/export", strings.NewReader(string(body))), adminCtx{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/zip") {
+		t.Fatalf("multi-account export content type=%q", ct)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(rec.Body.Bytes()), int64(rec.Body.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reader.File) != 2 {
+		t.Fatalf("zip contains %d files, want 2", len(reader.File))
+	}
+	platforms := map[string]bool{}
+	for _, file := range reader.File {
+		if !strings.HasSuffix(file.Name, ".json") {
+			t.Fatalf("zip entry %q is not a JSON file", file.Name)
+		}
+		rc, err := file.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var entry credentialExportEntry
+		decodeErr := json.NewDecoder(rc).Decode(&entry)
+		rc.Close()
+		if decodeErr != nil {
+			t.Fatalf("zip entry %q: %v", file.Name, decodeErr)
+		}
+		if entry.AccessToken == "" || entry.Platform == "" {
+			t.Fatalf("zip entry %q missing credential: %#v", file.Name, entry)
+		}
+		platforms[entry.Platform] = true
+	}
+	if !platforms["codex"] || !platforms["claude"] || len(platforms) != 2 {
+		t.Fatalf("zip platforms=%v", platforms)
 	}
 }
 

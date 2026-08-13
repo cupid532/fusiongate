@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -119,13 +120,6 @@ type credentialImportPreview struct {
 	Status          string `json:"status"`
 	Duplicate       bool   `json:"duplicate"`
 	DuplicateID     int64  `json:"duplicate_provider_id,omitempty"`
-}
-
-type credentialExportBundle struct {
-	Version     int                     `json:"version"`
-	Format      string                  `json:"format"`
-	ExportedAt  string                  `json:"exported_at"`
-	Credentials []credentialExportEntry `json:"credentials"`
 }
 
 type credentialExportEntry struct {
@@ -782,6 +776,27 @@ func exportedCredentialEntry(name string, priority int, enabled bool, source str
 	return entry
 }
 
+// authExportFileName returns a stable ASCII filename for one account. It keeps the
+// account name when possible so a downloaded file is recognizable, and falls back to
+// the platform for unnamed or non-Latin names.
+func authExportFileName(platform, name string) string {
+	base := strings.TrimSpace(name)
+	if base == "" {
+		base = platform
+	}
+	base = strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, base)
+	base = strings.Trim(base, "-_")
+	if base == "" {
+		base = "account"
+	}
+	return strings.ToLower(platform) + "-" + base
+}
+
 func (a *App) authExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	if r.Method != http.MethodPost {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -848,7 +863,7 @@ func (a *App) authExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		fail(w, http.StatusBadRequest, "invalid_export_selection", "only existing OAuth authentication files can be exported")
 		return
 	}
-	bundle := credentialExportBundle{Version: 1, Format: "fusiongate_auth_export", ExportedAt: now(), Credentials: make([]credentialExportEntry, 0, len(ids))}
+	entries := make([]credentialExportEntry, 0, len(ids))
 	for _, id := range ids {
 		item := stored[id]
 		plain, err := a.decrypt(item.Credential)
@@ -861,16 +876,55 @@ func (a *App) authExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusInternalServerError, "credential_invalid", "stored authentication file is invalid")
 			return
 		}
-		bundle.Credentials = append(bundle.Credentials, exportedCredentialEntry(item.Name, item.Priority, item.Enabled != 0, item.Source, credential))
+		entries = append(entries, exportedCredentialEntry(item.Name, item.Priority, item.Enabled != 0, item.Source, credential))
 	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="fusiongate-auth-export-`+time.Now().UTC().Format("20060102-150405")+`.json"`)
+
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	if err := json.NewEncoder(w).Encode(bundle); err != nil {
-		a.log.Error("credential export response failed", "error", err)
+
+	if len(entries) == 1 {
+		filename := authExportFileName(entries[0].Platform, entries[0].Name) + ".json"
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+		if err := json.NewEncoder(w).Encode(entries[0]); err != nil {
+			a.log.Error("credential export response failed", "error", err)
+		}
+		return
+	}
+
+	// Multiple accounts: export one JSON file per account inside a ZIP archive so
+	// the download follows the one-account-one-file convention while remaining a
+	// single attachment.
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="fusiongate-auth-export-`+time.Now().UTC().Format("20060102-150405")+`.zip"`)
+	zw := zip.NewWriter(w)
+	used := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		name := authExportFileName(entry.Platform, entry.Name)
+		if used[name] {
+			for i := 2; ; i++ {
+				candidate := name + "-" + strconv.Itoa(i)
+				if !used[candidate] {
+					name = candidate
+					break
+				}
+			}
+		}
+		used[name] = true
+		file, err := zw.Create(name + ".json")
+		if err != nil {
+			a.log.Error("credential export zip create failed", "error", err)
+			return
+		}
+		if err := json.NewEncoder(file).Encode(entry); err != nil {
+			a.log.Error("credential export zip write failed", "error", err)
+			return
+		}
+	}
+	if err := zw.Close(); err != nil {
+		a.log.Error("credential export zip close failed", "error", err)
 	}
 }
 
