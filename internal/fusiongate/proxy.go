@@ -513,6 +513,20 @@ func joinEndpointPath(basePath, endpoint string) string {
 	return basePath + endpoint
 }
 
+// upstreamIsEventStream reports whether an upstream response should be treated
+// as a Server-Sent Events stream. Some OpenAI-compatible upstreams (notably the
+// ChatGPT Codex backend) stream Responses SSE without a Content-Type header, and
+// the HTTP transport may label the stream as plain text. When the caller
+// explicitly requested SSE upstream (UpstreamSSE), trust that declaration and
+// only refuse a payload that is clearly JSON.
+func upstreamIsEventStream(contentType string, upstreamSSE bool) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(contentType))
+	if strings.HasPrefix(trimmed, "text/event-stream") {
+		return true
+	}
+	return upstreamSSE && !strings.HasPrefix(trimmed, "application/json")
+}
+
 func joinURLQuery(base, endpoint, rawQuery string) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
@@ -1334,7 +1348,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: reason, Err: copyErr}
 	}
 
-	if options.BufferSSE && strings.HasPrefix(strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type"))), "text/event-stream") {
+	if options.BufferSSE && upstreamIsEventStream(resp.Header.Get("Content-Type"), options.UpstreamSSE) {
 		var buffered bytes.Buffer
 		var readErr error
 		observer := semanticStreamObserver{format: options.UsageFormat}

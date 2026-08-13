@@ -226,6 +226,77 @@ func TestCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
 	}
 }
 
+func TestCodexChatCompletionsBridgesSSEWithoutContentType(t *testing.T) {
+	var received map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		// The ChatGPT Codex backend streams Responses SSE without a
+		// Content-Type header; the bridge must still buffer and convert.
+		_, _ = w.Write([]byte(codexCompletedSSEText("resp-chat-noc", "Hello without content type")))
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	credential := ProviderCredential{Version: 1, Kind: "oauth", Platform: "codex", Source: "fusiongate_oauth", AccessToken: "access", AccountID: "account"}
+	payload, _ := json.Marshal(credential)
+	sealed, _ := a.encrypt(string(payload))
+	stamp := now()
+	result, err := a.db.Exec(`INSERT INTO providers(name,type,base_url,credential,auth_kind,auth_source,enabled,priority,weight,status,passthrough_mode,client_policy,request_timeout_ms,failure_threshold,cooldown_seconds,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "plus-noc", "codex_oauth", upstream.URL, sealed, "oauth", "fusiongate_oauth", 1, 1, 100, "unknown", "normalized", "any", 5000, 3, 30, stamp, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerID, _ := result.LastInsertId()
+	insertTestRoute(t, a, providerID, "gpt-plus-noc", "gpt-upstream", "chat,stream", 1)
+	key := insertTestKey(t, a, false)
+
+	recorder := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"gpt-plus-noc","messages":[{"role":"user","content":"Hello"}],"stream":false}`, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("response JSON: %v body=%s", err, recorder.Body.String())
+	}
+	choice := asMap(anySlice(response["choices"])[0])
+	message := asMap(choice["message"])
+	if message["content"] != "Hello without content type" || response["model"] != "gpt-plus-noc" {
+		t.Fatalf("response=%#v", response)
+	}
+	if strings.Contains(recorder.Body.String(), "response.created") {
+		t.Fatalf("raw Responses SSE leaked to a chat client: %s", recorder.Body.String())
+	}
+}
+
+func TestUpstreamIsEventStreamTreatsMissingContentTypeAsSSE(t *testing.T) {
+	if !upstreamIsEventStream("text/event-stream", false) {
+		t.Fatal("text/event-stream should be SSE")
+	}
+	if !upstreamIsEventStream("", true) {
+		t.Fatal("empty Content-Type with UpstreamSSE should be treated as SSE")
+	}
+	if !upstreamIsEventStream("text/plain; charset=utf-8", true) {
+		t.Fatal("plain-text Content-Type with UpstreamSSE should be treated as SSE")
+	}
+	if upstreamIsEventStream("", false) {
+		t.Fatal("empty Content-Type without UpstreamSSE should not be SSE")
+	}
+	if upstreamIsEventStream("application/json", true) {
+		t.Fatal("application/json should not be treated as SSE")
+	}
+	if upstreamIsEventStream("text/plain; charset=utf-8", false) {
+		t.Fatal("plain text without UpstreamSSE should not be SSE")
+	}
+}
+
 func TestCompletedCodexResponseReassemblesMultipleOutputItems(t *testing.T) {
 	stream := `event: response.output_item.done
 ` +

@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.65
+
+- Fix the Codex OAuth chat bridge for models such as `gpt-5.6-sol`. The ChatGPT Codex backend streams OpenAI Responses SSE without a `Content-Type` header, so FusionGate skipped its buffered Responses-to-Chat conversion and forwarded raw `response.created` events to Chat Completions clients, which failed strict stream validation. Upstream responses are now treated as SSE whenever the caller declared an SSE upstream, so Codex-backed chat requests are converted back into `chat.completion.chunk` frames.
+
 ## V1.64
 
 - Fix upstream URL construction for OpenAI-compatible channels whose base URL already carries the API version path, such as the OpenCode Zen/Go channel (`https://opencode.ai/zen/go/v1`). Requests were being forwarded to a doubled `/v1/v1/chat/completions` path and failing with HTTP 404, which made OpenCode-served domestic models (DeepSeek, GLM, Kimi, Qwen) unusable through FusionGate. The version prefix is now de-duplicated for request routing and provider health probes alike.
