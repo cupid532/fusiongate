@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.68
+
+- Fix a stray closing brace left in the light-theme variable block that made the browser drop the whole `html[data-theme="light"]` rule group and silently discard the content-area padding rules that followed it. Page content (overview heading, stat cards, and every other page) had been rendered flush against the sidebar with no horizontal padding; the content container now applies its intended `34px` side padding and `1680px` max width again.
+
 ## V1.67
 
 - Add motion and data-viz polish inspired by Octopus: a unified 0.15s smooth transition curve across cards, buttons, and navigation; hover lift with soft shadow on stat/usage/rank cards; animated stat number count-up on the overview and usage pages; and animated SVG charts (bars grow from the baseline, the trend line draws itself, and rank bars fill in).
