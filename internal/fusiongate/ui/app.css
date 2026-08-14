@@ -363,3 +363,33 @@ tbody tr:hover td{background:var(--row-hover-bg)}
 
 /* chart bar hover highlight */
 .usage-chart g:hover rect{opacity:1!important}
+
+/* ===== Firefox performance & motion accessibility ===== */
+
+/* Firefox renders backdrop-filter far slower than Chrome; drop the blur and
+   fall back to opaque backgrounds so scrolling and table updates stay smooth. */
+@supports (-moz-appearance: none) {
+  .sidebar, .topbar, .modal-backdrop, .model-picker-tools, .model-picker-foot,
+  .permission-toolbar, .provider-form-tabs, .credential-selection-toolbar,
+  .model-picker-head, .model-picker-foot {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  .topbar { background: var(--bg) !important; }
+}
+
+/* Honor the user's reduced-motion preference (also helps weak GPUs). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Request/usage tables are rebuilt on a timer; skip per-row transitions to
+   avoid a full reflow animation on every poll. */
+tbody tr, tbody tr:hover td {
+  transition: none;
+}

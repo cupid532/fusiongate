@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.70
+
+- Improve Firefox responsiveness. Firefox renders `backdrop-filter` blur far slower than Chrome, so the sidebar, topbar, and modal surfaces drop the blur in Firefox and use opaque backgrounds instead; table rows no longer animate on every poll; and the running-request clock re-renders once per second instead of every 250 ms. Also honor the `prefers-reduced-motion` preference by disabling animations and transitions.
+
 ## V1.69
 
 - Restore a real dark theme. The earlier warm-natural redesign had also recolored the default (`:root`) palette into the same light cream, so toggling the theme had no visible effect. The default theme is now a warm dark palette (deep brown-black surfaces, off-white text, brighter green accent) while the light theme keeps the Octopus-inspired cream palette.
