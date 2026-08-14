@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { ProviderDialog } from "@/components/ProviderDialog"
 import { ModelPicker } from "@/components/ModelPicker"
+import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -46,6 +47,8 @@ export function Providers() {
   const [editing, setEditing] = useState<Provider | null>(null)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
+  const [healthCheckOpen, setHealthCheckOpen] = useState(false)
+  const [healthCheckProvider, setHealthCheckProvider] = useState<Provider | null>(null)
 
   const { data: providers = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ["providers"],
@@ -190,6 +193,17 @@ export function Providers() {
                           >
                             <ScanSearch className="h-4 w-4" />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setHealthCheckProvider(p)
+                              setHealthCheckOpen(true)
+                            }}
+                            aria-label={`检活 ${p.name}`}
+                          >
+                            <HeartPulse className="h-4 w-4" />
+                          </Button>
                           <Switch
                             checked={p.enabled}
                             onCheckedChange={(v) => update.mutate({ id: p.id, patch: { enabled: v } })}
@@ -223,6 +237,14 @@ export function Providers() {
           onOpenChange={setModelPickerOpen}
           providerId={modelPickerProvider.id}
           providerName={modelPickerProvider.name}
+        />
+      )}
+      {healthCheckProvider && (
+        <HealthCheckDialog
+          open={healthCheckOpen}
+          onOpenChange={setHealthCheckOpen}
+          providerId={healthCheckProvider.id}
+          providerName={healthCheckProvider.name}
         />
       )}
     </motion.div>
