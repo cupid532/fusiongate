@@ -8,27 +8,32 @@ import { Dashboard } from "./pages/Dashboard"
 import { Providers } from "./pages/Providers"
 import { Keys } from "./pages/Keys"
 import { Requests } from "./pages/Requests"
-
-function Placeholder({ label }: { label: string }) {
-  return (
-    <div className="flex h-64 items-center justify-center rounded-xl border border-dashed text-sm text-muted-foreground">
-      {label} · 开发中
-    </div>
-  )
-}
+import { IPPool } from "./pages/IPPool"
+import { Routes } from "./pages/Routes"
+import { Usage } from "./pages/Usage"
+import { Quality } from "./pages/Quality"
+import { AuthFiles } from "./pages/AuthFiles"
 
 function pageContent(page: Page) {
   switch (page) {
     case "dashboard":
       return <Dashboard />
+    case "authfiles":
+      return <AuthFiles />
     case "providers":
       return <Providers />
+    case "ippool":
+      return <IPPool />
+    case "routes":
+      return <Routes />
     case "keys":
       return <Keys />
+    case "usage":
+      return <Usage />
     case "requests":
       return <Requests />
-    default:
-      return <Placeholder label={page} />
+    case "quality":
+      return <Quality />
   }
 }
 
