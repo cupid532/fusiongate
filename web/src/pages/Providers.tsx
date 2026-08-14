@@ -57,6 +57,7 @@ export function Providers() {
   const [keysOpen, setKeysOpen] = useState(false)
   const [keysProvider, setKeysProvider] = useState<Provider | null>(null)
   const [backupOpen, setBackupOpen] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const { data: routing } = useQuery({
     queryKey: ["routing"],
@@ -104,6 +105,15 @@ export function Providers() {
   const remove = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/providers/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
+  })
+
+  const batch = useMutation({
+    mutationFn: async ({ ids, action }: { ids: number[]; action: "enable" | "disable" | "delete" }) =>
+      api("/api/admin/providers/batch", { method: "POST", body: JSON.stringify({ provider_ids: ids, action }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["providers"] })
+      setSelected(new Set())
+    },
   })
 
   const filtered = useMemo(() => {
@@ -189,6 +199,26 @@ export function Providers() {
               ))}
             </div>
             <div className="flex items-center gap-2">
+              {selected.size > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground">已选 {selected.size}</span>
+                  <Button size="sm" variant="outline" onClick={() => batch.mutate({ ids: [...selected], action: "enable" })}>
+                    启用
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => batch.mutate({ ids: [...selected], action: "disable" })}>
+                    停用
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => {
+                      if (confirm(`删除选中的 ${selected.size} 个渠道？`)) batch.mutate({ ids: [...selected], action: "delete" })
+                    }}
+                  >
+                    删除
+                  </Button>
+                </div>
+              )}
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索渠道" className="h-8 w-52 pl-8 text-xs" />
@@ -208,6 +238,16 @@ export function Providers() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="w-10 px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={filtered.length > 0 && filtered.every((p) => selected.has(p.id))}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelected(new Set(filtered.map((p) => p.id)))
+                          else setSelected(new Set())
+                        }}
+                      />
+                    </th>
                     <th className="px-4 py-3 font-medium">渠道</th>
                     <th className="px-4 py-3 font-medium">类型</th>
                     <th className="px-4 py-3 font-medium">优先级</th>
@@ -219,6 +259,18 @@ export function Providers() {
                 <tbody>
                   {filtered.map((p) => (
                     <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
+                      <td className="px-3 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(p.id)}
+                          onChange={(e) => {
+                            const next = new Set(selected)
+                            if (e.target.checked) next.add(p.id)
+                            else next.delete(p.id)
+                            setSelected(next)
+                          }}
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <div className="font-medium">{p.name}</div>
                         <div className="truncate text-xs text-muted-foreground">{p.base_url}</div>

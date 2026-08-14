@@ -1,17 +1,20 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, Search } from "lucide-react"
+import { Plus, Trash2, Search, Coins } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Route } from "@/lib/types"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { PricingDialog } from "@/components/PricingDialog"
 
 export function Routes() {
   const qc = useQueryClient()
   const [q, setQ] = useState("")
+  const [pricingOpen, setPricingOpen] = useState(false)
+  const [pricingModel, setPricingModel] = useState("")
 
   const { data: routes = [], isLoading } = useQuery({
     queryKey: ["routes"],
@@ -74,9 +77,22 @@ export function Routes() {
             <Card key={name}>
               <CardContent className="p-0">
                 <div className="border-b px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm font-semibold">{name}</span>
-                    <Badge variant="neutral">{list.length} 个上游</Badge>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm font-semibold">{name}</span>
+                      <Badge variant="neutral">{list.length} 个上游</Badge>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setPricingModel(name)
+                        setPricingOpen(true)
+                      }}
+                    >
+                      <Coins className="h-4 w-4" />
+                      定价
+                    </Button>
                   </div>
                 </div>
                 <div className="divide-y">
@@ -123,6 +139,18 @@ export function Routes() {
           ))}
         </div>
       )}
+
+      <PricingDialog
+        open={pricingOpen}
+        onOpenChange={setPricingOpen}
+        model={pricingModel}
+        routes={(groups.find(([n]) => n === pricingModel)?.[1] ?? []).map((r) => ({
+          input_price_micros: r.input_price_micros,
+          cached_price_micros: r.cached_price_micros,
+          output_price_micros: r.output_price_micros,
+          long_context_threshold: r.long_context_threshold,
+        }))}
+      />
     </motion.div>
   )
 }

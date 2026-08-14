@@ -1,18 +1,23 @@
-import { useCallback, useEffect, useState } from "react"
+import { lazy, Suspense, useCallback, useEffect, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import { useAuth } from "./providers/auth"
 import { Sidebar, type Page } from "./components/layout/Sidebar"
 import { Topbar } from "./components/layout/Topbar"
 import { Login } from "./pages/Login"
-import { Dashboard } from "./pages/Dashboard"
-import { Providers } from "./pages/Providers"
-import { Keys } from "./pages/Keys"
-import { Requests } from "./pages/Requests"
-import { IPPool } from "./pages/IPPool"
-import { Routes } from "./pages/Routes"
-import { Usage } from "./pages/Usage"
-import { Quality } from "./pages/Quality"
-import { AuthFiles } from "./pages/AuthFiles"
+
+const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })))
+const Providers = lazy(() => import("./pages/Providers").then((m) => ({ default: m.Providers })))
+const Keys = lazy(() => import("./pages/Keys").then((m) => ({ default: m.Keys })))
+const Requests = lazy(() => import("./pages/Requests").then((m) => ({ default: m.Requests })))
+const IPPool = lazy(() => import("./pages/IPPool").then((m) => ({ default: m.IPPool })))
+const Routes = lazy(() => import("./pages/Routes").then((m) => ({ default: m.Routes })))
+const Usage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.Usage })))
+const Quality = lazy(() => import("./pages/Quality").then((m) => ({ default: m.Quality })))
+const AuthFiles = lazy(() => import("./pages/AuthFiles").then((m) => ({ default: m.AuthFiles })))
+
+function PageFallback() {
+  return <div className="py-16 text-center text-sm text-muted-foreground">加载中…</div>
+}
 
 function pageContent(page: Page) {
   switch (page) {
@@ -71,7 +76,7 @@ export default function App() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.2 }}
             >
-              {pageContent(page)}
+              <Suspense fallback={<PageFallback />}>{pageContent(page)}</Suspense>
             </motion.div>
           </AnimatePresence>
         </main>
