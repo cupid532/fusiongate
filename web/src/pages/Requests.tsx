@@ -1,15 +1,23 @@
 import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { RefreshCw } from "lucide-react"
+import { RefreshCw, Search } from "lucide-react"
 import { api } from "@/lib/api"
-import type { RequestLedgerRow } from "@/lib/types"
+import type { Provider, RequestLedgerRow } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 
 type StatusFilter = "all" | "running" | "success" | "failed"
+
+const timeRanges = [
+  { v: "", label: "全部" },
+  { v: "1h", label: "最近 1 小时" },
+  { v: "24h", label: "最近 24 小时" },
+  { v: "7d", label: "最近 7 天" },
+]
 
 function timeAgo(iso: string) {
   const t = new Date(iso).getTime()
@@ -28,15 +36,30 @@ function duration(ms: number | null) {
 
 export function Requests() {
   const [status, setStatus] = useState<StatusFilter>("all")
+  const [q, setQ] = useState("")
+  const [providerId, setProviderId] = useState("")
+  const [range, setRange] = useState("")
+
+  const { data: providers = [] } = useQuery({
+    queryKey: ["providers"],
+    queryFn: () => api<Provider[]>("/api/admin/providers"),
+  })
 
   const params = useMemo(() => {
     const p = new URLSearchParams({ limit: "100" })
     if (status !== "all") p.set("status", status)
+    if (q.trim()) p.set("q", q.trim())
+    if (providerId) p.set("provider_id", providerId)
+    if (range) {
+      const now = new Date()
+      const ms: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
+      if (ms[range]) p.set("from", new Date(now.getTime() - ms[range]).toISOString())
+    }
     return p.toString()
-  }, [status])
+  }, [status, q, providerId, range])
 
   const { data: rows = [], isLoading, isFetching, refetch } = useQuery({
-    queryKey: ["requests", status],
+    queryKey: ["requests", status, q, providerId, range],
     queryFn: () => api<RequestLedgerRow[]>(`/api/admin/requests?${params}`),
     refetchInterval: 5000,
   })
@@ -56,7 +79,7 @@ export function Requests() {
 
       <Card>
         <CardContent className="p-0">
-          <div className="flex gap-1.5 border-b p-3">
+          <div className="flex flex-wrap items-center gap-2 border-b p-3">
             {(
               [
                 ["all", "全部"],
@@ -76,6 +99,35 @@ export function Requests() {
                 {label}
               </button>
             ))}
+            <div className="ml-auto flex items-center gap-2">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / IP / 错误" className="h-8 w-56 pl-8 text-xs" />
+              </div>
+              <select
+                value={providerId}
+                onChange={(e) => setProviderId(e.target.value)}
+                className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              >
+                <option value="">全部渠道</option>
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={range}
+                onChange={(e) => setRange(e.target.value)}
+                className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              >
+                {timeRanges.map((t) => (
+                  <option key={t.v} value={t.v}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           {isLoading ? (

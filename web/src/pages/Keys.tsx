@@ -11,10 +11,30 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 
+type KeyForm = {
+  name: string
+  allow_models: string
+  deny_models: string
+  allow_all: boolean
+  allow_images: boolean
+  rpm_limit: number
+  budget_usd: string
+}
+
+const emptyForm: KeyForm = {
+  name: "",
+  allow_models: "",
+  deny_models: "",
+  allow_all: true,
+  allow_images: false,
+  rpm_limit: 120,
+  budget_usd: "",
+}
+
 export function Keys() {
   const qc = useQueryClient()
   const [creating, setCreating] = useState(false)
-  const [name, setName] = useState("")
+  const [form, setForm] = useState<KeyForm>(emptyForm)
   const [revealed, setRevealed] = useState("")
 
   const { data: keys = [], isLoading } = useQuery({
@@ -23,15 +43,25 @@ export function Keys() {
   })
 
   const create = useMutation({
-    mutationFn: async (n: string) =>
-      api<{ id: number; key: string }>("/api/admin/keys", {
+    mutationFn: async (f: KeyForm) => {
+      const body: Record<string, unknown> = {
+        name: f.name,
+        allow_all: f.allow_all,
+        allow_images: f.allow_images,
+        rpm_limit: f.rpm_limit,
+      }
+      if (f.allow_models.trim()) body.allow_models = f.allow_models
+      if (f.deny_models.trim()) body.deny_models = f.deny_models
+      if (f.budget_usd.trim()) body.budget_micros = Math.round(Number(f.budget_usd) * 1_000_000)
+      return api<{ id: number; key: string }>("/api/admin/keys", {
         method: "POST",
-        body: JSON.stringify({ name: n }),
-      }),
+        body: JSON.stringify(body),
+      })
+    },
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ["keys"] })
       setRevealed(res.key)
-      setName("")
+      setForm(emptyForm)
       setCreating(false)
     },
   })
@@ -46,6 +76,8 @@ export function Keys() {
     onSuccess: (res) => setRevealed(res.key),
   })
 
+  const set = <K extends keyof KeyForm>(k: K, v: KeyForm[K]) => setForm((f) => ({ ...f, [k]: v }))
+
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
       <div className="mb-6 flex items-end justify-between gap-6">
@@ -53,7 +85,7 @@ export function Keys() {
           <h1 className="text-2xl font-bold tracking-tight">访问密钥</h1>
           <p className="mt-1 text-sm text-muted-foreground">签发下游 API Key，按权限访问渠道和模型。</p>
         </div>
-        <Button onClick={() => setCreating(true)}>
+        <Button onClick={() => setCreating((v) => !v)}>
           <Plus className="h-4 w-4" />
           创建密钥
         </Button>
@@ -65,17 +97,43 @@ export function Keys() {
             <CardTitle className="text-base">新建密钥</CardTitle>
             <CardDescription>密钥创建后只完整显示一次。</CardDescription>
           </CardHeader>
-          <CardContent className="flex items-end gap-3">
-            <div className="flex flex-1 flex-col gap-1.5">
-              <Label htmlFor="key-name">名称</Label>
-              <Input id="key-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：Hermes local" />
+          <CardContent className="grid grid-cols-2 gap-4">
+            <div className="col-span-2 flex flex-col gap-1.5">
+              <Label>名称</Label>
+              <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="例如：Hermes local" />
             </div>
-            <Button onClick={() => create.mutate(name)} disabled={!name.trim() || create.isPending}>
-              创建
-            </Button>
-            <Button variant="ghost" onClick={() => setCreating(false)}>
-              取消
-            </Button>
+            <div className="col-span-2 flex flex-col gap-1.5">
+              <Label>允许的模型（逗号分隔，留空配合下方「全部模型」）</Label>
+              <Input value={form.allow_models} onChange={(e) => set("allow_models", e.target.value)} placeholder="gpt-4,claude-3-5" />
+            </div>
+            <div className="col-span-2 flex flex-col gap-1.5">
+              <Label>拒绝的模型（逗号分隔）</Label>
+              <Input value={form.deny_models} onChange={(e) => set("deny_models", e.target.value)} placeholder="gpt-4-mini" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>RPM 限制</Label>
+              <Input type="number" value={form.rpm_limit} onChange={(e) => set("rpm_limit", Number(e.target.value))} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>预算（USD，留空无限制）</Label>
+              <Input value={form.budget_usd} onChange={(e) => set("budget_usd", e.target.value)} placeholder="0.00" type="number" step="0.01" />
+            </div>
+            <label className="col-span-2 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.allow_all} onChange={(e) => set("allow_all", e.target.checked)} />
+              允许全部模型
+            </label>
+            <label className="col-span-2 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.allow_images} onChange={(e) => set("allow_images", e.target.checked)} />
+              允许图片生成
+            </label>
+            <div className="col-span-2 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setCreating(false)}>
+                取消
+              </Button>
+              <Button onClick={() => create.mutate(form)} disabled={!form.name.trim() || create.isPending}>
+                {create.isPending ? "创建中…" : "创建"}
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}

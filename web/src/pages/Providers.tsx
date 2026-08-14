@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare } from "lucide-react"
 import { api } from "@/lib/api"
-import type { Provider } from "@/lib/types"
+import type { Provider, RoutingStrategy } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -13,6 +13,8 @@ import { Switch } from "@/components/ui/switch"
 import { ProviderDialog } from "@/components/ProviderDialog"
 import { ModelPicker } from "@/components/ModelPicker"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
+import { BalanceDialog } from "@/components/BalanceDialog"
+import { ProviderKeysDialog } from "@/components/ProviderKeysDialog"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -49,6 +51,21 @@ export function Providers() {
   const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
   const [healthCheckOpen, setHealthCheckOpen] = useState(false)
   const [healthCheckProvider, setHealthCheckProvider] = useState<Provider | null>(null)
+  const [balanceOpen, setBalanceOpen] = useState(false)
+  const [balanceProvider, setBalanceProvider] = useState<Provider | null>(null)
+  const [keysOpen, setKeysOpen] = useState(false)
+  const [keysProvider, setKeysProvider] = useState<Provider | null>(null)
+
+  const { data: routing } = useQuery({
+    queryKey: ["routing"],
+    queryFn: () => api<{ strategy: RoutingStrategy }>("/api/admin/routing"),
+  })
+
+  const setStrategy = useMutation({
+    mutationFn: async (strategy: RoutingStrategy) =>
+      api("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["routing"] }),
+  })
 
   const { data: providers = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ["providers"],
@@ -97,10 +114,25 @@ export function Providers() {
           <h1 className="text-2xl font-bold tracking-tight">上游渠道</h1>
           <p className="mt-1 text-sm text-muted-foreground">管理 API 渠道、优先级与全局故障转移。</p>
         </div>
-        <Button onClick={() => { setEditing(null); setDialogOpen(true) }}>
-          <Plus className="h-4 w-4" />
-          添加渠道
-        </Button>
+        <div className="flex items-end gap-3">
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">故障转移模式</span>
+            <select
+              value={routing?.strategy ?? "priority_failover"}
+              onChange={(e) => setStrategy.mutate(e.target.value as RoutingStrategy)}
+              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+            >
+              <option value="priority_failover">按优先级故障转移</option>
+              <option value="ordered_round_robin">固定轮询</option>
+              <option value="smart_round_robin">智能轮询</option>
+              <option value="adaptive">自适应</option>
+            </select>
+          </div>
+          <Button onClick={() => { setEditing(null); setDialogOpen(true) }}>
+            <Plus className="h-4 w-4" />
+            添加渠道
+          </Button>
+        </div>
       </div>
 
       <Card>
@@ -204,6 +236,28 @@ export function Providers() {
                           >
                             <HeartPulse className="h-4 w-4" />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setBalanceProvider(p)
+                              setBalanceOpen(true)
+                            }}
+                            aria-label={`余额设置 ${p.name}`}
+                          >
+                            <Wallet className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setKeysProvider(p)
+                              setKeysOpen(true)
+                            }}
+                            aria-label={`Key 管理 ${p.name}`}
+                          >
+                            <KeySquare className="h-4 w-4" />
+                          </Button>
                           <Switch
                             checked={p.enabled}
                             onCheckedChange={(v) => update.mutate({ id: p.id, patch: { enabled: v } })}
@@ -245,6 +299,22 @@ export function Providers() {
           onOpenChange={setHealthCheckOpen}
           providerId={healthCheckProvider.id}
           providerName={healthCheckProvider.name}
+        />
+      )}
+      {balanceProvider && (
+        <BalanceDialog
+          open={balanceOpen}
+          onOpenChange={setBalanceOpen}
+          providerId={balanceProvider.id}
+          providerName={balanceProvider.name}
+        />
+      )}
+      {keysProvider && (
+        <ProviderKeysDialog
+          open={keysOpen}
+          onOpenChange={setKeysOpen}
+          providerId={keysProvider.id}
+          providerName={keysProvider.name}
         />
       )}
     </motion.div>
