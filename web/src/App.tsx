@@ -5,6 +5,9 @@ import { Sidebar, type Page } from "./components/layout/Sidebar"
 import { Topbar } from "./components/layout/Topbar"
 import { Login } from "./pages/Login"
 import { Dashboard } from "./pages/Dashboard"
+import { Providers } from "./pages/Providers"
+import { Keys } from "./pages/Keys"
+import { Requests } from "./pages/Requests"
 
 function Placeholder({ label }: { label: string }) {
   return (
@@ -12,6 +15,21 @@ function Placeholder({ label }: { label: string }) {
       {label} · 开发中
     </div>
   )
+}
+
+function pageContent(page: Page) {
+  switch (page) {
+    case "dashboard":
+      return <Dashboard />
+    case "providers":
+      return <Providers />
+    case "keys":
+      return <Keys />
+    case "requests":
+      return <Requests />
+    default:
+      return <Placeholder label={page} />
+  }
 }
 
 export default function App() {
@@ -48,7 +66,7 @@ export default function App() {
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.2 }}
             >
-              {page === "dashboard" ? <Dashboard /> : <Placeholder label={page} />}
+              {pageContent(page)}
             </motion.div>
           </AnimatePresence>
         </main>

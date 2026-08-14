@@ -1,0 +1,255 @@
+// —— 后端 /api/admin/* 的类型定义 ——
+
+export interface DashboardData {
+  providers: number
+  models: number
+  keys: number
+  requests: number
+  today_requests: number
+  failures_24h: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+  cost_micros: number
+}
+
+export interface Provider {
+  id: number
+  name: string
+  type: string
+  base_url: string
+  credential_hint: string
+  auth_kind: string
+  auth_source: string
+  auth_email?: string
+  auth_account_id?: string
+  auth_expires_at?: string
+  auth_status: string
+  has_refresh_token: boolean
+  status: string
+  notes: string
+  enabled: boolean
+  archived: boolean
+  priority: number
+  sort_order: number
+  weight: number
+  passthrough_mode: string
+  client_policy: string
+  health_check_enabled: boolean
+  max_concurrency: number
+  request_timeout_ms: number
+  failure_threshold: number
+  cooldown_seconds: number
+  consecutive_failures: number
+  circuit_open_until?: string
+  last_error?: string
+  last_latency_ms: number
+  last_first_byte_ms: number
+  last_success_at?: string
+  last_failure_at?: string
+  inflight: number
+  model_count: number
+  group_id?: number
+  group_sort_order: number
+  last_health_check_at?: string
+  health_check_status: string
+  health_check_error?: string
+  health_check_latency_ms: number
+  health_check_mode: string
+  health_check_first_byte_ms: number
+  health_check_model?: string
+  health_check_model_count: number
+  health_score: number
+  manual_balance_micros?: number
+  balance_baseline_at?: string
+  balance_multiplier_openai: number
+  balance_multiplier_claude: number
+  balance_multiplier_grok: number
+  balance_multiplier_gemini: number
+  balance_multiplier_other: number
+  ip_pool_node_id?: number
+  ip_pool_node_name?: string
+  ip_pool_node_protocol?: string
+  default_model?: string
+  api_key_count: number
+  enabled_api_key_count: number
+}
+
+export interface Route {
+  id: number
+  provider_id: number
+  public_name: string
+  upstream_model: string
+  capabilities: string
+  enabled: boolean
+  priority: number
+  input_price_micros: number
+  cached_price_micros: number
+  output_price_micros: number
+  long_context_threshold: number
+  long_input_price_micros: number
+  long_cached_price_micros: number
+  long_output_price_micros: number
+  pricing_source?: string
+  pricing_updated_at?: string
+  provider_name?: string
+  provider_type?: string
+  provider_enabled: boolean
+  sort_order: number
+  provider_status?: string
+  provider_latency_ms: number
+  provider_first_byte_ms: number
+  provider_failures: number
+  provider_inflight: number
+  health_score: number
+  last_health_check_at?: string
+  health_check_status: string
+  health_check_error?: string
+  health_check_latency_ms: number
+  health_check_first_byte_ms: number
+}
+
+export interface APIKey {
+  id: number
+  name: string
+  prefix: string
+  allow_models: string
+  deny_models: string
+  allow_all: boolean
+  allow_images: boolean
+  revoked: boolean
+  rpm_limit: number
+  expires_at?: string
+  created_at: string
+  can_reveal: boolean
+  budget_micros: number
+  spent_micros: number
+  remaining_micros: number
+}
+
+export interface RequestLedgerRow {
+  id: number
+  request_id: string
+  gateway_request_id: string
+  attempt: number
+  retry_reason: string
+  provider_name: string
+  client_ip: string
+  created_at: string
+  completed_at: string
+  running: boolean
+  first_byte_ms: number | null
+  model: string
+  upstream_model: string
+  protocol: string
+  stream: boolean
+  success: boolean
+  status_code: number
+  error_type: string
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+  cost_micros: number
+  cost_type: string
+  usage_reported: boolean
+  reasoning_effort: string
+}
+
+export interface TokenUsageMetrics {
+  requests: number
+  attempts: number
+  successful_requests: number
+  reported_requests: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
+  total_tokens: number
+  cost_micros: number
+  priced_attempts: number
+  usage_coverage: number
+  cost_coverage: number
+}
+
+export interface TokenUsageResponse {
+  period: { days: number; from: string; to: string; retention_days: number; timezone: string }
+  totals: TokenUsageMetrics
+  series: ({ date: string } & TokenUsageMetrics)[]
+  by_keys: ({ id?: number; name: string; prefix?: string } & TokenUsageMetrics)[]
+  by_providers: ({ id?: number; name: string } & TokenUsageMetrics)[]
+  by_models: ({ name: string; upstream_model?: string } & TokenUsageMetrics)[]
+  details: any[]
+  page: number
+  page_size: number
+  has_more: boolean
+}
+
+export interface IPPoolNode {
+  id: number
+  name: string
+  protocol: string
+  server: string
+  enabled: boolean
+  status: string
+  last_error?: string
+  last_checked_at?: string
+  last_latency_ms: number
+  exit_ip?: string
+  provider_count: number
+  link_configured: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface ProviderGroup {
+  id: number
+  name: string
+  collapsed: boolean
+  sort_order: number
+  member_count: number
+  healthy_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface QualityDetectorTarget {
+  id: string
+  model: string
+  route_id: number
+  upstream_model: string
+  provider_id: number
+  provider_name: string
+  provider_type: string
+  provider_key_id: number
+  provider_key_name: string
+  provider_key_hint: string
+  credential_kind: string
+}
+
+export interface QualityDetectorData {
+  available: boolean
+  version: string
+  estimates: Record<string, any>
+  targets: QualityDetectorTarget[]
+}
+
+export interface CredentialImportPreviewItem {
+  id: number
+  name: string
+  platform: string
+  source: string
+  email?: string
+  account_id?: string
+  expires_at?: string
+  has_refresh_token: boolean
+  status: string
+  duplicate: boolean
+  duplicate_provider_id?: number
+}
+
+export type RoutingStrategy = "priority_failover" | "ordered_round_robin" | "smart_round_robin" | "adaptive"
