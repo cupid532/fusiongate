@@ -1,4 +1,5 @@
 import { motion } from "motion/react"
+import { useEffect, useState } from "react"
 import {
   LayoutDashboard,
   FileKey,
@@ -28,6 +29,12 @@ const navItems: { page: Page; label: string; icon: typeof LayoutDashboard }[] = 
 ]
 
 export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (p: Page) => void }) {
+  const [version, setVersion] = useState("")
+
+  useEffect(() => {
+    setVersion(document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
+  }, [])
+
   return (
     <aside className="fixed inset-y-0 left-0 z-20 flex w-[248px] flex-col border-r bg-sidebar px-4 py-5 text-sidebar-foreground">
       <div className="flex h-12 items-center gap-3 border-b px-2 pb-4 mb-4">
@@ -80,6 +87,7 @@ export function Sidebar({ page, onNavigate }: { page: Page; onNavigate: (p: Page
           </span>
           <span className="font-medium">网关运行正常</span>
         </div>
+        <div className="mt-1 pl-4 text-[10px] text-muted-foreground">FusionGate {version}</div>
       </div>
     </aside>
   )

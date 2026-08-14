@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2 } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
+import { ProviderDialog } from "@/components/ProviderDialog"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -40,10 +41,13 @@ export function Providers() {
   const qc = useQueryClient()
   const [filter, setFilter] = useState<Filter>("all")
   const [q, setQ] = useState("")
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editing, setEditing] = useState<Provider | null>(null)
 
   const { data: providers = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ["providers"],
     queryFn: () => api<Provider[]>("/api/admin/providers"),
+    select: (list) => list.filter((p) => p.auth_kind !== "oauth"),
   })
 
   const update = useMutation({
@@ -87,7 +91,7 @@ export function Providers() {
           <h1 className="text-2xl font-bold tracking-tight">上游渠道</h1>
           <p className="mt-1 text-sm text-muted-foreground">管理 API 渠道、优先级与全局故障转移。</p>
         </div>
-        <Button onClick={() => void refetch()}>
+        <Button onClick={() => { setEditing(null); setDialogOpen(true) }}>
           <Plus className="h-4 w-4" />
           添加渠道
         </Button>
@@ -160,7 +164,18 @@ export function Providers() {
                       <td className="px-4 py-3">{statusBadge(p)}</td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-2">
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setEditing(p)
+                              setDialogOpen(true)
+                            }}
+                            aria-label={`编辑 ${p.name}`}
+                          >
+                            <Settings2 className="h-4 w-4" />
+                          </Button>
                           <Switch
                             checked={p.enabled}
                             onCheckedChange={(v) => update.mutate({ id: p.id, patch: { enabled: v } })}
@@ -186,6 +201,8 @@ export function Providers() {
           )}
         </CardContent>
       </Card>
+
+      <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} />
     </motion.div>
   )
 }

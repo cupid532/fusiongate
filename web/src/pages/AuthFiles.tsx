@@ -6,8 +6,6 @@ import type { Provider } from "@/lib/types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 
-const oauthTypes = new Set(["codex_oauth", "grok_oauth", "claude_oauth"])
-
 const platformLabels: Record<string, string> = {
   codex: "Codex (ChatGPT)",
   claude: "Claude",
@@ -27,7 +25,7 @@ export function AuthFiles() {
     queryFn: () => api<Provider[]>("/api/admin/providers"),
   })
 
-  const oauth = providers.filter((p) => oauthTypes.has(p.type))
+  const oauth = providers.filter((p) => p.auth_kind === "oauth")
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
