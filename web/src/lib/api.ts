@@ -4,6 +4,10 @@ export function setCsrfToken(token: string) {
   csrfToken = token
 }
 
+export function getCsrfToken(): string {
+  return csrfToken ?? ""
+}
+
 export class ApiError extends Error {
   status: number
   code: string

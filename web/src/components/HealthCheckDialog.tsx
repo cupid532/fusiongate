@@ -64,11 +64,15 @@ export function HealthCheckDialog({
         // 轮询任务状态直到完成
         const poll = async () => {
           if (cancelled) return
-          const cur = await api<HealthJob>(`/api/admin/health-checks/${j.id}`)
-          if (cancelled) return
-          setJob(cur)
-          if (cur.status === "running") {
-            timer = setTimeout(poll, 1500)
+          try {
+            const cur = await api<HealthJob>(`/api/admin/health-checks/${j.id}`)
+            if (cancelled) return
+            setJob(cur)
+            if (cur.status === "running" || cur.status === "queued") {
+              timer = setTimeout(poll, 1500)
+            }
+          } catch {
+            // 轮询失败则停止
           }
         }
         timer = setTimeout(poll, 1500)
@@ -98,7 +102,7 @@ export function HealthCheckDialog({
         ) : (
           <>
             <div className="flex items-center gap-3">
-              {job.status === "running" ? (
+              {job.status === "running" || job.status === "queued" ? (
                 <Badge variant="warning">检测中 {job.completed}/{job.total}</Badge>
               ) : (
                 <Badge variant="success">完成</Badge>

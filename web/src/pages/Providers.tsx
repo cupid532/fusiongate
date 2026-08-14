@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare, DatabaseBackup } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -15,6 +15,7 @@ import { ModelPicker } from "@/components/ModelPicker"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 import { BalanceDialog } from "@/components/BalanceDialog"
 import { ProviderKeysDialog } from "@/components/ProviderKeysDialog"
+import { ExportImportDialog } from "@/components/ExportImportDialog"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -55,6 +56,7 @@ export function Providers() {
   const [balanceProvider, setBalanceProvider] = useState<Provider | null>(null)
   const [keysOpen, setKeysOpen] = useState(false)
   const [keysProvider, setKeysProvider] = useState<Provider | null>(null)
+  const [backupOpen, setBackupOpen] = useState(false)
 
   const { data: routing } = useQuery({
     queryKey: ["routing"],
@@ -72,6 +74,26 @@ export function Providers() {
     queryFn: () => api<Provider[]>("/api/admin/providers"),
     select: (list) => list.filter((p) => p.auth_kind !== "oauth"),
   })
+
+  // 批量获取余额（仅对有手动余额的渠道显示进度条）
+  const balances = useQueries({
+    queries: providers.map((p) => ({
+      queryKey: ["balance", p.id],
+      queryFn: () =>
+        api<{ manual?: { configured_micros: number; remaining_micros: number; used_percent: number } }>(
+          `/api/admin/providers/${p.id}/balance`
+        ),
+      staleTime: 60_000,
+    })),
+  })
+  const balanceMap = useMemo(() => {
+    const m = new Map<number, { remaining_micros: number; used_percent: number }>()
+    providers.forEach((p, i) => {
+      const b = balances[i]?.data?.manual
+      if (b) m.set(p.id, { remaining_micros: b.remaining_micros, used_percent: b.used_percent })
+    })
+    return m
+  }, [providers, balances])
 
   const update = useMutation({
     mutationFn: async ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
@@ -128,6 +150,10 @@ export function Providers() {
               <option value="adaptive">自适应</option>
             </select>
           </div>
+          <Button variant="outline" onClick={() => setBackupOpen(true)}>
+            <DatabaseBackup className="h-4 w-4" />
+            备份
+          </Button>
           <Button onClick={() => { setEditing(null); setDialogOpen(true) }}>
             <Plus className="h-4 w-4" />
             添加渠道
@@ -196,6 +222,25 @@ export function Providers() {
                       <td className="px-4 py-3">
                         <div className="font-medium">{p.name}</div>
                         <div className="truncate text-xs text-muted-foreground">{p.base_url}</div>
+                        {balanceMap.has(p.id) && (
+                          <div className="mt-2 max-w-[220px]">
+                            <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                              <span>余额已用</span>
+                              <span className="font-medium text-foreground">
+                                {balanceMap.get(p.id)!.used_percent.toFixed(1)}%
+                              </span>
+                            </div>
+                            <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                              <div
+                                className={cn(
+                                  "h-1.5 rounded-full",
+                                  balanceMap.get(p.id)!.used_percent > 90 ? "bg-destructive" : balanceMap.get(p.id)!.used_percent > 70 ? "bg-amber-500" : "bg-primary"
+                                )}
+                                style={{ width: `${Math.min(100, balanceMap.get(p.id)!.used_percent)}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{typeLabels[p.type] ?? p.type}</td>
                       <td className="px-4 py-3 text-xs">{p.priority}</td>
@@ -317,6 +362,7 @@ export function Providers() {
           providerName={keysProvider.name}
         />
       )}
+      <ExportImportDialog open={backupOpen} onOpenChange={setBackupOpen} />
     </motion.div>
   )
 }
