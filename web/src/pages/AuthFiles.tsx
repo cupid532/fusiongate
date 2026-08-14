@@ -26,6 +26,13 @@ const platformLabels: Record<string, string> = {
   grok: "Grok (xAI)",
 }
 
+function platformOf(p: Provider): string {
+  if (p.type === "codex_oauth") return "codex"
+  if (p.type === "grok_oauth") return "grok"
+  if (p.type === "claude_oauth") return "claude"
+  return p.type.replace("_oauth", "")
+}
+
 function statusBadge(p: Provider) {
   if (p.auth_status === "ready") return <Badge variant="success">就绪</Badge>
   if (p.auth_status === "expired") return <Badge variant="danger">已过期</Badge>
@@ -87,7 +94,7 @@ export function AuthFiles() {
     const order = ["codex", "grok", "claude"]
     const map = new Map<string, Provider[]>()
     for (const p of oauth) {
-      const key = p.auth_source || p.type
+      const key = platformOf(p)
       const list = map.get(key) ?? []
       list.push(p)
       map.set(key, list)

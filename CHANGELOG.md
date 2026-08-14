@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.03
+
+- Fix auth-file platform grouping: the console grouped by `auth_source` (which stores values like `fusiongate_oauth` / `cliproxy`), so the Codex card view never matched. Grouping now derives the platform from the provider `type` (`codex_oauth` -> codex, `grok_oauth` -> grok, `claude_oauth` -> claude), so Codex accounts render as cards with quota and reset cards.
+
 ## V2.02
 
 - Codex auth files as cards: each Codex account is now a card showing plan type, remaining quota with an animated progress bar, primary/secondary usage windows, next reset time, credits balance, and reset cards (count, per-card details, and one-click redeem).
