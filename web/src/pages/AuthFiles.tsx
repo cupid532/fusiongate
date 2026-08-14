@@ -18,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { CodexCard } from "@/components/CodexCard"
 
 const platformLabels: Record<string, string> = {
   codex: "Codex (ChatGPT)",
@@ -138,80 +139,107 @@ export function AuthFiles() {
           还没有认证文件，点击「导入文件」或「添加授权」。
         </div>
       ) : (
-        <div className="space-y-4">
-          {groups.map((g) => (
-            <Card key={g.platform}>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  {platformLabels[g.platform] ?? g.platform}
+        <div className="space-y-6">
+          {groups.map((g) =>
+            g.platform === "codex" ? (
+              <div key={g.platform}>
+                <div className="mb-3 flex items-center gap-2">
+                  <h2 className="text-base font-semibold">{platformLabels[g.platform] ?? g.platform}</h2>
                   <Badge variant="neutral">{g.items.length} 个</Badge>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b text-left text-xs text-muted-foreground">
-                        <th className="w-10 px-3 py-2.5">
-                          <input
-                            type="checkbox"
-                            checked={g.items.length > 0 && g.items.every((p) => selected.has(p.id))}
-                            onChange={(e) => {
-                              const next = new Set(selected)
-                              if (e.target.checked) g.items.forEach((p) => next.add(p.id))
-                              else g.items.forEach((p) => next.delete(p.id))
-                              setSelected(next)
-                            }}
-                          />
-                        </th>
-                        <th className="px-4 py-2.5 font-medium">名称</th>
-                        <th className="px-4 py-2.5 font-medium">账号</th>
-                        <th className="px-4 py-2.5 font-medium">状态</th>
-                        <th className="px-4 py-2.5 font-medium">模型</th>
-                        <th className="px-4 py-2.5 text-right font-medium">操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {g.items.map((p) => (
-                        <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
-                          <td className="px-3 py-3">
+                </div>
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  {g.items.map((p) => (
+                    <div key={p.id} className="relative">
+                      <input
+                        type="checkbox"
+                        className="absolute left-3 top-3 z-10 h-4 w-4"
+                        checked={selected.has(p.id)}
+                        onChange={(e) => {
+                          const next = new Set(selected)
+                          if (e.target.checked) next.add(p.id)
+                          else next.delete(p.id)
+                          setSelected(next)
+                        }}
+                      />
+                      <CodexCard provider={p} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <Card key={g.platform}>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    {platformLabels[g.platform] ?? g.platform}
+                    <Badge variant="neutral">{g.items.length} 个</Badge>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b text-left text-xs text-muted-foreground">
+                          <th className="w-10 px-3 py-2.5">
                             <input
                               type="checkbox"
-                              checked={selected.has(p.id)}
+                              checked={g.items.length > 0 && g.items.every((p) => selected.has(p.id))}
                               onChange={(e) => {
                                 const next = new Set(selected)
-                                if (e.target.checked) next.add(p.id)
-                                else next.delete(p.id)
+                                if (e.target.checked) g.items.forEach((p) => next.add(p.id))
+                                else g.items.forEach((p) => next.delete(p.id))
                                 setSelected(next)
                               }}
                             />
-                          </td>
-                          <td className="px-4 py-3 font-medium">{p.name}</td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
-                          <td className="px-4 py-3">{statusBadge(p)}</td>
-                          <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
-                          <td className="px-4 py-3">
-                            <div className="flex justify-end">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => {
-                                  if (confirm(`删除认证文件「${p.name}」？`)) remove.mutate(p.id)
-                                }}
-                                aria-label={`删除 ${p.name}`}
-                              >
-                                <Trash2 className="h-4 w-4 text-destructive" />
-                              </Button>
-                            </div>
-                          </td>
+                          </th>
+                          <th className="px-4 py-2.5 font-medium">名称</th>
+                          <th className="px-4 py-2.5 font-medium">账号</th>
+                          <th className="px-4 py-2.5 font-medium">状态</th>
+                          <th className="px-4 py-2.5 font-medium">模型</th>
+                          <th className="px-4 py-2.5 text-right font-medium">操作</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
+                      </thead>
+                      <tbody>
+                        {g.items.map((p) => (
+                          <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
+                            <td className="px-3 py-3">
+                              <input
+                                type="checkbox"
+                                checked={selected.has(p.id)}
+                                onChange={(e) => {
+                                  const next = new Set(selected)
+                                  if (e.target.checked) next.add(p.id)
+                                  else next.delete(p.id)
+                                  setSelected(next)
+                                }}
+                              />
+                            </td>
+                            <td className="px-4 py-3 font-medium">{p.name}</td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
+                            <td className="px-4 py-3">{statusBadge(p)}</td>
+                            <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
+                            <td className="px-4 py-3">
+                              <div className="flex justify-end">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => {
+                                    if (confirm(`删除认证文件「${p.name}」？`)) remove.mutate(p.id)
+                                  }}
+                                  aria-label={`删除 ${p.name}`}
+                                >
+                                  <Trash2 className="h-4 w-4 text-destructive" />
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          )}
         </div>
       )}
 

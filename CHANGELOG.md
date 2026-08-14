@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.02
+
+- Codex auth files as cards: each Codex account is now a card showing plan type, remaining quota with an animated progress bar, primary/secondary usage windows, next reset time, credits balance, and reset cards (count, per-card details, and one-click redeem).
+
 ## V2.01
 
 - Provider links, archive, IP egress and grouping: channel names are now links to their upstream site, channels can be archived/unarchived, the editor lets you assign an IP-pool egress and a provider group, and a group manager creates/deletes groups.

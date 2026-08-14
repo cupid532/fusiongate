@@ -264,3 +264,36 @@ export interface ProviderKey {
   discovered_models: number
   last_test_latency_ms: number
 }
+
+export interface CodexUsageWindow {
+  used_percent: number
+  remaining_percent: number
+  limit_window_seconds?: number
+  reset_after_seconds?: number
+  reset_at?: string
+}
+
+export interface CodexResetCard {
+  id?: string
+  status?: string
+  reset_type?: string
+  granted_at?: string
+  expires_at?: string
+}
+
+export interface CodexAccountQuota {
+  plan_type?: string
+  subscription_plan?: string
+  allowed: boolean
+  limit_reached: boolean
+  primary?: CodexUsageWindow
+  secondary?: CodexUsageWindow
+  reset_cards: number
+  reset_card_details?: CodexResetCard[]
+  credits_balance?: number
+  credits_unlimited?: boolean
+  total_quota: number
+  used_quota: number
+  remaining_quota: number
+  next_reset_date?: string
+}
