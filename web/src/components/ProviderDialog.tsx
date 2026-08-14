@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-import type { Provider } from "@/lib/types"
+import type { IPPoolNode, Provider, ProviderGroup } from "@/lib/types"
 import {
   Dialog,
   DialogContent,
@@ -50,6 +50,17 @@ export function ProviderDialog({
     request_timeout_ms: 120000,
     passthrough_mode: "normalized",
     notes: "",
+    ip_pool_node_id: 0,
+    group_id: 0,
+  })
+
+  const { data: nodes = [] } = useQuery({
+    queryKey: ["ippool"],
+    queryFn: () => api<IPPoolNode[]>("/api/admin/ip-pool"),
+  })
+  const { data: groups = [] } = useQuery({
+    queryKey: ["provider-groups"],
+    queryFn: () => api<ProviderGroup[]>("/api/admin/provider-groups"),
   })
 
   useEffect(() => {
@@ -64,6 +75,8 @@ export function ProviderDialog({
         request_timeout_ms: provider?.request_timeout_ms ?? 120000,
         passthrough_mode: provider?.passthrough_mode ?? "normalized",
         notes: provider?.notes ?? "",
+        ip_pool_node_id: provider?.ip_pool_node_id ?? 0,
+        group_id: provider?.group_id ?? 0,
       })
     }
   }, [open, provider])
@@ -79,6 +92,8 @@ export function ProviderDialog({
         request_timeout_ms: form.request_timeout_ms,
         passthrough_mode: form.passthrough_mode,
         notes: form.notes,
+        ip_pool_node_id: form.ip_pool_node_id || null,
+        group_id: form.group_id || null,
       }
       if (form.credential) body.credential = form.credential
       if (provider) {
@@ -148,12 +163,42 @@ export function ProviderDialog({
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
+            <Label>IP 出口</Label>
+            <select
+              value={form.ip_pool_node_id}
+              onChange={(e) => set("ip_pool_node_id", Number(e.target.value))}
+              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+            >
+              <option value={0}>本机直连</option>
+              {nodes.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {n.name}（{n.protocol}）
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1.5">
             <Label>最大并发（0 = 不限）</Label>
             <Input type="number" value={form.max_concurrency} onChange={(e) => set("max_concurrency", Number(e.target.value))} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>请求超时（ms）</Label>
             <Input type="number" value={form.request_timeout_ms} onChange={(e) => set("request_timeout_ms", Number(e.target.value))} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>分组</Label>
+            <select
+              value={form.group_id}
+              onChange={(e) => set("group_id", Number(e.target.value))}
+              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+            >
+              <option value={0}>未分组</option>
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="col-span-2 flex flex-col gap-1.5">
             <Label>备注</Label>

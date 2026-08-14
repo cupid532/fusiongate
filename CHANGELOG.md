@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.01
+
+- Provider links, archive, IP egress and grouping: channel names are now links to their upstream site, channels can be archived/unarchived, the editor lets you assign an IP-pool egress and a provider group, and a group manager creates/deletes groups.
+- Precision health checks: the health-check dialog lists the channel's models and keys so you can check all models at once, a selected subset, and pin specific keys to specific models.
+- Auth-file batch actions: multi-select auth files to batch health-check or batch export them.
+
 ## V2.00
 
 - Complete console frontend rewrite on React 19 + Vite + TypeScript + Tailwind CSS + shadcn/ui + Motion (Framer Motion) + TanStack Query. All nine pages (login, overview, providers, keys, requests, routes, usage, quality, IP pool, auth files) are migrated from the old hand-written JS/CSS/HTML single page to a componentized React app with animated count-up stat cards, spring nav transitions, an animated usage chart, and a warm natural design system with a real dark theme. The Go embed now serves the Vite build's hashed, immutably-cached assets. Data loading uses TanStack Query caching and diff-based re-rendering, which also resolves the earlier Firefox + password-manager jank by eliminating full-table `innerHTML` rebuilds.

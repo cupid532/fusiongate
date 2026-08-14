@@ -253,3 +253,14 @@ export interface CredentialImportPreviewItem {
 }
 
 export type RoutingStrategy = "priority_failover" | "ordered_round_robin" | "smart_round_robin" | "adaptive"
+
+export interface ProviderKey {
+  id: number
+  name: string
+  key_hint: string
+  enabled: boolean
+  status: string
+  model?: string
+  discovered_models: number
+  last_test_latency_ms: number
+}

@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { FileKey, Plus, Trash2 } from "lucide-react"
-import { api } from "@/lib/api"
+import { FileKey, Plus, Trash2, HeartPulse } from "lucide-react"
+import { api, getCsrfToken } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -36,6 +36,7 @@ export function AuthFiles() {
   const qc = useQueryClient()
   const [importOpen, setImportOpen] = useState(false)
   const [oauthOpen, setOauthOpen] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const { data: providers = [], isLoading } = useQuery({
     queryKey: ["providers"],
@@ -49,6 +50,34 @@ export function AuthFiles() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["providers"] })
       qc.invalidateQueries({ queryKey: ["routes"] })
+    },
+  })
+
+  const batchHealthCheck = useMutation({
+    mutationFn: async (ids: number[]) =>
+      api<{ total: number }>("/api/admin/health-checks", { method: "POST", body: JSON.stringify({ provider_ids: ids, model_scope: "all" }) }),
+    onSuccess: (j) => {
+      setSelected(new Set())
+      alert(`检活任务已启动，共 ${j.total} 个模型。可在「质量检测」页查看结果。`)
+    },
+  })
+
+  const batchExport = useMutation({
+    mutationFn: async (ids: number[]) => {
+      const res = await fetch("/api/admin/auth/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
+        body: JSON.stringify({ provider_ids: ids, acknowledge_sensitive_export: true }),
+      })
+      if (!res.ok) throw new Error("导出失败")
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = "fusiongate-auth-export.json"
+      a.click()
+      URL.revokeObjectURL(url)
+      setSelected(new Set())
     },
   })
 
@@ -80,6 +109,17 @@ export function AuthFiles() {
           <p className="mt-1 text-sm text-muted-foreground">管理 Codex / Claude / Grok 的 OAuth 凭据。</p>
         </div>
         <div className="flex gap-2">
+          {selected.size > 0 && (
+            <>
+              <Button variant="outline" onClick={() => batchHealthCheck.mutate([...selected])}>
+                <HeartPulse className="h-4 w-4" />
+                批量测活（{selected.size}）
+              </Button>
+              <Button variant="outline" onClick={() => batchExport.mutate([...selected])}>
+                批量导出
+              </Button>
+            </>
+          )}
           <Button variant="outline" onClick={() => setImportOpen(true)}>
             <FileKey className="h-4 w-4" />
             导入文件
@@ -112,6 +152,18 @@ export function AuthFiles() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b text-left text-xs text-muted-foreground">
+                        <th className="w-10 px-3 py-2.5">
+                          <input
+                            type="checkbox"
+                            checked={g.items.length > 0 && g.items.every((p) => selected.has(p.id))}
+                            onChange={(e) => {
+                              const next = new Set(selected)
+                              if (e.target.checked) g.items.forEach((p) => next.add(p.id))
+                              else g.items.forEach((p) => next.delete(p.id))
+                              setSelected(next)
+                            }}
+                          />
+                        </th>
                         <th className="px-4 py-2.5 font-medium">名称</th>
                         <th className="px-4 py-2.5 font-medium">账号</th>
                         <th className="px-4 py-2.5 font-medium">状态</th>
@@ -122,6 +174,18 @@ export function AuthFiles() {
                     <tbody>
                       {g.items.map((p) => (
                         <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
+                          <td className="px-3 py-3">
+                            <input
+                              type="checkbox"
+                              checked={selected.has(p.id)}
+                              onChange={(e) => {
+                                const next = new Set(selected)
+                                if (e.target.checked) next.add(p.id)
+                                else next.delete(p.id)
+                                setSelected(next)
+                              }}
+                            />
+                          </td>
                           <td className="px-4 py-3 font-medium">{p.name}</td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
                           <td className="px-4 py-3">{statusBadge(p)}</td>

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare, DatabaseBackup } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -16,6 +16,7 @@ import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 import { BalanceDialog } from "@/components/BalanceDialog"
 import { ProviderKeysDialog } from "@/components/ProviderKeysDialog"
 import { ExportImportDialog } from "@/components/ExportImportDialog"
+import { GroupManager } from "@/components/GroupManager"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -57,6 +58,7 @@ export function Providers() {
   const [keysOpen, setKeysOpen] = useState(false)
   const [keysProvider, setKeysProvider] = useState<Provider | null>(null)
   const [backupOpen, setBackupOpen] = useState(false)
+  const [groupOpen, setGroupOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const { data: routing } = useQuery({
@@ -160,6 +162,10 @@ export function Providers() {
               <option value="adaptive">自适应</option>
             </select>
           </div>
+          <Button variant="outline" onClick={() => setGroupOpen(true)}>
+            <FolderTree className="h-4 w-4" />
+            分组
+          </Button>
           <Button variant="outline" onClick={() => setBackupOpen(true)}>
             <DatabaseBackup className="h-4 w-4" />
             备份
@@ -272,7 +278,9 @@ export function Providers() {
                         />
                       </td>
                       <td className="px-4 py-3">
-                        <div className="font-medium">{p.name}</div>
+                        <a href={p.base_url} target="_blank" rel="noreferrer" className="font-medium hover:text-primary hover:underline">
+                          {p.name}
+                        </a>
                         <div className="truncate text-xs text-muted-foreground">{p.base_url}</div>
                         {balanceMap.has(p.id) && (
                           <div className="mt-2 max-w-[220px]">
@@ -363,6 +371,17 @@ export function Providers() {
                           <Button
                             variant="ghost"
                             size="icon"
+                            onClick={() =>
+                              update.mutate({ id: p.id, patch: { archived: !p.archived } })
+                            }
+                            aria-label={p.archived ? `取消归档 ${p.name}` : `归档 ${p.name}`}
+                            title={p.archived ? "取消归档" : "归档"}
+                          >
+                            <Archive className={cn("h-4 w-4", p.archived && "text-amber-500")} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
                             onClick={() => {
                               if (confirm(`删除渠道「${p.name}」？`)) remove.mutate(p.id)
                             }}
@@ -415,6 +434,7 @@ export function Providers() {
         />
       )}
       <ExportImportDialog open={backupOpen} onOpenChange={setBackupOpen} />
+      <GroupManager open={groupOpen} onOpenChange={setGroupOpen} />
     </motion.div>
   )
 }
