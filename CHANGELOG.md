@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.72
+
+- Make the request ledger fully quiet in steady state. The poll now compares a data snapshot and skips rendering entirely when nothing changed, and the poll intervals are relaxed (1.5s -> 3s, running-clock 1s -> 2s). With no in-flight requests the page performs zero DOM mutations, so passive third-party extensions (e.g. password managers with MutationObserver-based form scanning) stop burning CPU on it.
+
 ## V1.71
 
 - Replace the request-ledger full-table rebuild with incremental diff rendering. On the steady state the table only patches the running rows' live duration cell (and re-renders a single row when a request transitions to finished), instead of rewriting the entire `<tbody>` on every 1s / 1.5s poll. This removes the remaining Firefox jank on the requests page.
