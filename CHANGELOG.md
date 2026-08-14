@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.73
+
+- Deterministic Firefox reliability pass. Detect Firefox via UA at boot and tag `<html>` with an `is-ff` class, then drop the expensive backdrop-filter blur and SVG transform animations only for Firefox (bars fade via opacity instead). Also relax the quality-detector poll (1.5s -> 5s) and the request-ledger poll (3s -> 5s) so the page stays visually static, reducing both GPU load and churn seen by passive DOM-scanning extensions.
+
 ## V1.72
 
 - Make the request ledger fully quiet in steady state. The poll now compares a data snapshot and skips rendering entirely when nothing changed, and the poll intervals are relaxed (1.5s -> 3s, running-clock 1s -> 2s). With no in-flight requests the page performs zero DOM mutations, so passive third-party extensions (e.g. password managers with MutationObserver-based form scanning) stop burning CPU on it.

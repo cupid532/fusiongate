@@ -393,3 +393,34 @@ tbody tr:hover td{background:var(--row-hover-bg)}
 tbody tr, tbody tr:hover td {
   transition: none;
 }
+
+/* Firefox reliability pass: JS adds `.is-ff` to <html> so we can drop the
+   expensive effects deterministically, without relying on @supports. */
+
+/* Kill backdrop-filter everywhere in Firefox (poor GPU perf). */
+.is-ff .sidebar, .is-ff .topbar, .is-ff .modal-backdrop,
+.is-ff .model-picker-tools, .is-ff .model-picker-foot,
+.is-ff .permission-toolbar, .is-ff .provider-form-tabs,
+.is-ff .credential-selection-toolbar, .is-ff .model-picker-head {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.is-ff .topbar { background: var(--bg) !important; }
+.is-ff .login-panel { backdrop-filter: none !important; }
+
+/* Firefox also renders SVG transforms slowly; replace bar-grow with a cheap
+   opacity fade and disable the line-draw animation. */
+.is-ff .usage-chart rect {
+  animation: ffBarFade .3s ease both;
+}
+@keyframes ffBarFade { from { opacity: 0 } to { opacity: 1 } }
+.is-ff .usage-chart .total-line {
+  animation: none;
+  stroke-dasharray: none;
+  stroke-dashoffset: 0;
+}
+.is-ff .rank-fill, .is-ff .health-fill {
+  animation: none;
+}
+.is-ff .stat-value { transition: none; }
+.is-ff .stat-card:hover .stat-value { transform: none; }
