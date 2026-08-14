@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
@@ -66,20 +65,5 @@ func TestReasoningEffortIsRecordedOnTheLedger(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0]["reasoning_effort"] != "high" {
 		t.Fatalf("requests API reasoning effort=%v", rows)
-	}
-}
-
-func TestLedgerUIRendersReasoningEffort(t *testing.T) {
-	js := string(adminJS)
-	for _, required := range []string{
-		"function reasoningEffortChip(effort)",
-		"reasoningEffortChip(x.reasoning_effort)",
-	} {
-		if !strings.Contains(js, required) {
-			t.Fatalf("ledger UI script is missing %q", required)
-		}
-	}
-	if !strings.Contains(string(adminCSS), ".reasoning-chip{") {
-		t.Fatal("reasoning chip has no styling")
 	}
 }

@@ -1,54 +1,72 @@
 package fusiongate
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// The console is served as three embedded assets instead of one 285 KB file. The shell
-// has to reference the other two with the running version so an upgrade cannot leave a
-// browser mixing a new shell with a cached old script.
-func TestConsoleShellReferencesVersionedAssets(t *testing.T) {
-	shell := string(adminHTML)
-	for _, required := range []string{
-		`<link rel="stylesheet" href="/ui/app.css?v=` + Version + `">`,
-		`<script src="/ui/app.js?v=` + Version + `"></script>`,
-	} {
-		if !strings.Contains(shell, required) {
-			t.Fatalf("console shell is missing %q", required)
-		}
-	}
-	if strings.Contains(shell, "<style>") {
-		t.Fatal("the stylesheet is inline again instead of being served as an asset")
-	}
-	// The theme has to be applied before first paint, so that one script stays inline.
-	if !strings.Contains(shell, "localStorage.getItem('fusiongate-theme')") {
-		t.Fatal("the pre-paint theme script must stay inline to avoid a flash of the wrong theme")
-	}
-	if strings.Contains(string(adminCSS), "{{FUSIONGATE_VERSION}}") || strings.Contains(string(adminJS), "{{FUSIONGATE_VERSION}}") {
-		t.Fatal("an asset contains an unresolved version placeholder")
-	}
-}
-
-func TestConsoleAssetsAreServedWithCorrectTypeAndCaching(t *testing.T) {
+// The console is a Vite/React build embedded as an FS tree. The shell is served at
+// "/" with the version injected, and the hashed assets live under /ui/assets/* so an
+// upgrade can never leave a browser mixing a new shell with a cached old bundle.
+func TestConsoleShellIsServedWithVersion(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
 
-	cases := []struct {
-		path, query, contentType string
-		body                     []byte
-	}{
-		{"/ui/app.css", "v=" + Version, "text/css; charset=utf-8", adminCSS},
-		{"/ui/app.js", "v=" + Version, "text/javascript; charset=utf-8", adminJS},
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	a.ui(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
 	}
-	for _, tc := range cases {
-		t.Run(tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, tc.path+"?"+tc.query, nil)
+	shell := rec.Body.String()
+	if !strings.Contains(shell, "fusiongate-version") {
+		t.Fatal("shell is missing the version meta tag")
+	}
+	if strings.Contains(shell, "{{FUSIONGATE_VERSION}}") {
+		t.Fatal("shell contains an unresolved version placeholder")
+	}
+	if !strings.Contains(shell, "/ui/assets/") {
+		t.Fatal("shell must reference the hashed build assets under /ui/assets/")
+	}
+}
+
+func TestConsoleAssetsAreServedImmutably(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	// Discover the real hashed asset names from the embedded FS.
+	var cssName, jsName string
+	_ = fs.WalkDir(uiSub, "assets", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(path, ".css") {
+			cssName = path
+		}
+		if strings.HasSuffix(path, ".js") {
+			jsName = path
+		}
+		return nil
+	})
+	if cssName == "" || jsName == "" {
+		t.Fatal("embedded build is missing hashed assets")
+	}
+
+	for _, tc := range []struct{ name, contentType string }{
+		{cssName, "text/css; charset=utf-8"},
+		{jsName, "text/javascript; charset=utf-8"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/ui/"+tc.name, nil)
 			rec := httptest.NewRecorder()
 			a.uiAsset(rec, req)
 			if rec.Code != http.StatusOK {
@@ -58,66 +76,24 @@ func TestConsoleAssetsAreServedWithCorrectTypeAndCaching(t *testing.T) {
 				t.Fatalf("Content-Type = %q, want %q", got, tc.contentType)
 			}
 			if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "immutable") {
-				t.Fatalf("a version-matched asset should be cacheable, got Cache-Control %q", got)
-			}
-			if rec.Body.Len() != len(tc.body) {
-				t.Fatalf("served %d bytes, embedded asset is %d", rec.Body.Len(), len(tc.body))
+				t.Fatalf("hashed asset should be cacheable, got Cache-Control %q", got)
 			}
 		})
 	}
-
-	// A stale or missing version must not be cached, otherwise a browser could pin an
-	// old asset across an upgrade.
-	req := httptest.NewRequest(http.MethodGet, "/ui/app.js?v=V0.1", nil)
-	rec := httptest.NewRecorder()
-	a.uiAsset(rec, req)
-	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
-		t.Fatalf("mismatched version Cache-Control = %q, want no-cache", got)
-	}
-
-	// Only the two known assets exist; the path is not a file server.
-	for _, path := range []string{"/ui/../app.go", "/ui/index.html", "/ui/", "/ui/app.css.map"} {
-		rec := httptest.NewRecorder()
-		a.uiAsset(rec, httptest.NewRequest(http.MethodGet, "/ui/"+strings.TrimPrefix(path, "/ui/"), nil))
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("%s returned %d, want 404", path, rec.Code)
-		}
-	}
 }
 
-func TestConsoleRoutesServeShellAndAssets(t *testing.T) {
+func TestConsoleAssetPathTraversalIsRejected(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	server := httptest.NewServer(a.Router())
-	defer server.Close()
 
-	for _, tc := range []struct{ path, contains string }{
-		{"/", "/ui/app.js?v=" + Version},
-		{"/ui/app.css?v=" + Version, "THEME TOKENS"},
-		{"/ui/app.js?v=" + Version, "function renderIPPool()"},
-	} {
-		resp, err := http.Get(server.URL + tc.path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body := make([]byte, 0)
-		buf := make([]byte, 32<<10)
-		for {
-			n, readErr := resp.Body.Read(buf)
-			body = append(body, buf[:n]...)
-			if readErr != nil {
-				break
-			}
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s -> %d", tc.path, resp.StatusCode)
-		}
-		if !strings.Contains(string(body), tc.contains) {
-			t.Fatalf("GET %s did not contain %q", tc.path, tc.contains)
+	for _, path := range []string{"/ui/../app.go", "/ui/assets/../../app.go", "/ui/", "/ui/not-real.js"} {
+		rec := httptest.NewRecorder()
+		a.uiAsset(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s returned %d, want 404", path, rec.Code)
 		}
 	}
 }

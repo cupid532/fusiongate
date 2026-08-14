@@ -1,5 +1,10 @@
 # Changelog
 
+## V1.83
+
+- Rebuild the console frontend on React 19 + Vite + TypeScript + Tailwind CSS + shadcn/ui + Motion (Framer Motion) + TanStack Query. This is the first milestone: the engineering skeleton, the login page, the overview (dashboard) page with animated count-up stat cards, the theme toggle, and a reworked Go embed that serves the Vite build's hashed assets from `internal/fusiongate/ui`. The remaining pages (providers, routes, keys, requests, usage, quality, auth files, IP pool) are still placeholders and will be migrated next.
+- Replace the old hand-written JS/CSS/HTML console and its content-snapshot tests with the new embed tests.
+
 ## V1.73
 
 - Deterministic Firefox reliability pass. Detect Firefox via UA at boot and tag `<html>` with an `is-ff` class, then drop the expensive backdrop-filter blur and SVG transform animations only for Firefox (bars fade via opacity instead). Also relax the quality-detector poll (1.5s -> 5s) and the request-ledger poll (3s -> 5s) so the page stays visually static, reducing both GPU load and churn seen by passive DOM-scanning extensions.
