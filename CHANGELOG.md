@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.05
+
+- Model picker as an on/off manager: enabled models are grouped at the top (checked), the rest below (unchecked), and saving applies the checked set as the provider complete model set — checking enables, unchecking disables/removes the route.
+
 ## V2.04
 
 - Codex reset-card feedback and reset countdown: the reset-card button is always visible (shows a hint when there are no cards, asks for confirmation before redeeming, and shows success/failure feedback), and the next-reset time is now an animated countdown bar driven by the usage window.
