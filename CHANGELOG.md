@@ -1,5 +1,9 @@
 # Changelog
 
+## V1.71
+
+- Replace the request-ledger full-table rebuild with incremental diff rendering. On the steady state the table only patches the running rows' live duration cell (and re-renders a single row when a request transitions to finished), instead of rewriting the entire `<tbody>` on every 1s / 1.5s poll. This removes the remaining Firefox jank on the requests page.
+
 ## V1.70
 
 - Improve Firefox responsiveness. Firefox renders `backdrop-filter` blur far slower than Chrome, so the sidebar, topbar, and modal surfaces drop the blur in Firefox and use opaque backgrounds instead; table rows no longer animate on every poll; and the running-request clock re-renders once per second instead of every 250 ms. Also honor the `prefers-reduced-motion` preference by disabling animations and transitions.
