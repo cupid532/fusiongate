@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { Switch } from "@/components/ui/switch"
 
 export function IPPool() {
   const qc = useQueryClient()
@@ -34,6 +35,12 @@ export function IPPool() {
 
   const remove = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/ip-pool/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["ippool"] }),
+  })
+
+  const toggle = useMutation({
+    mutationFn: async ({ id, enabled }: { id: number; enabled: boolean }) =>
+      api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["ippool"] }),
   })
 
@@ -116,6 +123,7 @@ export function IPPool() {
                       <td className="px-4 py-3 text-xs">{n.provider_count}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
+                          <Switch checked={n.enabled} onCheckedChange={(v) => toggle.mutate({ id: n.id, enabled: v })} aria-label={`${n.name} 开关`} />
                           <Button
                             variant="ghost"
                             size="sm"

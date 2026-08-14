@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { api } from "@/lib/api"
-import type { TokenUsageResponse } from "@/lib/types"
+import type { APIKey, Provider, TokenUsageResponse } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
@@ -27,10 +27,30 @@ function Stat({ label, value, tone }: { label: string; value: string; tone: stri
 
 export function Usage() {
   const [days, setDays] = useState(30)
+  const [apiKeyId, setApiKeyId] = useState("")
+  const [providerId, setProviderId] = useState("")
+  const [model, setModel] = useState("")
+
+  const { data: providers = [] } = useQuery({
+    queryKey: ["providers"],
+    queryFn: () => api<Provider[]>("/api/admin/providers"),
+  })
+  const { data: keys = [] } = useQuery({
+    queryKey: ["keys"],
+    queryFn: () => api<APIKey[]>("/api/admin/keys"),
+  })
+
+  const params = useMemo(() => {
+    const p = new URLSearchParams({ days: String(days) })
+    if (apiKeyId) p.set("api_key_id", apiKeyId)
+    if (providerId) p.set("provider_id", providerId)
+    if (model.trim()) p.set("model", model.trim())
+    return p.toString()
+  }, [days, apiKeyId, providerId, model])
 
   const { data, isLoading } = useQuery({
-    queryKey: ["usage", days],
-    queryFn: () => api<TokenUsageResponse>(`/api/admin/token-usage?days=${days}`),
+    queryKey: ["usage", days, apiKeyId, providerId, model],
+    queryFn: () => api<TokenUsageResponse>(`/api/admin/token-usage?${params}`),
   })
 
   const maxTokens = useMemo(() => {
@@ -45,19 +65,43 @@ export function Usage() {
           <h1 className="text-2xl font-bold tracking-tight">用量与费用</h1>
           <p className="mt-1 text-sm text-muted-foreground">按日聚合的 Token 用量与估算费用。</p>
         </div>
-        <div className="flex gap-1.5">
-          {ranges.map((r) => (
-            <button
-              key={r.d}
-              onClick={() => setDays(r.d)}
-              className={cn(
-                "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
-                days === r.d ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {r.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-end gap-3">
+          <select value={providerId} onChange={(e) => setProviderId(e.target.value)} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm">
+            <option value="">全部渠道</option>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <select value={apiKeyId} onChange={(e) => setApiKeyId(e.target.value)} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm">
+            <option value="">全部 Key</option>
+            {keys.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.name}
+              </option>
+            ))}
+          </select>
+          <input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder="模型名（可选）"
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
+          />
+          <div className="flex gap-1.5">
+            {ranges.map((r) => (
+              <button
+                key={r.d}
+                onClick={() => setDays(r.d)}
+                className={cn(
+                  "rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors",
+                  days === r.d ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
