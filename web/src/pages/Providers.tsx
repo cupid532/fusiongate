@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2 } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { ProviderDialog } from "@/components/ProviderDialog"
+import { ModelPicker } from "@/components/ModelPicker"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -43,6 +44,8 @@ export function Providers() {
   const [q, setQ] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
 
   const { data: providers = [], isLoading, refetch, isFetching } = useQuery({
     queryKey: ["providers"],
@@ -176,6 +179,17 @@ export function Providers() {
                           >
                             <Settings2 className="h-4 w-4" />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setModelPickerProvider(p)
+                              setModelPickerOpen(true)
+                            }}
+                            aria-label={`识别 ${p.name} 模型`}
+                          >
+                            <ScanSearch className="h-4 w-4" />
+                          </Button>
                           <Switch
                             checked={p.enabled}
                             onCheckedChange={(v) => update.mutate({ id: p.id, patch: { enabled: v } })}
@@ -203,6 +217,14 @@ export function Providers() {
       </Card>
 
       <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} />
+      {modelPickerProvider && (
+        <ModelPicker
+          open={modelPickerOpen}
+          onOpenChange={setModelPickerOpen}
+          providerId={modelPickerProvider.id}
+          providerName={modelPickerProvider.name}
+        />
+      )}
     </motion.div>
   )
 }
