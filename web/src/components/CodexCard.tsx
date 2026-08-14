@@ -1,7 +1,7 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { RefreshCw, Ticket, Zap } from "lucide-react"
+import { RefreshCw, Ticket, Zap, Clock } from "lucide-react"
 import { api } from "@/lib/api"
 import type { CodexAccountQuota, Provider } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
@@ -14,14 +14,38 @@ function formatDate(iso?: string) {
   return new Date(iso).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
 }
 
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return "即将重置"
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  if (d > 0) return `${d} 天 ${h} 小时`
+  if (h > 0) return `${h} 小时 ${m} 分钟`
+  return `${m} 分钟`
+}
+
 export function CodexCard({ provider }: { provider: Provider }) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(false)
+  const [notice, setNotice] = useState("")
 
   const { data: quota, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["codex-quota", provider.id],
     queryFn: () => api<CodexAccountQuota>(`/api/admin/auth/quota/${provider.id}`),
   })
+
+  // 重置倒计时（基于 primary 窗口的 reset_after_seconds）
+  const [remaining, setRemaining] = useState(0)
+  useEffect(() => {
+    const resetAfter = quota?.primary?.reset_after_seconds
+    if (!resetAfter) {
+      setRemaining(0)
+      return
+    }
+    setRemaining(resetAfter)
+    const timer = setInterval(() => setRemaining((s) => Math.max(0, s - 1)), 1000)
+    return () => clearInterval(timer)
+  }, [quota?.primary?.reset_after_seconds])
 
   const redeem = useMutation({
     mutationFn: async (creditId?: string) =>
@@ -30,13 +54,35 @@ export function CodexCard({ provider }: { provider: Provider }) {
         { method: "POST", body: JSON.stringify(creditId ? { credit_id: creditId } : {}) }
       ),
     onSuccess: (res) => {
-      if (res.warning) alert(`已兑换，但刷新配额失败：${res.warning}`)
+      if (res.warning) {
+        setNotice("已兑换，但刷新配额失败")
+      } else {
+        setNotice("重置卡已使用，额度已重置")
+      }
+      setTimeout(() => setNotice(""), 3000)
       qc.invalidateQueries({ queryKey: ["codex-quota", provider.id] })
+    },
+    onError: (e) => {
+      setNotice(e instanceof Error ? e.message : "兑换失败")
+      setTimeout(() => setNotice(""), 3000)
     },
   })
 
-  const remaining = quota?.remaining_quota ?? 0
-  const used = quota?.used_quota ?? 0
+  function handleRedeem(creditId?: string) {
+    const total = quota?.reset_cards ?? 0
+    if (total <= 0) {
+      setNotice("当前没有可用的重置卡")
+      setTimeout(() => setNotice(""), 3000)
+      return
+    }
+    if (!confirm(`当前有 ${total} 张重置卡，确定使用 1 张重置卡？`)) return
+    redeem.mutate(creditId)
+  }
+
+  const quotaRemaining = quota?.remaining_quota ?? 0
+  const quotaUsed = quota?.used_quota ?? 0
+  const windowTotal = quota?.primary?.limit_window_seconds ?? remaining
+  const resetRatio = windowTotal > 0 ? remaining / windowTotal : 0
 
   return (
     <Card className="overflow-hidden">
@@ -59,18 +105,38 @@ export function CodexCard({ provider }: { provider: Provider }) {
             <div>
               <div className="mb-1 flex items-end justify-between">
                 <span className="text-xs text-muted-foreground">剩余额度</span>
-                <span className="text-2xl font-bold tracking-tight">{remaining.toFixed(1)}%</span>
+                <span className="text-2xl font-bold tracking-tight">{quotaRemaining.toFixed(1)}%</span>
               </div>
               <div className="h-2 overflow-hidden rounded-full bg-muted">
                 <motion.div
-                  className={cn("h-2 rounded-full", remaining < 10 ? "bg-destructive" : remaining < 30 ? "bg-amber-500" : "bg-primary")}
+                  className={cn("h-2 rounded-full", quotaRemaining < 10 ? "bg-destructive" : quotaRemaining < 30 ? "bg-amber-500" : "bg-primary")}
                   initial={{ width: 0 }}
-                  animate={{ width: `${remaining}%` }}
+                  animate={{ width: `${quotaRemaining}%` }}
                   transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
                 />
               </div>
-              <div className="mt-1 text-[11px] text-muted-foreground">已用 {used.toFixed(1)}% · 总额度 100%</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">已用 {quotaUsed.toFixed(1)}% · 总额度 100%</div>
             </div>
+
+            {/* 重置倒计时能量条 */}
+            {quota.primary?.reset_after_seconds != null && quota.primary.reset_after_seconds > 0 && (
+              <div>
+                <div className="mb-1 flex items-end justify-between">
+                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Clock className="h-3.5 w-3.5" />
+                    距下次重置
+                  </span>
+                  <span className="text-sm font-semibold">{formatDuration(remaining)}</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <motion.div
+                    className="h-1.5 rounded-full bg-blue-500"
+                    animate={{ width: `${Math.max(0, Math.min(100, resetRatio * 100))}%` }}
+                    transition={{ duration: 1, ease: "linear" }}
+                  />
+                </div>
+              </div>
+            )}
 
             {/* 使用窗口 */}
             {(quota.primary || quota.secondary) && (
@@ -119,11 +185,9 @@ export function CodexCard({ provider }: { provider: Provider }) {
                   <span className="font-medium">重置卡</span>
                   <Badge variant={quota.reset_cards > 0 ? "success" : "neutral"}>{quota.reset_cards} 张</Badge>
                 </div>
-                {quota.reset_cards > 0 && (
-                  <Button size="sm" variant="outline" disabled={redeem.isPending} onClick={() => redeem.mutate(undefined)}>
-                    {redeem.isPending ? "兑换中…" : "兑换"}
-                  </Button>
-                )}
+                <Button size="sm" variant="outline" disabled={redeem.isPending} onClick={() => handleRedeem()}>
+                  {redeem.isPending ? "使用中…" : "使用重置卡"}
+                </Button>
               </div>
 
               {quota.reset_card_details && quota.reset_card_details.length > 0 && (
@@ -142,7 +206,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
                           <div className="flex items-center gap-2">
                             {c.expires_at && <span className="text-muted-foreground">到期 {formatDate(c.expires_at)}</span>}
                             {c.status !== "redeemed" && c.status !== "expired" && (
-                              <Button size="sm" variant="ghost" disabled={redeem.isPending} onClick={() => redeem.mutate(c.id)}>
+                              <Button size="sm" variant="ghost" disabled={redeem.isPending} onClick={() => handleRedeem(c.id)}>
                                 兑换
                               </Button>
                             )}
@@ -157,6 +221,11 @@ export function CodexCard({ provider }: { provider: Provider }) {
           </>
         ) : (
           <div className="py-4 text-center text-sm text-muted-foreground">无法获取配额</div>
+        )}
+
+        {/* 正反馈提示 */}
+        {notice && (
+          <div className="rounded-md bg-primary/10 px-3 py-2 text-xs text-primary">{notice}</div>
         )}
 
         <div className="flex justify-end">

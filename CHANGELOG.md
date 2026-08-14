@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.04
+
+- Codex reset-card feedback and reset countdown: the reset-card button is always visible (shows a hint when there are no cards, asks for confirmation before redeeming, and shows success/failure feedback), and the next-reset time is now an animated countdown bar driven by the usage window.
+
 ## V2.03
 
 - Fix auth-file platform grouping: the console grouped by `auth_source` (which stores values like `fusiongate_oauth` / `cliproxy`), so the Codex card view never matched. Grouping now derives the platform from the provider `type` (`codex_oauth` -> codex, `grok_oauth` -> grok, `claude_oauth` -> claude), so Codex accounts render as cards with quota and reset cards.
