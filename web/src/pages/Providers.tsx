@@ -303,7 +303,7 @@ export function Providers() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{typeLabels[p.type] ?? p.type}</td>
-                      <td className="px-4 py-3 text-xs">{p.priority}</td>
+                      <td className="px-4 py-3"><Badge variant="warning">优先级 {p.priority}</Badge><div className="mt-1 text-[10px] text-muted-foreground">失败 {p.consecutive_failures}/5</div></td>
                       <td className="px-4 py-3">{statusBadge(p)}</td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                       <td className="px-4 py-3">

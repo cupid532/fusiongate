@@ -201,6 +201,7 @@ export function AuthFiles() {
                           <th className="px-4 py-2.5 font-medium">名称</th>
                           <th className="px-4 py-2.5 font-medium">账号</th>
                           <th className="px-4 py-2.5 font-medium">状态</th>
+                          <th className="px-4 py-2.5 font-medium">优先级</th>
                           <th className="px-4 py-2.5 font-medium">模型</th>
                           <th className="px-4 py-2.5 text-right font-medium">操作</th>
                         </tr>
@@ -223,6 +224,7 @@ export function AuthFiles() {
                             <td className="px-4 py-3 font-medium">{p.name}</td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
                             <td className="px-4 py-3">{statusBadge(p)}</td>
+                            <td className="px-4 py-3"><Badge variant="warning">优先级 {p.priority}</Badge></td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                             <td className="px-4 py-3">
                               <div className="flex justify-end">
@@ -262,6 +264,7 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   const [items, setItems] = useState<CredentialImportPreviewItem[]>([])
   const [sessionId, setSessionId] = useState("")
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [priority, setPriority] = useState(1)
   const [step, setStep] = useState<"paste" | "preview">("paste")
 
   const preview = useMutation({
@@ -282,7 +285,7 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     mutationFn: async () =>
       api("/api/admin/auth/import/commit", {
         method: "POST",
-        body: JSON.stringify({ session_id: sessionId, selected: [...selected], update_existing: true }),
+        body: JSON.stringify({ session_id: sessionId, selected: [...selected], update_existing: true, priority }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["providers"] })
@@ -312,6 +315,10 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
           <div className="space-y-2">
             <div className="text-sm text-muted-foreground">
               已选择 <span className="font-semibold text-primary">{selected.size}</span> / {items.length} 个凭据
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="whitespace-nowrap">导入优先级（数字越大越优先）</Label>
+              <Input type="number" min={0} value={priority} onChange={(e) => setPriority(Number(e.target.value))} className="w-24" />
             </div>
             <div className="max-h-[45vh] space-y-1 overflow-y-auto rounded-lg border p-2">
               {items.map((i) => (
@@ -364,6 +371,7 @@ function AuthOAuthDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
   const [sessionId, setSessionId] = useState("")
   const [callback, setCallback] = useState("")
   const [name, setName] = useState("")
+  const [priority, setPriority] = useState(1)
 
   const start = useMutation({
     mutationFn: async () =>
@@ -382,7 +390,7 @@ function AuthOAuthDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
     mutationFn: async () =>
       api("/api/admin/auth/oauth/complete", {
         method: "POST",
-        body: JSON.stringify({ session_id: sessionId, callback, name }),
+        body: JSON.stringify({ session_id: sessionId, callback, name, priority }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["providers"] })
@@ -422,6 +430,10 @@ function AuthOAuthDialog({ open, onOpenChange }: { open: boolean; onOpenChange: 
             <div className="flex flex-col gap-1.5">
               <Label>名称</Label>
               <Input value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>优先级（数字越大越优先）</Label>
+              <Input type="number" min={0} value={priority} onChange={(e) => setPriority(Number(e.target.value))} />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>回调地址（授权后从浏览器地址栏复制）</Label>

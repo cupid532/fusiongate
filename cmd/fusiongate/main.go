@@ -83,7 +83,7 @@ func main() {
 		AdminPassword:          adminPassword,
 		AllowInsecureUpstreams: envBool("FUSIONGATE_ALLOW_INSECURE_UPSTREAMS"),
 		AllowPrivateUpstreams:  envBool("FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS"),
-		MaxFailoverAttempts:    envInt("FUSIONGATE_MAX_FAILOVER_ATTEMPTS", 8),
+		MaxFailoverAttempts:    envInt("FUSIONGATE_MAX_FAILOVER_ATTEMPTS", 15),
 		MaxConcurrentRequests:  envInt("FUSIONGATE_MAX_CONCURRENT_REQUESTS", 64),
 		StreamStartTimeout:     envDuration("FUSIONGATE_STREAM_START_TIMEOUT", fusiongate.DefaultStreamStartTimeout),
 		StreamIdleTimeout:      envDuration("FUSIONGATE_STREAM_IDLE_TIMEOUT", 5*time.Minute),

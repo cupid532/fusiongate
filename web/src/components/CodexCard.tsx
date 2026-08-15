@@ -105,7 +105,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
     <Card className="overflow-hidden">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center justify-between text-base">
-          <span className="truncate">{provider.name}</span>
+          <span className="flex min-w-0 items-center gap-2"><span className="truncate">{provider.name}</span><Badge variant="warning">优先级 {provider.priority}</Badge></span>
           <Badge variant={!provider.enabled ? "neutral" : quota?.allowed === false ? "danger" : quota?.limit_reached ? "warning" : "success"}>
             {!provider.enabled ? "已关闭" : quota?.allowed === false ? "不可用" : quota?.limit_reached ? "已达限" : "可用"}
           </Badge>

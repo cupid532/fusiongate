@@ -156,8 +156,8 @@ export function ProviderDialog({
             <Input value={form.credential} onChange={(e) => set("credential", e.target.value)} placeholder="sk-…" className="font-mono text-xs" />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label>优先级</Label>
-            <Input type="number" value={form.priority} onChange={(e) => set("priority", Number(e.target.value))} />
+            <Label>优先级（数字越大越优先）</Label>
+            <Input type="number" min={0} value={form.priority} onChange={(e) => set("priority", Number(e.target.value))} />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>转发模式</Label>

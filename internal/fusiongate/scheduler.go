@@ -501,7 +501,7 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		}
 		threshold := z.Provider.FailureThreshold
 		if threshold <= 0 {
-			threshold = 3
+			threshold = DefaultFailureThreshold
 		}
 		immediate := result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden ||
 			result.Status == http.StatusTooManyRequests

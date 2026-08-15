@@ -38,7 +38,11 @@ type Config struct {
 	QualityDetectorURL, QualityDetectorBaseURL    string
 }
 
-const DefaultStreamStartTimeout = 30 * time.Second
+const (
+	DefaultStreamStartTimeout  = 30 * time.Second
+	DefaultMaxFailoverAttempts = 15
+	DefaultFailureThreshold    = 5
+)
 
 type App struct {
 	db                       *sql.DB
@@ -253,7 +257,7 @@ func New(cfg Config) (*App, error) {
 		cfg.Addr = "127.0.0.1:8787"
 	}
 	if cfg.MaxFailoverAttempts <= 0 {
-		cfg.MaxFailoverAttempts = 8
+		cfg.MaxFailoverAttempts = DefaultMaxFailoverAttempts
 	}
 	if cfg.MaxConcurrentRequests <= 0 {
 		cfg.MaxConcurrentRequests = 64
@@ -654,7 +658,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "max_concurrency", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "health_check_enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"providers", "request_timeout_ms", "INTEGER NOT NULL DEFAULT 120000"},
-		{"providers", "failure_threshold", "INTEGER NOT NULL DEFAULT 3"},
+		{"providers", "failure_threshold", "INTEGER NOT NULL DEFAULT 5"},
 		{"providers", "cooldown_seconds", "INTEGER NOT NULL DEFAULT 30"},
 		{"providers", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "circuit_open_until", "TEXT"},
@@ -739,6 +743,11 @@ func (a *App) migrate(ctx context.Context) error {
 	// Older builds permanently disabled a provider after five failures. Those
 	// rows are distinguishable from an administrator toggle by their status.
 	if _, err := a.db.ExecContext(ctx, `UPDATE providers SET enabled=1,status='circuit_open',circuit_open_until=COALESCE(circuit_open_until,?),updated_at=? WHERE enabled=0 AND status='disabled' AND consecutive_failures>=5`, now(), now()); err != nil {
+		return err
+	}
+	// Providers created by older releases used the old default threshold of three.
+	// Preserve explicit custom thresholds while migrating only that legacy default.
+	if _, err := a.db.ExecContext(ctx, `UPDATE providers SET failure_threshold=5 WHERE failure_threshold=3`); err != nil {
 		return err
 	}
 	_, err = a.db.ExecContext(ctx, `

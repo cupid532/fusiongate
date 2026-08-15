@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.11
+
+- Make channel and authentication-file priorities explicit in the console, including editable priority on provider creation and OAuth/import flows.
+- Increase default request failover to 15 attempts and open a channel circuit after 5 consecutive failures. Successful health probes immediately clear the failure counter and circuit cooldown.
+
 ## V2.10
 
 - Keep Codex quota details visible when an authentication is disabled. Closing the participation switch still excludes the credential from model routing and health checks, while the card continues to show remaining quota, usage windows, reset countdowns, and the next reset time with manual refresh available.

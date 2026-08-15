@@ -741,6 +741,19 @@ func parseErrorMessage(body []byte, fallback string) string {
 }
 
 func (h *HealthChecker) updateHealthStatus(providerID int64, result healthCheckResult) {
+	// A successful probe is the explicit recovery signal for a channel that was
+	// benched by request failures. Clear the circuit immediately so the next
+	// request can select it without waiting for the previous cooldown to expire.
+	recovery := result.Status == "healthy"
+	if recovery {
+		h.app.routeMu.Lock()
+		if state := h.app.providerStates[providerID]; state != nil {
+			state.ConsecutiveFailures = 0
+			state.CircuitOpenUntil = time.Time{}
+			state.HalfOpenProbe = false
+		}
+		h.app.routeMu.Unlock()
+	}
 	_, err := h.app.db.Exec(`
 		UPDATE providers 
 		SET last_health_check_at=?,
@@ -751,9 +764,14 @@ func (h *HealthChecker) updateHealthStatus(providerID int64, result healthCheckR
 		    health_check_first_byte_ms=?,
 		    health_check_model=?,
 		    health_check_model_count=?,
+		    consecutive_failures=CASE WHEN ? THEN 0 ELSE consecutive_failures END,
+		    circuit_open_until=CASE WHEN ? THEN NULL ELSE circuit_open_until END,
+		    status=CASE WHEN ? THEN 'healthy' ELSE status END,
+		    last_error=CASE WHEN ? THEN '' ELSE last_error END,
+		    last_success_at=CASE WHEN ? THEN ? ELSE last_success_at END,
 		    updated_at=?
 		WHERE id=?
-	`, now(), result.Status, result.Error, result.LatencyMS, result.Mode, result.FirstByteMS, result.Model, result.ModelCount, now(), providerID)
+	`, now(), result.Status, result.Error, result.LatencyMS, result.Mode, result.FirstByteMS, result.Model, result.ModelCount, recovery, recovery, recovery, recovery, recovery, now(), now(), providerID)
 
 	if err != nil {
 		h.app.log.Error("failed to update health status", "provider_id", providerID, "error", err)
