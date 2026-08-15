@@ -33,7 +33,6 @@ export function CodexCard({ provider }: { provider: Provider }) {
   const { data: quota, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["codex-quota", provider.id],
     queryFn: () => api<CodexAccountQuota>(`/api/admin/auth/quota/${provider.id}`),
-    enabled: provider.enabled,
   })
 
   // 重置倒计时（基于 primary 窗口的 reset_after_seconds）
@@ -53,7 +52,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
     mutationFn: async (enabled: boolean) =>
       api(`/api/admin/providers/${provider.id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
     onSuccess: (_res, enabled) => {
-      setNotice(enabled ? "认证已开启，将参与后续调用" : "认证已关闭，不再参与调用")
+      setNotice(enabled ? "认证已开启，将参与后续调用" : "认证已关闭，不参与模型调用，配额仍可查看")
       setTimeout(() => setNotice(""), 3000)
       qc.invalidateQueries({ queryKey: ["providers"] })
       qc.invalidateQueries({ queryKey: ["routes"] })
@@ -115,11 +114,13 @@ export function CodexCard({ provider }: { provider: Provider }) {
       </CardHeader>
 
       <CardContent className="space-y-3">
-        {!provider.enabled ? (
-          <div className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
-            此认证已关闭，不参与调用。
+        {!provider.enabled && (
+          <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+            已关闭模型调用，配额与重置时间仍会更新。
           </div>
-        ) : isLoading ? (
+        )}
+
+        {isLoading ? (
           <div className="py-4 text-center text-sm text-muted-foreground">加载配额中…</div>
         ) : quota ? (
           <>
@@ -260,7 +261,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
             />
             {provider.enabled ? "参与调用" : "已关闭"}
           </label>
-          <Button variant="ghost" size="sm" disabled={!provider.enabled || toggle.isPending} onClick={() => void refetch()}>
+          <Button variant="ghost" size="sm" disabled={toggle.isPending} onClick={() => void refetch()}>
             <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
             刷新
           </Button>

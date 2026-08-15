@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.10
+
+- Keep Codex quota details visible when an authentication is disabled. Closing the participation switch still excludes the credential from model routing and health checks, while the card continues to show remaining quota, usage windows, reset countdowns, and the next reset time with manual refresh available.
+
 ## V2.09
 
 - Ship the rebuilt embedded console assets for the Codex authentication switch and provider-dialog fixes introduced in V2.07-V2.08, ensuring the production binary serves the updated interface.
