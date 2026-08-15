@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.09
+
+- Ship the rebuilt embedded console assets for the Codex authentication switch and provider-dialog fixes introduced in V2.07-V2.08, ensuring the production binary serves the updated interface.
+
 ## V2.08
 
 - Complete disabled-auth isolation by rejecting manual health checks for disabled providers, so a closed Codex credential cannot make upstream calls through routing, polling, refresh, automatic checks, or operator-triggered checks.
