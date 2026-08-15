@@ -93,10 +93,11 @@ export function ProviderDialog({
         passthrough_mode: form.passthrough_mode,
         notes: form.notes,
         ip_pool_node_id: form.ip_pool_node_id || null,
-        group_id: form.group_id || null,
       }
+      if (form.group_id) body.group_id = form.group_id
       if (form.credential) body.credential = form.credential
       if (provider) {
+        if (!form.group_id) body.clear_group = true
         return api(`/api/admin/providers/${provider.id}`, { method: "PATCH", body: JSON.stringify(body) })
       }
       return api("/api/admin/providers", { method: "POST", body: JSON.stringify(body) })
@@ -109,10 +110,18 @@ export function ProviderDialog({
 
   const saveError = save.error instanceof Error ? save.error.message : ""
 
-  const set = (k: keyof typeof form, v: string | number) => setForm((f) => ({ ...f, [k]: v }))
+  const set = (k: keyof typeof form, v: string | number) => {
+    if (save.error) save.reset()
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  const handleOpenChange = (value: boolean) => {
+    if (!value) save.reset()
+    onOpenChange(value)
+  }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{provider ? "编辑渠道" : "添加 API 渠道"}</DialogTitle>
@@ -215,7 +224,7 @@ export function ProviderDialog({
         )}
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             取消
           </Button>
           <Button

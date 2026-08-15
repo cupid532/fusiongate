@@ -1,9 +1,14 @@
 # Changelog
 
+## V2.08
+
+- Complete disabled-auth isolation by rejecting manual health checks for disabled providers, so a closed Codex credential cannot make upstream calls through routing, polling, refresh, automatic checks, or operator-triggered checks.
+- Correct provider group clearing and reset stale save errors when the channel dialog is edited or reopened.
+
 ## V2.07
 
-- Add an on/off control to each Codex authentication card. Disabled credentials are visibly marked, stop quota polling, and are excluded from routing, health checks, and token refresh until re-enabled.
-- Fix upstream channel creation when a provider group is selected or cleared by accepting and persisting the form's `group_id`. The channel dialog now requires an API key for new channels and displays the backend's concrete validation or conflict error instead of failing silently.
+- Add an on/off control to each Codex authentication card. Disabled credentials are visibly marked, stop quota polling, and are excluded from routing, automatic health checks, and token refresh until re-enabled.
+- Fix upstream channel creation when a provider group is selected by accepting and persisting the form's `group_id`. The channel dialog now requires an API key for new channels and displays the backend's concrete validation or conflict error instead of failing silently.
 
 ## V2.06
 

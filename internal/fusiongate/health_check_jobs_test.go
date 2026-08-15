@@ -312,4 +312,10 @@ func TestDisabledHealthCheckSkipsProbeAndManualJob(t *testing.T) {
 	if _, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, nil, "all"); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("manual health check error=%v", err)
 	}
+	if _, err := a.db.Exec(`UPDATE providers SET enabled=0,health_check_enabled=1 WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, nil, nil, "all"); err == nil || !strings.Contains(err.Error(), "disabled providers") {
+		t.Fatalf("disabled provider manual health check error=%v", err)
+	}
 }

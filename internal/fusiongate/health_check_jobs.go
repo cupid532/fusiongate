@@ -228,7 +228,7 @@ func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []i
 	for i, id := range ids {
 		args[i] = id
 	}
-	rows, err := m.app.db.QueryContext(ctx, `SELECT id,name,type,health_check_enabled FROM providers WHERE id IN (`+placeholders+`)`, args...)
+	rows, err := m.app.db.QueryContext(ctx, `SELECT id,name,type,enabled,health_check_enabled FROM providers WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -237,12 +237,15 @@ func (m *healthCheckJobManager) loadTargets(ctx context.Context, providerIDs []i
 	for rows.Next() {
 		var target healthCheckTarget
 		var providerType string
-		var healthCheckEnabled int
-		if err := rows.Scan(&target.ProviderID, &target.ProviderName, &providerType, &healthCheckEnabled); err != nil {
+		var enabled, healthCheckEnabled int
+		if err := rows.Scan(&target.ProviderID, &target.ProviderName, &providerType, &enabled, &healthCheckEnabled); err != nil {
 			return nil, err
 		}
 		if !validProviderType(providerType) {
 			return nil, errors.New("one or more providers do not support health checks")
+		}
+		if !strBool(enabled) {
+			return nil, errors.New("disabled providers cannot be health checked")
 		}
 		if !strBool(healthCheckEnabled) {
 			return nil, errors.New("health checks are disabled for one or more providers")
