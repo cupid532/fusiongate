@@ -36,6 +36,37 @@ func TestProviderCreationDefaultsPriorityToOne(t *testing.T) {
 	}
 }
 
+func TestProviderCreationAcceptsGroupID(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	res, err := a.db.Exec(`INSERT INTO provider_groups(name,collapsed,sort_order,created_at,updated_at) VALUES('primary',0,0,?,?)`, now(), now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"name":"grouped","type":"openai_compatible","baseURL":"http://provider.test","credential":"secret","group_id":` + intString(groupID) + `,"auto_discover":false}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/providers", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	a.providers(rec, req, adminCtx{})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var storedGroupID int64
+	if err := a.db.QueryRow(`SELECT group_id FROM providers WHERE name='grouped'`).Scan(&storedGroupID); err != nil {
+		t.Fatal(err)
+	}
+	if storedGroupID != groupID {
+		t.Fatalf("group_id=%d, want %d", storedGroupID, groupID)
+	}
+}
+
 func TestProviderToggleAndPriorityControlFailover(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.07
+
+- Add an on/off control to each Codex authentication card. Disabled credentials are visibly marked, stop quota polling, and are excluded from routing, health checks, and token refresh until re-enabled.
+- Fix upstream channel creation when a provider group is selected or cleared by accepting and persisting the form's `group_id`. The channel dialog now requires an API key for new channels and displays the backend's concrete validation or conflict error instead of failing silently.
+
 ## V2.06
 
 - Add model aliases with admin APIs and console management. Aliases enter the existing priority failover, round-robin, smart round-robin, and adaptive schedulers under their canonical model while preserving the requested alias in downstream responses and request accounting. Alias names and targets are transactionally protected from route conflicts, alias chains, transparent-only routes, and dangling targets, and aliases are included in provider backups.

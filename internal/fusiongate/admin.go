@@ -312,6 +312,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			CooldownSeconds    int    `json:"cooldown_seconds"`
 			AutoDiscover       *bool  `json:"auto_discover"`
 			IPPoolNodeID       *int64 `json:"ip_pool_node_id"`
+			GroupID            *int64 `json:"group_id"`
 			DefaultModel       string `json:"default_model"`
 			KeyName            string `json:"key_name"`
 		}
@@ -382,6 +383,10 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if in.IPPoolNodeID != nil && *in.IPPoolNodeID > 0 {
 			ipPoolNodeID = *in.IPPoolNodeID
 		}
+		var groupID any
+		if in.GroupID != nil && *in.GroupID > 0 {
+			groupID = *in.GroupID
+		}
 		tx, err := a.db.BeginTx(r.Context(), nil)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -393,7 +398,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		res, err := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,ip_pool_node_id,default_model,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, in.Name, in.Type, in.BaseURL, encrypted, boolInt(enabled), priority, sortOrder, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, ipPoolNodeID, in.DefaultModel, now(), now())
+		res, err := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,ip_pool_node_id,group_id,default_model,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, in.Name, in.Type, in.BaseURL, encrypted, boolInt(enabled), priority, sortOrder, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, ipPoolNodeID, groupID, in.DefaultModel, now(), now())
 		if err != nil {
 			fail(w, http.StatusConflict, "provider_conflict", err.Error())
 			return

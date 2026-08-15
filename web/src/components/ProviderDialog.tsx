@@ -107,6 +107,8 @@ export function ProviderDialog({
     },
   })
 
+  const saveError = save.error instanceof Error ? save.error.message : ""
+
   const set = (k: keyof typeof form, v: string | number) => setForm((f) => ({ ...f, [k]: v }))
 
   return (
@@ -206,11 +208,20 @@ export function ProviderDialog({
           </div>
         </div>
 
+        {saveError && (
+          <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {saveError}
+          </div>
+        )}
+
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button onClick={() => save.mutate()} disabled={!form.name.trim() || !form.baseURL.trim() || save.isPending}>
+          <Button
+            onClick={() => save.mutate()}
+            disabled={!form.name.trim() || !form.baseURL.trim() || (!provider && !form.credential.trim()) || save.isPending}
+          >
             {save.isPending ? "保存中…" : "保存渠道"}
           </Button>
         </DialogFooter>

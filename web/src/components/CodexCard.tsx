@@ -8,6 +8,7 @@ import { cn, formatCost } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 
 function formatDate(iso?: string) {
   if (!iso) return "—"
@@ -32,6 +33,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
   const { data: quota, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["codex-quota", provider.id],
     queryFn: () => api<CodexAccountQuota>(`/api/admin/auth/quota/${provider.id}`),
+    enabled: provider.enabled,
   })
 
   // 重置倒计时（基于 primary 窗口的 reset_after_seconds）
@@ -46,6 +48,22 @@ export function CodexCard({ provider }: { provider: Provider }) {
     const timer = setInterval(() => setRemaining((s) => Math.max(0, s - 1)), 1000)
     return () => clearInterval(timer)
   }, [quota?.primary?.reset_after_seconds])
+
+  const toggle = useMutation({
+    mutationFn: async (enabled: boolean) =>
+      api(`/api/admin/providers/${provider.id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+    onSuccess: (_res, enabled) => {
+      setNotice(enabled ? "认证已开启，将参与后续调用" : "认证已关闭，不再参与调用")
+      setTimeout(() => setNotice(""), 3000)
+      qc.invalidateQueries({ queryKey: ["providers"] })
+      qc.invalidateQueries({ queryKey: ["routes"] })
+      qc.invalidateQueries({ queryKey: ["codex-quota", provider.id] })
+    },
+    onError: (e) => {
+      setNotice(e instanceof Error ? e.message : "认证状态更新失败")
+      setTimeout(() => setNotice(""), 3000)
+    },
+  })
 
   const redeem = useMutation({
     mutationFn: async (creditId?: string) =>
@@ -89,15 +107,19 @@ export function CodexCard({ provider }: { provider: Provider }) {
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center justify-between text-base">
           <span className="truncate">{provider.name}</span>
-          <Badge variant={quota?.allowed === false ? "danger" : quota?.limit_reached ? "warning" : "success"}>
-            {quota?.allowed === false ? "不可用" : quota?.limit_reached ? "已达限" : "可用"}
+          <Badge variant={!provider.enabled ? "neutral" : quota?.allowed === false ? "danger" : quota?.limit_reached ? "warning" : "success"}>
+            {!provider.enabled ? "已关闭" : quota?.allowed === false ? "不可用" : quota?.limit_reached ? "已达限" : "可用"}
           </Badge>
         </CardTitle>
         {quota?.plan_type && <p className="text-xs text-muted-foreground">{quota.subscription_plan || quota.plan_type}</p>}
       </CardHeader>
 
       <CardContent className="space-y-3">
-        {isLoading ? (
+        {!provider.enabled ? (
+          <div className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+            此认证已关闭，不参与调用。
+          </div>
+        ) : isLoading ? (
           <div className="py-4 text-center text-sm text-muted-foreground">加载配额中…</div>
         ) : quota ? (
           <>
@@ -228,8 +250,17 @@ export function CodexCard({ provider }: { provider: Provider }) {
           <div className="rounded-md bg-primary/10 px-3 py-2 text-xs text-primary">{notice}</div>
         )}
 
-        <div className="flex justify-end">
-          <Button variant="ghost" size="sm" onClick={() => void refetch()}>
+        <div className="flex items-center justify-between border-t pt-3">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <Switch
+              checked={provider.enabled}
+              disabled={toggle.isPending}
+              onCheckedChange={(enabled) => toggle.mutate(enabled)}
+              aria-label={`${provider.name} 参与调用开关`}
+            />
+            {provider.enabled ? "参与调用" : "已关闭"}
+          </label>
+          <Button variant="ghost" size="sm" disabled={!provider.enabled || toggle.isPending} onClick={() => void refetch()}>
             <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
             刷新
           </Button>
