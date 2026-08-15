@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { CodexCard } from "@/components/CodexCard"
+import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 
 const platformLabels: Record<string, string> = {
   codex: "Codex (ChatGPT)",
@@ -52,6 +53,12 @@ export function AuthFiles() {
   })
 
   const oauth = providers.filter((p) => p.auth_kind === "oauth")
+
+  const update = useMutation({
+    mutationFn: async ({ id, priority }: { id: number; priority: number }) =>
+      api(`/api/admin/providers/${id}`, { method: "PATCH", body: JSON.stringify({ priority }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
+  })
 
   const remove = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/providers/${id}`, { method: "DELETE" }),
@@ -201,7 +208,7 @@ export function AuthFiles() {
                           <th className="px-4 py-2.5 font-medium">名称</th>
                           <th className="px-4 py-2.5 font-medium">账号</th>
                           <th className="px-4 py-2.5 font-medium">状态</th>
-                          <th className="px-4 py-2.5 font-medium">优先级</th>
+                          <th className="w-24 px-4 py-2.5 font-medium">优先级</th>
                           <th className="px-4 py-2.5 font-medium">模型</th>
                           <th className="px-4 py-2.5 text-right font-medium">操作</th>
                         </tr>
@@ -224,7 +231,7 @@ export function AuthFiles() {
                             <td className="px-4 py-3 font-medium">{p.name}</td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
                             <td className="px-4 py-3">{statusBadge(p)}</td>
-                            <td className="px-4 py-3"><Badge variant="warning">优先级 {p.priority}</Badge></td>
+                            <td className="px-4 py-3"><InlinePriorityEditor value={p.priority} disabled={update.isPending} onSave={async (priority) => { await update.mutateAsync({ id: p.id, priority }) }} /></td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                             <td className="px-4 py-3">
                               <div className="flex justify-end">

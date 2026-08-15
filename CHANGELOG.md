@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.12
+
+- Add inline priority editing to provider and authentication-file lists, with compact priority controls and reduced status-column clutter.
+
 ## V2.11
 
 - Make channel and authentication-file priorities explicit in the console, including editable priority on provider creation and OAuth/import flows.

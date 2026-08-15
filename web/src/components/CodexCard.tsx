@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 
 function formatDate(iso?: string) {
   if (!iso) return "—"
@@ -29,6 +30,12 @@ export function CodexCard({ provider }: { provider: Provider }) {
   const qc = useQueryClient()
   const [expanded, setExpanded] = useState(false)
   const [notice, setNotice] = useState("")
+
+  const updatePriority = useMutation({
+    mutationFn: async (priority: number) =>
+      api(`/api/admin/providers/${provider.id}`, { method: "PATCH", body: JSON.stringify({ priority }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
+  })
 
   const { data: quota, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["codex-quota", provider.id],
@@ -105,7 +112,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
     <Card className="overflow-hidden">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center justify-between text-base">
-          <span className="flex min-w-0 items-center gap-2"><span className="truncate">{provider.name}</span><Badge variant="warning">优先级 {provider.priority}</Badge></span>
+          <span className="flex min-w-0 items-center gap-2"><span className="truncate">{provider.name}</span><InlinePriorityEditor value={provider.priority} disabled={updatePriority.isPending} onSave={async (priority) => { await updatePriority.mutateAsync(priority) }} /></span>
           <Badge variant={!provider.enabled ? "neutral" : quota?.allowed === false ? "danger" : quota?.limit_reached ? "warning" : "success"}>
             {!provider.enabled ? "已关闭" : quota?.allowed === false ? "不可用" : quota?.limit_reached ? "已达限" : "可用"}
           </Badge>

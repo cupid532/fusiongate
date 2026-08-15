@@ -17,6 +17,7 @@ import { BalanceDialog } from "@/components/BalanceDialog"
 import { ProviderKeysDialog } from "@/components/ProviderKeysDialog"
 import { ExportImportDialog } from "@/components/ExportImportDialog"
 import { GroupManager } from "@/components/GroupManager"
+import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -256,7 +257,7 @@ export function Providers() {
                     </th>
                     <th className="px-4 py-3 font-medium">渠道</th>
                     <th className="px-4 py-3 font-medium">类型</th>
-                    <th className="px-4 py-3 font-medium">优先级</th>
+                    <th className="w-24 px-4 py-3 font-medium">优先级</th>
                     <th className="px-4 py-3 font-medium">状态</th>
                     <th className="px-4 py-3 font-medium">模型</th>
                     <th className="px-4 py-3 text-right font-medium">开关 / 操作</th>
@@ -303,8 +304,8 @@ export function Providers() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{typeLabels[p.type] ?? p.type}</td>
-                      <td className="px-4 py-3"><Badge variant="warning">优先级 {p.priority}</Badge><div className="mt-1 text-[10px] text-muted-foreground">失败 {p.consecutive_failures}/5</div></td>
-                      <td className="px-4 py-3">{statusBadge(p)}</td>
+                      <td className="px-4 py-3"><InlinePriorityEditor value={p.priority} disabled={update.isPending} onSave={async (priority) => { await update.mutateAsync({ id: p.id, patch: { priority } }) }} /></td>
+                      <td className="px-4 py-3"><div className="flex items-center gap-2">{statusBadge(p)}{p.consecutive_failures > 0 && <span className="text-[10px] tabular-nums text-muted-foreground">{p.consecutive_failures}/5 失败</span>}</div></td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
