@@ -57,7 +57,7 @@ func filterClientRoutes(routes []resolvedRoute, r *http.Request) []resolvedRoute
 				out = append(out, z)
 			}
 		case "claude_code":
-			if strings.Contains(ua, "claude-code") || strings.Contains(ua, "claude code") {
+			if strings.Contains(ua, "claude-code") || strings.Contains(ua, "claude code") || strings.Contains(ua, "claude-cli") {
 				out = append(out, z)
 			}
 		}

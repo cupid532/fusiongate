@@ -1,5 +1,12 @@
 # Changelog
 
+## V2.06
+
+- Add model aliases with admin APIs and console management. Aliases enter the existing priority failover, round-robin, smart round-robin, and adaptive schedulers under their canonical model while preserving the requested alias in downstream responses and request accounting. Alias names and targets are transactionally protected from route conflicts, alias chains, transparent-only routes, and dangling targets, and aliases are included in provider backups.
+- Complete agent protocol compatibility for OpenCode, Codex CLI, and Claude Code. OpenCode Zen now selects the correct upstream protocol per model family (Responses, Anthropic Messages, Gemini, or Chat Completions); Codex supports `/v1/responses/compact` and preserves turn state; Claude Code supports `/v1/messages/count_tokens`, Anthropic request IDs and error envelopes, and incremental tool-input streaming.
+- Expand route and pricing management in the console with real route creation, per-route official/manual price controls, standard and long-context input/cache/output prices, official-first pricing synchronization with OpenRouter fallback, source/update metadata, and global synchronization status.
+- Harden public protocol translation and routing consistency: normalized Chat, Responses, and Messages output keeps the requested public model name; local token estimates are health-neutral; provider/client policies still apply; health probes follow OpenCode's model-specific protocol; and native Anthropic errors preserve upstream correlation headers.
+
 ## V2.05
 
 - Model picker as an on/off manager: enabled models are grouped at the top (checked), the rest below (unchecked), and saving applies the checked set as the provider complete model set — checking enables, unchecking disables/removes the route.

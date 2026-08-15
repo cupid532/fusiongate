@@ -34,6 +34,8 @@ type proxyOptions struct {
 	BufferSSE          bool
 	SSETransform       func([]byte) ([]byte, string, Usage, error)
 	JSONTransform      func([]byte) ([]byte, string, error)
+	JSONOutputValid    func([]byte) bool
+	ErrorWriter        func(http.ResponseWriter, *http.Response) attemptResult
 	StreamTransform    func([]byte) ([]byte, error)
 	OutputStartTimeout time.Duration
 	IdleTimeout        time.Duration
@@ -225,7 +227,11 @@ func normalizeResponsesSSE(body []byte) ([]byte, error) {
 		if response := asMap(decoded["response"]); response != nil {
 			delete(response, "moderation")
 			delete(response, "tool_usage")
+			if publicModel := strings.TrimSpace(asString(decoded["_fusiongate_public_model"])); publicModel != "" {
+				response["model"] = publicModel
+			}
 		}
+		delete(decoded, "_fusiongate_public_model")
 		encoded, err := json.Marshal(decoded)
 		if err != nil {
 			return nil, err
@@ -233,6 +239,110 @@ func normalizeResponsesSSE(body []byte) ([]byte, error) {
 		fmt.Fprintf(&out, "event: %s\ndata: %s\n\n", eventType, encoded)
 	}
 	return out.Bytes(), nil
+}
+
+func responsesSSEWithPublicModel(publicModel string) func([]byte) ([]byte, error) {
+	return func(body []byte) ([]byte, error) {
+		normalized := bytes.ReplaceAll(body, []byte("\r"), nil)
+		var tagged bytes.Buffer
+		for _, event := range bytes.Split(normalized, []byte("\n\n")) {
+			trimmed := strings.TrimSpace(string(event))
+			if trimmed == "" {
+				continue
+			}
+			if strings.Contains(trimmed, "data: [DONE]") {
+				tagged.WriteString("data: [DONE]\n\n")
+				continue
+			}
+			var data []string
+			for _, line := range strings.Split(trimmed, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "data:") {
+					data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+			var decoded map[string]any
+			if json.Unmarshal([]byte(strings.Join(data, "\n")), &decoded) != nil {
+				return nil, errors.New("invalid Responses SSE event")
+			}
+			decoded["_fusiongate_public_model"] = publicModel
+			encoded, err := json.Marshal(decoded)
+			if err != nil {
+				return nil, err
+			}
+			fmt.Fprintf(&tagged, "data: %s\n\n", encoded)
+		}
+		return normalizeResponsesSSE(tagged.Bytes())
+	}
+}
+
+func responsesJSONWithPublicModel(body []byte, publicModel string) ([]byte, string, error) {
+	var response map[string]any
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, "", err
+	}
+	response["model"] = publicModel
+	delete(response, "moderation")
+	delete(response, "tool_usage")
+	encoded, err := json.Marshal(response)
+	return encoded, "application/json", err
+}
+
+func chatJSONWithPublicModel(body []byte, publicModel string) ([]byte, string, error) {
+	var response map[string]any
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, "", err
+	}
+	response["model"] = publicModel
+	encoded, err := json.Marshal(response)
+	return encoded, "application/json", err
+}
+
+func chatSSEWithPublicModel(publicModel string) func([]byte) ([]byte, error) {
+	return func(body []byte) ([]byte, error) {
+		normalized := bytes.ReplaceAll(body, []byte("\r"), nil)
+		var out bytes.Buffer
+		for _, event := range bytes.Split(normalized, []byte("\n\n")) {
+			trimmed := strings.TrimSpace(string(event))
+			if trimmed == "" {
+				continue
+			}
+			var eventName string
+			var data []string
+			for _, line := range strings.Split(trimmed, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "event:") {
+					eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+				}
+				if strings.HasPrefix(line, "data:") {
+					data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+			payload := strings.Join(data, "\n")
+			if payload == "" {
+				out.WriteString(trimmed + "\n\n")
+				continue
+			}
+			if payload == "[DONE]" {
+				out.WriteString("data: [DONE]\n\n")
+				continue
+			}
+			var decoded map[string]any
+			if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+				return nil, fmt.Errorf("invalid Chat Completions SSE event: %w", err)
+			}
+			decoded["model"] = publicModel
+			encoded, err := json.Marshal(decoded)
+			if err != nil {
+				return nil, err
+			}
+			if eventName != "" {
+				fmt.Fprintf(&out, "event: %s\n", eventName)
+			}
+			fmt.Fprintf(&out, "data: %s\n\n", encoded)
+		}
+		return out.Bytes(), nil
+	}
 }
 
 type sseTransformWriter struct {
@@ -545,7 +655,7 @@ func joinURLQuery(base, endpoint, rawQuery string) (string, error) {
 
 func setProviderAuth(req *http.Request, z resolvedRoute) error {
 	switch z.Provider.Type {
-	case "openai", "grok", "openrouter", "openai_compatible", "codex_oauth", "grok_oauth":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "codex_oauth", "grok_oauth":
 		req.Header.Set("Authorization", "Bearer "+z.Credential)
 		if z.Provider.Type == "codex_oauth" {
 			if z.AuthCredential != nil && z.AuthCredential.AccountID != "" {
@@ -578,6 +688,10 @@ func setProviderAuth(req *http.Request, z resolvedRoute) error {
 		return fmt.Errorf("provider type %q does not have an API credential adapter", z.Provider.Type)
 	}
 	return nil
+}
+
+func setOpenCodeAnthropicHeaders(header http.Header) {
+	header.Set("anthropic-version", "2023-06-01")
 }
 
 func normalizedOpenAIBody(raw []byte, upstreamModel string, stream, includeStreamUsage bool) ([]byte, error) {
@@ -945,6 +1059,17 @@ func completedResponsesSSE(body []byte) ([]byte, string, Usage, error) {
 	return completed, "application/json", usage, err
 }
 
+func completedResponsesSSEForModel(publicModel string) func([]byte) ([]byte, string, Usage, error) {
+	return func(body []byte) ([]byte, string, Usage, error) {
+		completed, usage, err := completedResponseFromSSE(body)
+		if err != nil {
+			return nil, "", usage, err
+		}
+		transformed, contentType, err := responsesJSONWithPublicModel(completed, publicModel)
+		return transformed, contentType, usage, err
+	}
+}
+
 type chatCompletionChoice struct {
 	index        int
 	message      map[string]any
@@ -1098,6 +1223,17 @@ func completedChatCompletionFromSSE(body []byte) ([]byte, string, Usage, error) 
 	return encoded, "application/json", usage, err
 }
 
+func completedChatCompletionForModel(publicModel string) func([]byte) ([]byte, string, Usage, error) {
+	return func(body []byte) ([]byte, string, Usage, error) {
+		completed, _, usage, err := completedChatCompletionFromSSE(body)
+		if err != nil {
+			return nil, "", usage, err
+		}
+		transformed, contentType, err := chatJSONWithPublicModel(completed, publicModel)
+		return transformed, contentType, usage, err
+	}
+}
+
 func appendStringField(target map[string]any, key string, value any) {
 	text, ok := value.(string)
 	if !ok || text == "" {
@@ -1217,6 +1353,65 @@ func completedAnthropicMessageFromSSE(body []byte) ([]byte, string, Usage, error
 	return encoded, "application/json", usage, err
 }
 
+func anthropicJSONWithPublicModel(body []byte, publicModel string) ([]byte, string, error) {
+	var message map[string]any
+	if err := json.Unmarshal(body, &message); err != nil {
+		return nil, "", err
+	}
+	message["model"] = publicModel
+	encoded, err := json.Marshal(message)
+	return encoded, "application/json", err
+}
+
+func anthropicSSEWithPublicModel(publicModel string) func([]byte) ([]byte, error) {
+	return func(body []byte) ([]byte, error) {
+		normalized := bytes.ReplaceAll(body, []byte("\r"), nil)
+		var out bytes.Buffer
+		for _, event := range bytes.Split(normalized, []byte("\n\n")) {
+			trimmed := strings.TrimSpace(string(event))
+			if trimmed == "" {
+				continue
+			}
+			var data []string
+			for _, line := range strings.Split(trimmed, "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "data:") {
+					data = append(data, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				}
+			}
+			var decoded map[string]any
+			if json.Unmarshal([]byte(strings.Join(data, "\n")), &decoded) != nil {
+				return nil, errors.New("invalid Anthropic SSE event")
+			}
+			if asString(decoded["type"]) == "message_start" {
+				if message := asMap(decoded["message"]); message != nil {
+					message["model"] = publicModel
+				}
+			}
+			encoded, err := json.Marshal(decoded)
+			if err != nil {
+				return nil, err
+			}
+			if eventType := asString(decoded["type"]); eventType != "" {
+				fmt.Fprintf(&out, "event: %s\n", eventType)
+			}
+			fmt.Fprintf(&out, "data: %s\n\n", encoded)
+		}
+		return out.Bytes(), nil
+	}
+}
+
+func completedAnthropicMessageForModel(publicModel string) func([]byte) ([]byte, string, Usage, error) {
+	return func(body []byte) ([]byte, string, Usage, error) {
+		completed, _, usage, err := completedAnthropicMessageFromSSE(body)
+		if err != nil {
+			return nil, "", usage, err
+		}
+		transformed, contentType, err := anthropicJSONWithPublicModel(completed, publicModel)
+		return transformed, contentType, usage, err
+	}
+}
+
 func mergeNumericFields(target map[string]int64, source map[string]any) {
 	for key, value := range source {
 		if number := num(value); number > target[key] {
@@ -1308,7 +1503,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		} else if req.Header.Get("Accept") == "" {
 			req.Header.Set("Accept", "application/json")
 		}
-		if (z.Provider.Type == "anthropic" || z.Provider.Type == "claude_oauth") && req.Header.Get("anthropic-version") == "" {
+		if (z.Provider.Type == "anthropic" || z.Provider.Type == "claude_oauth" || z.Provider.Type == "opencode" && opencodeRouteProtocol(z) == opencodeProtocolAnthropic) && req.Header.Get("anthropic-version") == "" {
 			req.Header.Set("anthropic-version", "2023-06-01")
 		}
 	}
@@ -1331,14 +1526,25 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	resp.Body = observeFirstByte(resp.Body, options.OnFirstByte)
 
 	if retryableStatus(resp.StatusCode) {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
 		startTimer.Stop()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
 		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: retryReason(resp.StatusCode, nil), RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
 	}
 	if resp.StatusCode >= 400 {
 		startTimer.Stop()
+		if options.ErrorWriter != nil {
+			copyUpstreamResponseHeaders(w.Header(), resp.Header)
+			w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
+			if incoming.URL.Path == "/v1/messages" || incoming.URL.Path == "/v1/messages/count_tokens" {
+				w.Header().Set("request-id", firstNonEmpty(resp.Header.Get("request-id"), w.Header().Get("request-id"), options.GatewayID))
+			}
+			return options.ErrorWriter(w, resp)
+		}
 		copyUpstreamResponseHeaders(w.Header(), resp.Header)
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
+		if incoming.URL.Path == "/v1/messages" || incoming.URL.Path == "/v1/messages/count_tokens" {
+			w.Header().Set("request-id", firstNonEmpty(resp.Header.Get("request-id"), w.Header().Get("request-id"), options.GatewayID))
+		}
 		w.WriteHeader(resp.StatusCode)
 		_, copyErr := io.Copy(w, resp.Body)
 		reason := retryReason(resp.StatusCode, nil)
@@ -1434,6 +1640,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Content-Length", strconv.Itoa(len(completed)))
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
+		if incoming.URL.Path == "/v1/messages" || incoming.URL.Path == "/v1/messages/count_tokens" {
+			w.Header().Set("request-id", firstNonEmpty(resp.Header.Get("request-id"), w.Header().Get("request-id"), options.GatewayID))
+		}
 		w.WriteHeader(resp.StatusCode)
 		_, writeErr := w.Write(completed)
 		reason := ""
@@ -1494,6 +1703,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 			w.Header().Set("Content-Type", "text/event-stream")
 		}
 		w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
+		if incoming.URL.Path == "/v1/messages" || incoming.URL.Path == "/v1/messages/count_tokens" {
+			w.Header().Set("request-id", firstNonEmpty(resp.Header.Get("request-id"), w.Header().Get("request-id"), options.GatewayID))
+		}
 		var usageObserver *sseUsageObserver
 		out := io.Writer(w)
 		if options.UsageFormat != "" && !options.Transparent {
@@ -1600,7 +1812,10 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		}
 		return attemptResult{Status: resp.StatusCode, Handled: true, Reason: "large_response_streamed", Err: writeErr, Usage: Usage{CostType: "unknown"}}
 	}
-	if !options.Transparent && options.UsageFormat != "" && !hasSemanticJSONOutput(body, options.UsageFormat) {
+	if !options.Transparent && options.JSONOutputValid != nil && !options.JSONOutputValid(body) {
+		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_no_output", Err: errors.New("upstream response contained no model output")}
+	}
+	if !options.Transparent && options.JSONOutputValid == nil && options.UsageFormat != "" && !hasSemanticJSONOutput(body, options.UsageFormat) {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_no_output", Err: errors.New("upstream response contained no model output")}
 	}
 	usage := Usage{CostType: "unknown"}
@@ -1632,6 +1847,9 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("X-FusionGate-Request-ID", options.GatewayID)
+	if incoming.URL.Path == "/v1/messages" || incoming.URL.Path == "/v1/messages/count_tokens" {
+		w.Header().Set("request-id", firstNonEmpty(resp.Header.Get("request-id"), w.Header().Get("request-id"), options.GatewayID))
+	}
 	w.WriteHeader(resp.StatusCode)
 	_, writeErr := w.Write(body)
 	return attemptResult{Status: resp.StatusCode, Handled: true, Usage: usage, Reason: func() string {

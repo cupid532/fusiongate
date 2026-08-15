@@ -48,17 +48,20 @@ type resolvedRoute struct {
 func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setGatewayCORS(w, r, a.cfg.CORSOrigins)
+		if anthropicEndpoint(r) {
+			w.Header().Set("request-id", requestID())
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		k, ok := a.authenticateKey(r)
 		if !ok {
-			fail(w, http.StatusUnauthorized, "invalid_api_key", "missing, expired, revoked, or invalid API key")
+			failRequest(w, r, http.StatusUnauthorized, "invalid_api_key", "missing, expired, revoked, or invalid API key")
 			return
 		}
 		if !a.allowRate(k) {
-			fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "API key rate limit exceeded")
+			failRequest(w, r, http.StatusTooManyRequests, "rate_limit_exceeded", "API key rate limit exceeded")
 			return
 		}
 		// A budget is an accounting limit, never a concurrency limit. Requests are
@@ -69,18 +72,18 @@ func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.Han
 		if k.BudgetMicros > 0 {
 			spent, err := a.keySpentMicros(k.ID)
 			if err != nil {
-				fail(w, http.StatusInternalServerError, "database_error", "cannot evaluate this key's budget")
+				failRequest(w, r, http.StatusInternalServerError, "database_error", "cannot evaluate this key's budget")
 				return
 			}
 			if spent >= k.BudgetMicros {
-				fail(w, http.StatusPaymentRequired, "budget_exceeded", "API key budget exhausted")
+				failRequest(w, r, http.StatusPaymentRequired, "budget_exceeded", "API key budget exhausted")
 				return
 			}
 		}
 		if !a.tryAcquireRequestSlot() {
 			a.metrics.overloaded.Add(1)
 			w.Header().Set("Retry-After", "1")
-			fail(w, http.StatusServiceUnavailable, "gateway_overloaded", "gateway concurrency limit reached")
+			failRequest(w, r, http.StatusServiceUnavailable, "gateway_overloaded", "gateway concurrency limit reached")
 			return
 		}
 		defer a.releaseRequestSlot()
@@ -119,7 +122,7 @@ func setGatewayCORS(w http.ResponseWriter, r *http.Request, allowlist string) {
 		requestedHeaders = "Authorization, Content-Type, X-API-Key"
 	}
 	h.Set("Access-Control-Allow-Headers", requestedHeaders)
-	h.Set("Access-Control-Expose-Headers", "Content-Type, Retry-After, X-FusionGate-Request-ID")
+	h.Set("Access-Control-Expose-Headers", "Content-Type, Retry-After, Request-Id, X-FusionGate-Request-ID")
 	h.Set("Access-Control-Max-Age", "86400")
 	h.Add("Vary", "Origin")
 	h.Add("Vary", "Access-Control-Request-Method")
@@ -329,6 +332,40 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 			data = append(data, metadata)
 		}
 	}
+	aliasRows, err := a.reader().Query(`
+SELECT a.alias,a.target_model,a.created_at,GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|')
+FROM model_aliases a
+JOIN model_routes r ON r.public_name=a.target_model AND r.enabled=1
+JOIN providers p ON p.id=r.provider_id AND p.enabled=1 AND p.archived=0 AND p.passthrough_mode<>'transparent'
+WHERE a.enabled=1
+GROUP BY a.alias,a.target_model,a.created_at`)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	defer aliasRows.Close()
+	for aliasRows.Next() {
+		var alias, target, created, routeCapabilities, providerTypes, upstreamModels string
+		if aliasRows.Scan(&alias, &target, &created, &routeCapabilities, &providerTypes, &upstreamModels) != nil || !modelAllowed(k, alias, target) {
+			continue
+		}
+		createdAt := parseTime(created)
+		var unix int64
+		if createdAt != nil {
+			unix = createdAt.Unix()
+		}
+		metadata := modelMetadata(alias, routeCapabilities, providerTypes, upstreamModels)
+		metadata["object"] = "model"
+		metadata["created"] = unix
+		metadata["owned_by"] = "fusiongate"
+		metadata["canonical_model"] = target
+		data = append(data, metadata)
+	}
+	if err := aliasRows.Err(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	sort.Slice(data, func(i, j int) bool { return asString(data[i]["id"]) < asString(data[j]["id"]) })
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
@@ -638,7 +675,7 @@ func cost(z resolvedRoute, usage *Usage) {
 }
 
 func getBody(r *http.Request) (map[string]any, []byte, error) {
-	const limit = 20 << 20
+	const limit = 32 << 20
 	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
 	if err != nil {
 		return nil, nil, err
@@ -807,7 +844,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 	}
 	if len(routes) == 0 {
 		finalStatus = http.StatusForbidden
-		fail(w, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
+		failRequest(w, r, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
 		return
 	}
 	strategy := a.globalRoutingStrategy()
@@ -833,7 +870,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			}
 			w.Header().Set("X-FusionGate-Attempts", strconv.Itoa(attempt-1))
 			finalStatus = status
-			fail(w, status, "upstream_attempt_limit", "maximum upstream failover attempts reached")
+			failRequest(w, r, status, "upstream_attempt_limit", "maximum upstream failover attempts reached")
 			return
 		}
 		var z resolvedRoute
@@ -864,7 +901,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 				message = "all eligible providers failed (" + previousReason + ")"
 			}
 			finalStatus = status
-			fail(w, status, "upstream_unavailable", message)
+			failRequest(w, r, status, "upstream_unavailable", message)
 			return
 		}
 		tried[z.AttemptID] = true
@@ -904,7 +941,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		}
 		if !result.Retryable {
 			finalStatus = status
-			fail(w, status, reason, "upstream request failed and is not safe to retry")
+			failRequest(w, r, status, reason, "upstream request failed and is not safe to retry")
 			return
 		}
 		if result.RetryAfter > retryAfter {
@@ -926,18 +963,18 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 			body, err = normalizedCodexResponsesBody(raw, z.Route.UpstreamModel)
 			upstreamSSE = true
 			bufferSSE = !stream
-			sseTransform = completedResponsesSSE
+			sseTransform = completedResponsesSSEForModel(z.Route.PublicName)
 		} else {
 			upstreamStream := stream || endpoint == "/v1/chat/completions" || endpoint == "/v1/responses"
 			body, err = normalizedOpenAIBody(raw, z.Route.UpstreamModel, upstreamStream, z.Provider.Type != "codex_oauth")
 			upstreamSSE = upstreamStream
 			bufferSSE = upstreamStream && !stream
 			if endpoint == "/v1/responses" {
-				sseTransform = completedResponsesSSE
+				sseTransform = completedResponsesSSEForModel(z.Route.PublicName)
 			} else if endpoint == "/v1/chat/completions" {
-				sseTransform = completedChatCompletionFromSSE
+				sseTransform = completedChatCompletionForModel(z.Route.PublicName)
 			}
-			if err == nil && z.Provider.Type == "openai_compatible" && endpoint == "/v1/chat/completions" {
+			if err == nil && (z.Provider.Type == "openai_compatible" || z.Provider.Type == "opencode") && endpoint == "/v1/chat/completions" {
 				body, err = normalizedCompatibleChatBody(body)
 			}
 		}
@@ -947,9 +984,21 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 	}
 	var streamTransform func([]byte) ([]byte, error)
 	if endpoint == "/v1/responses" && stream && !transparent {
-		streamTransform = normalizeResponsesSSE
+		streamTransform = responsesSSEWithPublicModel(z.Route.PublicName)
+	} else if endpoint == "/v1/chat/completions" && stream && !transparent {
+		streamTransform = chatSSEWithPublicModel(z.Route.PublicName)
 	}
-	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: upstreamSSE, BufferSSE: bufferSSE, SSETransform: sseTransform, StreamTransform: streamTransform})
+	var jsonTransform func([]byte) ([]byte, string, error)
+	if endpoint == "/v1/responses" && !stream && !transparent {
+		jsonTransform = func(body []byte) ([]byte, string, error) {
+			return responsesJSONWithPublicModel(body, z.Route.PublicName)
+		}
+	} else if endpoint == "/v1/chat/completions" && !stream && !transparent {
+		jsonTransform = func(body []byte) ([]byte, string, error) {
+			return chatJSONWithPublicModel(body, z.Route.PublicName)
+		}
+	}
+	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: upstreamSSE, BufferSSE: bufferSSE, SSETransform: sseTransform, JSONTransform: jsonTransform, StreamTransform: streamTransform})
 }
 
 func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
@@ -959,7 +1008,7 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 	body, raw, err := getBody(r)
 	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		failBodyError(w, r, err)
 		return
 	}
 	model, _ := body["model"].(string)
@@ -967,17 +1016,23 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		fail(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
-	if !allowed(key, model) {
+	canonical, err := a.canonicalModel(r.Context(), model)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", "could not resolve model alias")
+		return
+	}
+	if !modelAllowed(key, model, canonical) {
 		fail(w, http.StatusForbidden, "model_not_allowed", "this API key is not allowed to use this model")
 		return
 	}
 	stream, _ := body["stream"].(bool)
-	routes, err := a.resolve(r.Context(), model, "chat")
+	routes, err := a.resolve(r.Context(), canonical, "chat")
 	if err != nil {
 		fail(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
 	routes = restrictQualityDetectorRoutes(key, routes)
+	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
 		fail(w, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
 		return
@@ -986,6 +1041,34 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		switch z.Provider.Type {
 		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
+		case "opencode":
+			switch opencodeRouteProtocol(z) {
+			case opencodeProtocolResponses:
+				encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
+				if err != nil {
+					return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+				}
+				return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/responses", RawBody: encoded, Stream: stream, UsageFormat: "openai", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferSSE: true, SSETransform: func(body []byte) ([]byte, string, Usage, error) {
+					completed, usage, err := completedResponseFromSSE(body)
+					if err != nil {
+						return nil, "", usage, err
+					}
+					transformed, contentType, err := codexChatResponse(completed, stream, z.Route.PublicName)
+					return transformed, contentType, usage, err
+				}})
+			case opencodeProtocolAnthropic:
+				if stream || z.Provider.PassthroughMode == "transparent" {
+					return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
+				}
+				return a.chatAnthropic(w, r, body, z, rid, onFirstByte)
+			case opencodeProtocolGemini:
+				if stream || z.Provider.PassthroughMode == "transparent" {
+					return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
+				}
+				return a.chatGemini(w, r, body, z, rid, onFirstByte)
+			default:
+				return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
+			}
 		case "codex_oauth":
 			encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
 			if err != nil {
@@ -1100,7 +1183,7 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	copyUpstreamRequestHeaders(req.Header, r.Header)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	setOpenCodeAnthropicHeaders(req.Header)
 	req.Header.Set("content-type", "application/json")
 	if err := setProviderAuth(req, z); err != nil {
 		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "route_configuration_error", Err: err}
@@ -1137,12 +1220,18 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 	}
 	encoded, _ := json.Marshal(map[string]any{"contents": contents})
 	endpoint := "/v1beta/models/" + url.PathEscape(z.Route.UpstreamModel) + ":generateContent"
-	upstreamURL, _ := joinURLQuery(z.Provider.BaseURL, endpoint, "key="+url.QueryEscape(z.Credential))
+	if z.Provider.Type == "opencode" {
+		endpoint = "/v1/models/" + url.PathEscape(z.Route.UpstreamModel) + ":generateContent"
+	}
+	upstreamURL, _ := joinURLQuery(z.Provider.BaseURL, endpoint, "")
 	ctx, cancel := providerContext(r.Context(), z.Provider)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	copyUpstreamRequestHeaders(req.Header, r.Header)
 	req.Header.Set("content-type", "application/json")
+	if err := setProviderAuth(req, z); err != nil {
+		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "route_configuration_error", Err: err}
+	}
 	source, result, ok := a.sendNonStreamingUpstream(w, r, z, req, onFirstByte)
 	if !ok {
 		return result
@@ -1166,6 +1255,10 @@ func (a *App) responses(w http.ResponseWriter, r *http.Request, key authKey) {
 	a.openAIEndpoint(w, r, key, "openai_responses", "/v1/responses", "chat", true)
 }
 
+func (a *App) responsesCompact(w http.ResponseWriter, r *http.Request, key authKey) {
+	a.openAIEndpoint(w, r, key, "openai_responses_compact", "/v1/responses/compact", "chat", true)
+}
+
 func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey, protocol, endpoint, capability string, safeTransportRetry bool) {
 	if r.Method != http.MethodPost {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -1173,7 +1266,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	body, raw, err := getBody(r)
 	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		failBodyError(w, r, err)
 		return
 	}
 	model, _ := body["model"].(string)
@@ -1181,23 +1274,33 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		fail(w, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
-	if !allowed(key, model) {
+	canonical, err := a.canonicalModel(r.Context(), model)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", "could not resolve model alias")
+		return
+	}
+	if !modelAllowed(key, model, canonical) {
 		fail(w, http.StatusForbidden, "model_not_allowed", "model not allowed")
 		return
 	}
-	routes, err := a.resolve(r.Context(), model, capability)
+	routes, err := a.resolve(r.Context(), canonical, capability)
 	if err != nil {
 		fail(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
 	routes = restrictQualityDetectorRoutes(key, routes)
+	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
 		fail(w, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
 		return
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
-		if z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth" {
+		eligible := z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth"
+		if z.Provider.Type == "opencode" {
+			eligible = protocol == "openai_responses" && opencodeRouteProtocol(z) == opencodeProtocolResponses
+		}
+		if eligible {
 			compatible = append(compatible, z)
 		}
 	}
@@ -1213,33 +1316,60 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" {
 			return a.compatibleResponsesProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
 		}
+		if protocol == "openai_responses_compact" {
+			if z.Provider.Type == "opencode" {
+				return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
+			}
+			encoded := raw
+			if z.Provider.PassthroughMode != "transparent" {
+				var encodeErr error
+				encoded, encodeErr = normalizedOpenAIBody(raw, z.Route.UpstreamModel, false, false)
+				if encodeErr != nil {
+					return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: encodeErr}
+				}
+			}
+			return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: encoded, Transparent: z.Provider.PassthroughMode == "transparent", GatewayID: rid, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, JSONOutputValid: func(body []byte) bool {
+				var payload map[string]any
+				return json.Unmarshal(body, &payload) == nil && payload["output"] != nil
+			}})
+		}
 		return a.openAIProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte)
 	})
 }
 
 func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 	if r.Method != http.MethodPost {
-		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		failRequest(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
 	body, raw, err := getBody(r)
 	if err != nil {
-		fail(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		failBodyError(w, r, err)
 		return
 	}
 	model, _ := body["model"].(string)
-	if model == "" || !allowed(key, model) {
-		fail(w, http.StatusForbidden, "model_not_allowed", "model not allowed")
+	if model == "" {
+		failRequest(w, r, http.StatusBadRequest, "invalid_request", "model is required")
 		return
 	}
-	routes, err := a.resolve(r.Context(), model, "chat")
+	canonical, err := a.canonicalModel(r.Context(), model)
 	if err != nil {
-		fail(w, http.StatusNotFound, "model_not_found", err.Error())
+		failRequest(w, r, http.StatusInternalServerError, "database_error", "could not resolve model alias")
+		return
+	}
+	if !modelAllowed(key, model, canonical) {
+		failRequest(w, r, http.StatusForbidden, "model_not_allowed", "model not allowed")
+		return
+	}
+	routes, err := a.resolve(r.Context(), canonical, "chat")
+	if err != nil {
+		failRequest(w, r, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
 	routes = restrictQualityDetectorRoutes(key, routes)
+	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
-		fail(w, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		failRequest(w, r, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
 		return
 	}
 	compatible := routes[:0]
@@ -1247,6 +1377,10 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 		switch z.Provider.Type {
 		case "anthropic", "claude_oauth":
 			compatible = append(compatible, z)
+		case "opencode":
+			if opencodeRouteProtocol(z) == opencodeProtocolAnthropic || opencodeRouteProtocol(z) == opencodeProtocolChat && z.Provider.PassthroughMode != "transparent" {
+				compatible = append(compatible, z)
+			}
 		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
 			if z.Provider.PassthroughMode != "transparent" {
 				compatible = append(compatible, z)
@@ -1254,12 +1388,12 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 		}
 	}
 	if len(compatible) == 0 {
-		fail(w, http.StatusNotImplemented, "protocol_not_supported", "no Anthropic or OpenAI-compatible route is configured")
+		failRequest(w, r, http.StatusNotImplemented, "protocol_not_supported", "no Anthropic or OpenAI-compatible route is configured")
 		return
 	}
 	stream, _ := body["stream"].(bool)
 	a.runRoutes(w, r, key, compatible, "anthropic_messages", requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
-		if z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "grok_oauth" {
+		if z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "grok_oauth" || z.Provider.Type == "opencode" && opencodeRouteProtocol(z) == opencodeProtocolChat {
 			return a.anthropicMessagesOpenAI(w, r, body, z, rid, stream, onFirstByte)
 		}
 		transparent := z.Provider.PassthroughMode == "transparent"
@@ -1289,8 +1423,120 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 			}
 		}
-		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, UsageFormat: "anthropic", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: upstreamStream && !transparent, BufferSSE: upstreamStream && !stream, SSETransform: completedAnthropicMessageFromSSE})
+		var jsonTransform func([]byte) ([]byte, string, error)
+		var streamTransform func([]byte) ([]byte, error)
+		var sseTransform = completedAnthropicMessageFromSSE
+		if !transparent {
+			jsonTransform = func(body []byte) ([]byte, string, error) {
+				return anthropicJSONWithPublicModel(body, z.Route.PublicName)
+			}
+			sseTransform = completedAnthropicMessageForModel(z.Route.PublicName)
+			if stream {
+				streamTransform = anthropicSSEWithPublicModel(z.Route.PublicName)
+			}
+		}
+		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages", RawBody: encoded, Stream: stream, Transparent: transparent, UsageFormat: "anthropic", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: upstreamStream && !transparent, BufferSSE: upstreamStream && !stream, SSETransform: sseTransform, JSONTransform: jsonTransform, ErrorWriter: writeAnthropicBridgeError, StreamTransform: streamTransform})
 	})
+}
+
+func (a *App) messageTokenCount(w http.ResponseWriter, r *http.Request, key authKey) {
+	if r.Method != http.MethodPost {
+		failRequest(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	body, raw, err := getBody(r)
+	if err != nil {
+		failBodyError(w, r, err)
+		return
+	}
+	model, _ := body["model"].(string)
+	if model == "" {
+		failRequest(w, r, http.StatusBadRequest, "invalid_request", "model is required")
+		return
+	}
+	canonical, err := a.canonicalModel(r.Context(), model)
+	if err != nil {
+		failRequest(w, r, http.StatusInternalServerError, "database_error", "could not resolve model alias")
+		return
+	}
+	if !modelAllowed(key, model, canonical) {
+		failRequest(w, r, http.StatusForbidden, "model_not_allowed", "model not allowed")
+		return
+	}
+	routes, err := a.resolve(r.Context(), canonical, "chat")
+	if err != nil {
+		failRequest(w, r, http.StatusNotFound, "model_not_found", err.Error())
+		return
+	}
+	routes = exposeRequestedModel(restrictQualityDetectorRoutes(key, routes), model)
+	if len(routes) == 0 {
+		failRequest(w, r, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		return
+	}
+	if key.QualityRoute == nil {
+		routes = filterClientRoutes(routes, r)
+		if len(routes) == 0 {
+			failRequest(w, r, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
+			return
+		}
+	}
+	native := make([]resolvedRoute, 0, len(routes))
+	fallback := make([]resolvedRoute, 0, len(routes))
+	for _, z := range routes {
+		switch z.Provider.Type {
+		case "anthropic", "claude_oauth":
+			native = append(native, z)
+		case "opencode":
+			fallback = append(fallback, z)
+		case "openai", "grok", "openrouter", "openai_compatible", "codex_oauth", "grok_oauth":
+			fallback = append(fallback, z)
+		}
+	}
+	if len(native) == 0 {
+		if len(fallback) == 0 {
+			failRequest(w, r, http.StatusNotImplemented, "protocol_not_supported", "no Anthropic-compatible route is configured")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"input_tokens": estimateAnthropicInputTokens(body)})
+		return
+	}
+	a.runRoutes(w, r, key, native, "anthropic_count_tokens", requestReasoningEffort(body), false, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		transparent := z.Provider.PassthroughMode == "transparent"
+		encoded := raw
+		if !transparent {
+			copyBody := cloneMap(body)
+			copyBody["model"] = z.Route.UpstreamModel
+			normalizeAnthropicCacheControlTTL(copyBody)
+			var encodeErr error
+			encoded, encodeErr = json.Marshal(copyBody)
+			if encodeErr != nil {
+				return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: encodeErr}
+			}
+		}
+		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/messages/count_tokens", RawBody: encoded, Transparent: transparent, GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, ErrorWriter: writeAnthropicBridgeError, JSONOutputValid: func(body []byte) bool {
+			var payload map[string]any
+			return json.Unmarshal(body, &payload) == nil && num(payload["input_tokens"]) > 0
+		}})
+	})
+}
+
+func estimateAnthropicInputTokens(body map[string]any) int64 {
+	copyBody := cloneMap(body)
+	delete(copyBody, "model")
+	encoded, _ := json.Marshal(copyBody)
+	var ascii, nonASCII int64
+	for _, r := range string(encoded) {
+		if r < 128 {
+			ascii++
+		} else {
+			nonASCII++
+		}
+	}
+	estimate := (ascii+3)/4 + nonASCII
+	if estimate < 1 {
+		return 1
+	}
+	return estimate
 }
 
 func (a *App) images(w http.ResponseWriter, r *http.Request, key authKey) {

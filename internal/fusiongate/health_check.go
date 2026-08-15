@@ -276,7 +276,7 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 	}
 
 	// 特殊处理不同 API 格式
-	endpoint := h.buildProbeEndpoint(p)
+	endpoint := h.buildProbeEndpoint(p, probeModel)
 	req, err := h.buildProbeRequest(ctx, p, endpoint, reqBody)
 	if err != nil {
 		return healthCheckResult{Status: "config_error", Mode: mode, Model: probeModel, Error: err.Error()}
@@ -301,7 +301,7 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 
 	// 解析状态
 	status, errMsg := h.parseProbeResponse(resp.StatusCode, body)
-	if p.Type == "codex_oauth" {
+	if p.Type == "codex_oauth" || p.Type == "opencode" && opencodeModelProtocol(probeModel, "") == opencodeProtocolResponses {
 		status, errMsg = h.parseCodexProbeResponse(resp.StatusCode, body)
 	}
 	return healthCheckResult{Status: status, Mode: mode, Model: probeModel, LatencyMS: latency, FirstByteMS: firstByte, Error: errMsg}
@@ -347,7 +347,7 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 		return healthCheckResult{Status: "unsupported", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "only chat models support generation health checks"}
 	}
 	probe := newGenerationProbe()
-	req, err := h.buildRouteProbeRequest(ctx, p, target.UpstreamModel, probe.Prompt)
+	req, err := h.buildRouteProbeRequest(ctx, p, target.UpstreamModel, target.Capabilities, probe.Prompt)
 	if err != nil {
 		return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: sanitizeError(err.Error())}
 	}
@@ -370,7 +370,7 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 		status, message := h.parseProbeResponse(resp.StatusCode, body)
 		return healthCheckResult{Status: status, Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: message}
 	}
-	content, err := extractProbeContent(p.Type, body)
+	content, err := extractProbeContent(p.Type, target.UpstreamModel, target.Capabilities, body)
 	if err != nil {
 		return healthCheckResult{Status: "invalid_response", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: sanitizeError(err.Error())}
 	}
@@ -389,20 +389,30 @@ func healthProbeURL(base, endpoint string) (string, error) {
 	return u.String(), nil
 }
 
-func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryProvider, model, prompt string) (*http.Request, error) {
+func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryProvider, model, capabilities, prompt string) (*http.Request, error) {
 	endpoint := "/v1/chat/completions"
 	body := map[string]any{
 		"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}},
 		"temperature": 0, "max_tokens": 32, "stream": false,
 	}
-	if p.Type == "anthropic" || p.Type == "claude_oauth" {
+	protocol := ""
+	if p.Type == "opencode" {
+		protocol = opencodeModelProtocol(model, capabilities)
+	}
+	if p.Type == "anthropic" || p.Type == "claude_oauth" || protocol == opencodeProtocolAnthropic {
 		endpoint = "/v1/messages"
 		body = map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "temperature": 0, "max_tokens": 32}
-	} else if p.Type == "gemini" {
+	} else if p.Type == "gemini" || protocol == opencodeProtocolGemini {
 		endpoint = "/v1beta/models/" + url.PathEscape(model) + ":generateContent"
+		if protocol == opencodeProtocolGemini {
+			endpoint = "/v1/models/" + url.PathEscape(model) + ":generateContent"
+		}
 		body = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}}, "generationConfig": map[string]any{"temperature": 0, "maxOutputTokens": 32}}
-	} else if p.Type == "codex_oauth" {
-		endpoint = "/responses"
+	} else if p.Type == "codex_oauth" || protocol == opencodeProtocolResponses {
+		endpoint = "/v1/responses"
+		if p.Type == "codex_oauth" {
+			endpoint = "/responses"
+		}
 		body = map[string]any{"model": model, "input": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": prompt}}}}, "store": false, "stream": true}
 	}
 	upstreamURL, err := healthProbeURL(p.BaseURL, endpoint)
@@ -430,14 +440,21 @@ func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryP
 	req.Header.Set("Content-Type", "application/json")
 	setDiscoveryAuth(req, p)
 	req.Header.Set("Accept", "application/json")
-	if p.Type == "codex_oauth" {
+	if p.Type == "codex_oauth" || protocol == opencodeProtocolResponses {
 		req.Header.Set("Accept", "text/event-stream")
+	}
+	if protocol == opencodeProtocolAnthropic {
+		setOpenCodeAnthropicHeaders(req.Header)
 	}
 	return req, nil
 }
 
-func extractProbeContent(providerType string, body []byte) (string, error) {
-	if providerType == "codex_oauth" {
+func extractProbeContent(providerType, model, capabilities string, body []byte) (string, error) {
+	protocol := ""
+	if providerType == "opencode" {
+		protocol = opencodeModelProtocol(model, capabilities)
+	}
+	if providerType == "codex_oauth" || protocol == opencodeProtocolResponses {
 		completed, _, err := completedResponseFromSSE(body)
 		if err != nil {
 			return "", err
@@ -448,7 +465,7 @@ func extractProbeContent(providerType string, body []byte) (string, error) {
 	if err := json.Unmarshal(body, &data); err != nil {
 		return "", errors.New("generation response was not valid JSON")
 	}
-	if providerType == "anthropic" || providerType == "claude_oauth" {
+	if providerType == "anthropic" || providerType == "claude_oauth" || protocol == opencodeProtocolAnthropic {
 		var content string
 		for _, item := range anySlice(data["content"]) {
 			part, _ := item.(map[string]any)
@@ -461,7 +478,7 @@ func extractProbeContent(providerType string, body []byte) (string, error) {
 		}
 		return content, nil
 	}
-	if providerType == "gemini" {
+	if providerType == "gemini" || protocol == opencodeProtocolGemini {
 		candidates := anySlice(data["candidates"])
 		if len(candidates) > 0 {
 			candidate, _ := candidates[0].(map[string]any)
@@ -535,6 +552,8 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 		return "claude-3-5-haiku-20241022"
 	case "openai", "grok", "openai_compatible":
 		return "gpt-4o-mini"
+	case "opencode":
+		return ""
 	case "anthropic":
 		return "claude-3-5-haiku-20241022"
 	default:
@@ -542,7 +561,7 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 	}
 }
 
-func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider) string {
+func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider, model string) string {
 	var endpoint string
 	switch p.Type {
 	case "anthropic", "claude_oauth":
@@ -551,6 +570,17 @@ func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider) string {
 		endpoint = "/v1/responses"
 	case "codex_oauth":
 		endpoint = "/responses"
+	case "opencode":
+		switch opencodeModelProtocol(model, "") {
+		case opencodeProtocolResponses:
+			endpoint = "/v1/responses"
+		case opencodeProtocolAnthropic:
+			endpoint = "/v1/messages"
+		case opencodeProtocolGemini:
+			endpoint = "/v1/models/" + url.PathEscape(model) + ":generateContent"
+		default:
+			endpoint = "/v1/chat/completions"
+		}
 	default:
 		endpoint = "/v1/chat/completions"
 	}
@@ -562,6 +592,10 @@ func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider) string {
 }
 
 func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvider, endpoint string, body map[string]interface{}) (*http.Request, error) {
+	opencodeProtocol := ""
+	if p.Type == "opencode" {
+		opencodeProtocol = opencodeModelProtocol(asString(body["model"]), "")
+	}
 	// Anthropic 使用不同的请求格式
 	if p.Type == "anthropic" || p.Type == "claude_oauth" {
 		body = map[string]interface{}{
@@ -584,6 +618,20 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 			"store":  false,
 			"stream": true,
 		}
+	} else if p.Type == "opencode" {
+		model := asString(body["model"])
+		switch opencodeProtocol {
+		case opencodeProtocolResponses:
+			body = map[string]interface{}{
+				"model": model,
+				"input": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "input_text", "text": "Reply OK"}}}},
+				"store": false, "stream": true,
+			}
+		case opencodeProtocolAnthropic:
+			body = map[string]interface{}{"model": model, "messages": []map[string]string{{"role": "user", "content": "Hi"}}, "max_tokens": 1}
+		case opencodeProtocolGemini:
+			body = map[string]interface{}{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "Hi"}}}}, "generationConfig": map[string]any{"maxOutputTokens": 1}}
+		}
 	}
 
 	payload, err := json.Marshal(body)
@@ -598,7 +646,7 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 
 	// 设置认证头
 	req.Header.Set("Content-Type", "application/json")
-	if p.Type == "codex_oauth" {
+	if p.Type == "codex_oauth" || opencodeProtocol == opencodeProtocolResponses {
 		req.Header.Set("Accept", "text/event-stream")
 	} else {
 		req.Header.Set("Accept", "application/json")
@@ -624,6 +672,9 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 		req.Header.Set("anthropic-version", "2023-06-01")
 	default:
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
+	}
+	if p.Type == "opencode" && strings.Contains(endpoint, "/messages") {
+		setOpenCodeAnthropicHeaders(req.Header)
 	}
 
 	return req, nil

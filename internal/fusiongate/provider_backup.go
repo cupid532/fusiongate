@@ -24,6 +24,13 @@ type providerBackupFile struct {
 	ExportedAt      string                   `json:"exported_at"`
 	ContainsSecrets bool                     `json:"contains_secrets"`
 	Providers       []providerBackupProvider `json:"providers"`
+	ModelAliases    []providerBackupAlias    `json:"model_aliases,omitempty"`
+}
+
+type providerBackupAlias struct {
+	Alias       string `json:"alias"`
+	TargetModel string `json:"target_model"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type providerBackupProvider struct {
@@ -145,6 +152,26 @@ ORDER BY p.priority DESC,p.id`)
 	}
 
 	backup := providerBackupFile{Format: providerBackupFormat, Version: providerBackupVersion, ExportedAt: now(), ContainsSecrets: true, Providers: make([]providerBackupProvider, 0, len(pending))}
+	aliasRows, err := a.db.Query(`SELECT alias,target_model,enabled FROM model_aliases ORDER BY alias`)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	for aliasRows.Next() {
+		var alias providerBackupAlias
+		var enabled int
+		if err := aliasRows.Scan(&alias.Alias, &alias.TargetModel, &enabled); err != nil {
+			aliasRows.Close()
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		alias.Enabled = strBool(enabled)
+		backup.ModelAliases = append(backup.ModelAliases, alias)
+	}
+	if err := aliasRows.Close(); err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
 	for _, item := range pending {
 		provider := item.Provider
 		keyRows, err := a.db.Query(`
@@ -276,6 +303,21 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 		return fmt.Errorf("backup must contain between 1 and %d providers", providerBackupMaxChannels)
 	}
 	seenNames := map[string]struct{}{}
+	seenAliases := map[string]struct{}{}
+	backupRoutes := map[string]struct{}{}
+	backupRewriteRoutes := map[string]struct{}{}
+	for i := range backup.ModelAliases {
+		alias := &backup.ModelAliases[i]
+		alias.Alias = normalizeModelAlias(alias.Alias)
+		alias.TargetModel = normalizeModelAlias(alias.TargetModel)
+		if alias.Alias == "" || alias.TargetModel == "" || alias.Alias == alias.TargetModel {
+			return fmt.Errorf("backup contains an invalid model alias")
+		}
+		if _, exists := seenAliases[alias.Alias]; exists {
+			return fmt.Errorf("backup contains duplicate model alias %q", alias.Alias)
+		}
+		seenAliases[alias.Alias] = struct{}{}
+	}
 	for i := range backup.Providers {
 		provider := &backup.Providers[i]
 		provider.Name = strings.TrimSpace(provider.Name)
@@ -368,6 +410,23 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 			}
 			if route.Priority < 0 || route.SortOrder < 0 || route.InputPriceMicros < 0 || route.CachedPriceMicros < 0 || route.OutputPriceMicros < 0 || route.LongContextThreshold < 0 || route.LongInputPriceMicros < 0 || route.LongCachedPriceMicros < 0 || route.LongOutputPriceMicros < 0 {
 				return fmt.Errorf("provider %q contains invalid route settings", provider.Name)
+			}
+			backupRoutes[route.PublicName] = struct{}{}
+			if provider.PassthroughMode != "transparent" {
+				backupRewriteRoutes[route.PublicName] = struct{}{}
+			}
+		}
+	}
+	for _, alias := range backup.ModelAliases {
+		if _, conflict := backupRoutes[alias.Alias]; conflict {
+			return fmt.Errorf("model alias %q conflicts with a public model in the backup", alias.Alias)
+		}
+		if _, chain := seenAliases[alias.TargetModel]; chain {
+			return fmt.Errorf("model alias %q targets another alias", alias.Alias)
+		}
+		if _, included := backupRoutes[alias.TargetModel]; included {
+			if _, rewriteCapable := backupRewriteRoutes[alias.TargetModel]; !rewriteCapable {
+				return fmt.Errorf("model alias %q has no rewrite-capable target route in the backup", alias.Alias)
 			}
 		}
 	}
@@ -534,6 +593,21 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 				}
 				result.RoutesUpdated++
 			}
+		}
+	}
+	for _, alias := range backup.ModelAliases {
+		var targetExists int
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.public_name=? AND p.passthrough_mode<>'transparent')`, alias.TargetModel).Scan(&targetExists); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if targetExists == 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("模型别名 %s 的目标模型 %s 不存在，已跳过", alias.Alias, alias.TargetModel))
+			continue
+		}
+		if _, err := tx.Exec(`INSERT INTO model_aliases(alias,target_model,enabled,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(alias) DO UPDATE SET target_model=excluded.target_model,enabled=excluded.enabled,updated_at=excluded.updated_at`, alias.Alias, alias.TargetModel, boolInt(alias.Enabled), now(), now()); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
 		}
 	}
 	if err := tx.Commit(); err != nil {

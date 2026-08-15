@@ -360,6 +360,25 @@ func TestParseGeminiModelsStripsPrefixAndSkipsEmbeddingOnlyModels(t *testing.T) 
 	}
 }
 
+func TestParseOpenCodeModelsRecordsPerModelProtocol(t *testing.T) {
+	raw := []byte(`{"data":[{"id":"gpt-5.6-sol"},{"id":"claude-sonnet-4-6"},{"id":"gemini-3.7-flash"},{"id":"glm-5.2"}]}`)
+	models, _, err := parseDiscoveryModels(raw, "opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"gpt-5.6-sol":       "protocol:responses",
+		"claude-sonnet-4-6": "protocol:anthropic",
+		"gemini-3.7-flash":  "protocol:gemini",
+		"glm-5.2":           "protocol:chat",
+	}
+	for _, model := range models {
+		if !matchesCapability(model.Capabilities, want[model.ID]) {
+			t.Fatalf("model=%s capabilities=%s", model.ID, model.Capabilities)
+		}
+	}
+}
+
 func TestParseCodexModelCapabilities(t *testing.T) {
 	raw := []byte(`{"models":[{"slug":"gpt-5.4","supported_reasoning_levels":[{"effort":"low"},{"effort":"medium"},{"effort":"high"},{"effort":"xhigh"}],"default_reasoning_level":"medium","input_modalities":["text","image"]}]}`)
 	models, _, err := parseDiscoveryModels(raw, "codex_oauth")

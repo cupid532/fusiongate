@@ -339,6 +339,8 @@ func officialPricingCatalogName(providerType, upstreamModel string) string {
 	switch providerType {
 	case "openai":
 		return "openai"
+	case "opencode":
+		return ""
 	case "grok", "grok_oauth":
 		return "grok"
 	case "gemini", "gemini_cli":
@@ -873,6 +875,9 @@ func (a *App) deletePublicModels(ctx context.Context, models []string) (int64, i
 	for _, name := range models {
 		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at)
 SELECT provider_id,LOWER(upstream_model),LOWER(upstream_model),? FROM model_routes WHERE public_name=?`, stamp, name); err != nil {
+			return 0, 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM model_aliases WHERE target_model=?`, name); err != nil {
 			return 0, 0, err
 		}
 		res, err := tx.ExecContext(ctx, `DELETE FROM model_routes WHERE public_name=?`, name)

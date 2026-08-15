@@ -205,6 +205,14 @@ type Route struct {
 	HealthCheckFirstByteMS int64  `json:"health_check_first_byte_ms"`
 }
 
+type ModelAlias struct {
+	Alias       string `json:"alias"`
+	TargetModel string `json:"target_model"`
+	Enabled     bool   `json:"enabled"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 type APIKey struct {
 	ID              int64      `json:"id"`
 	Name            string     `json:"name"`
@@ -582,6 +590,9 @@ func (a *App) migrate(ctx context.Context) error {
     priority INTEGER NOT NULL DEFAULT 0, sort_order INTEGER NOT NULL DEFAULT 0,
     input_price_micros INTEGER NOT NULL DEFAULT 0, output_price_micros INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(public_name,provider_id,upstream_model));
+	CREATE TABLE IF NOT EXISTS model_aliases (
+	  alias TEXT PRIMARY KEY COLLATE NOCASE, target_model TEXT NOT NULL,
+	  enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 	CREATE TABLE IF NOT EXISTS model_route_exclusions (
 	  provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
 	  public_name TEXT NOT NULL, upstream_model TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
@@ -616,6 +627,7 @@ func (a *App) migrate(ctx context.Context) error {
     gemini_micros INTEGER NOT NULL DEFAULT 0,
     other_micros INTEGER NOT NULL DEFAULT 0);
   CREATE INDEX IF NOT EXISTS idx_routes_public ON model_routes(public_name, enabled, priority);
+	CREATE INDEX IF NOT EXISTS idx_model_aliases_target ON model_aliases(target_model,enabled);
 	CREATE INDEX IF NOT EXISTS idx_model_route_exclusions_public ON model_route_exclusions(public_name);
   `)
 	if err != nil {
@@ -743,6 +755,45 @@ CREATE INDEX IF NOT EXISTS idx_ip_pool_nodes_enabled ON ip_pool_nodes(enabled,id
 CREATE INDEX IF NOT EXISTS idx_provider_api_keys_selection ON provider_api_keys(provider_id,enabled,sort_order,id);
 CREATE INDEX IF NOT EXISTS idx_provider_api_keys_node ON provider_api_keys(ip_pool_node_id);
 CREATE INDEX IF NOT EXISTS idx_provider_api_key_models_lookup ON provider_api_key_models(provider_key_id,model);
+DELETE FROM model_aliases WHERE NOT EXISTS(SELECT 1 FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.public_name=model_aliases.target_model AND p.passthrough_mode<>'transparent');
+CREATE TRIGGER IF NOT EXISTS trg_model_routes_alias_conflict_insert
+BEFORE INSERT ON model_routes
+WHEN EXISTS(SELECT 1 FROM model_aliases WHERE alias=NEW.public_name)
+BEGIN SELECT RAISE(ABORT,'public model conflicts with model alias'); END;
+CREATE TRIGGER IF NOT EXISTS trg_model_routes_alias_conflict_update
+BEFORE UPDATE OF public_name ON model_routes
+WHEN EXISTS(SELECT 1 FROM model_aliases WHERE alias=NEW.public_name)
+BEGIN SELECT RAISE(ABORT,'public model conflicts with model alias'); END;
+CREATE TRIGGER IF NOT EXISTS trg_model_aliases_route_conflict_insert
+BEFORE INSERT ON model_aliases
+WHEN EXISTS(SELECT 1 FROM model_routes WHERE public_name=NEW.alias)
+BEGIN SELECT RAISE(ABORT,'model alias conflicts with public model'); END;
+CREATE TRIGGER IF NOT EXISTS trg_model_aliases_route_conflict_update
+BEFORE UPDATE OF alias ON model_aliases
+WHEN EXISTS(SELECT 1 FROM model_routes WHERE public_name=NEW.alias)
+BEGIN SELECT RAISE(ABORT,'model alias conflicts with public model'); END;
+CREATE TRIGGER IF NOT EXISTS trg_model_aliases_target_insert
+BEFORE INSERT ON model_aliases
+WHEN NOT EXISTS(SELECT 1 FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.public_name=NEW.target_model AND p.passthrough_mode<>'transparent')
+BEGIN SELECT RAISE(ABORT,'model alias target has no rewrite-capable route'); END;
+CREATE TRIGGER IF NOT EXISTS trg_model_aliases_target_update
+BEFORE UPDATE OF target_model ON model_aliases
+WHEN NOT EXISTS(SELECT 1 FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.public_name=NEW.target_model AND p.passthrough_mode<>'transparent')
+BEGIN SELECT RAISE(ABORT,'model alias target has no rewrite-capable route'); END;
+CREATE TRIGGER IF NOT EXISTS trg_model_routes_alias_cleanup_delete
+AFTER DELETE ON model_routes
+WHEN NOT EXISTS(SELECT 1 FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.public_name=OLD.public_name AND p.passthrough_mode<>'transparent')
+BEGIN DELETE FROM model_aliases WHERE target_model=OLD.public_name; END;
+CREATE TRIGGER IF NOT EXISTS trg_providers_alias_target_update
+BEFORE UPDATE OF passthrough_mode ON providers
+WHEN NEW.passthrough_mode='transparent' AND OLD.passthrough_mode<>'transparent' AND EXISTS(
+ SELECT 1 FROM model_aliases a JOIN model_routes r ON r.public_name=a.target_model
+ WHERE r.provider_id=OLD.id AND NOT EXISTS(
+  SELECT 1 FROM model_routes other JOIN providers p ON p.id=other.provider_id
+  WHERE other.public_name=a.target_model AND other.provider_id<>OLD.id AND p.passthrough_mode<>'transparent'
+ )
+)
+BEGIN SELECT RAISE(ABORT,'provider is the last rewrite-capable route for a model alias'); END;
 UPDATE request_ledger SET usage_reported=1 WHERE usage_reported=0 AND (input_tokens>0 OR output_tokens>0 OR cached_tokens>0 OR reasoning_tokens>0);`)
 	if err != nil {
 		return err
@@ -955,6 +1006,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
 	mux.HandleFunc("/api/admin/routes/reorder", a.admin(a.reorderRoutes))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))
+	mux.HandleFunc("/api/admin/model-aliases", a.admin(a.modelAliases))
+	mux.HandleFunc("/api/admin/model-aliases/", a.admin(a.modelAliasByName))
 	mux.HandleFunc("/api/admin/models", a.admin(a.adminModels))
 	mux.HandleFunc("/api/admin/models/", a.admin(a.modelByName))
 	mux.HandleFunc("/api/admin/pricing", a.admin(a.pricing))
@@ -977,7 +1030,9 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/v1/models", a.api(a.models))
 	mux.HandleFunc("/v1/chat/completions", a.api(a.chat))
 	mux.HandleFunc("/v1/responses", a.api(a.responses))
+	mux.HandleFunc("/v1/responses/compact", a.api(a.responsesCompact))
 	mux.HandleFunc("/v1/messages", a.api(a.messages))
+	mux.HandleFunc("/v1/messages/count_tokens", a.api(a.messageTokenCount))
 	mux.HandleFunc("/v1/images/generations", a.api(a.images))
 	return a.security(mux)
 }
@@ -1030,4 +1085,52 @@ func readJSON(r *http.Request, v any) error {
 }
 func fail(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, map[string]any{"error": map[string]any{"message": msg, "type": code, "code": code}})
+}
+
+func anthropicEndpoint(r *http.Request) bool {
+	return r != nil && (r.URL.Path == "/v1/messages" || r.URL.Path == "/v1/messages/count_tokens")
+}
+
+func anthropicErrorType(status int, code string) string {
+	switch {
+	case status == http.StatusUnauthorized:
+		return "authentication_error"
+	case status == http.StatusForbidden:
+		return "permission_error"
+	case status == http.StatusNotFound:
+		return "not_found_error"
+	case status == http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case status >= 500:
+		return "api_error"
+	case code == "request_too_large":
+		return "request_too_large"
+	default:
+		return "invalid_request_error"
+	}
+}
+
+func failRequest(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+	if !anthropicEndpoint(r) {
+		fail(w, status, code, msg)
+		return
+	}
+	id := w.Header().Get("request-id")
+	if id == "" {
+		id = requestID()
+		w.Header().Set("request-id", id)
+	}
+	writeJSON(w, status, map[string]any{
+		"type":       "error",
+		"error":      map[string]any{"type": anthropicErrorType(status, code), "message": msg},
+		"request_id": id,
+	})
+}
+
+func failBodyError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, errRequestBodyTooLarge) {
+		failRequest(w, r, http.StatusRequestEntityTooLarge, "request_too_large", "request body exceeds 32 MiB")
+		return
+	}
+	failRequest(w, r, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 }

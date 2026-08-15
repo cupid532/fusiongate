@@ -340,7 +340,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		// /v1/models endpoint. Its CLI endpoint requires the client version
 		// query parameter and returns the list in a top-level models field.
 		paths = []string{basePath + "/models"}
-	case "openai", "grok", "openrouter", "openai_compatible", "anthropic":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic":
 		paths = compatibleDiscoveryPaths(basePath)
 	case "claude_oauth", "grok_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
@@ -420,7 +420,7 @@ func compatibleDiscoveryPaths(basePath string) []string {
 func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 	req.Header.Set("Accept", "application/json")
 	switch p.Type {
-	case "openai", "grok", "openrouter", "openai_compatible":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
 	case "codex_oauth":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
@@ -589,7 +589,11 @@ func discoveredCapabilities(id, providerType string, methods []string) (string, 
 	if strings.Contains(lower, "dall-e") || strings.Contains(lower, "image") && !strings.Contains(lower, "vision") {
 		return "image", true
 	}
-	return "chat,stream", true
+	capabilities := "chat,stream"
+	if providerType == "opencode" {
+		capabilities = withOpenCodeProtocol(capabilities, id)
+	}
+	return capabilities, true
 }
 
 func addCodexImageModel(models []discoveredModel) []discoveredModel {

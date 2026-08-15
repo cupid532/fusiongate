@@ -27,6 +27,9 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,cached_price_micros,output_price_micros,pricing_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, "glm-public", providerID, "glm-test", "chat,stream,tools", 1, 9, 3, 100, 20, 300, "manual", now(), now()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := a.db.Exec(`INSERT INTO model_aliases(alias,target_model,enabled,created_at,updated_at) VALUES('/glm5.2','glm-public',1,?,?)`, now(), now()); err != nil {
+		t.Fatal(err)
+	}
 
 	recorder := httptest.NewRecorder()
 	a.providerBackupExport(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/providers/export", strings.NewReader(`{}`)), adminCtx{})
@@ -40,8 +43,11 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &backup); err != nil {
 		t.Fatal(err)
 	}
-	if backup.Format != providerBackupFormat || backup.Version != providerBackupVersion || !backup.ContainsSecrets || len(backup.Providers) != 1 {
+	if backup.Format != providerBackupFormat || backup.Version != providerBackupVersion || !backup.ContainsSecrets || len(backup.Providers) != 1 || len(backup.ModelAliases) != 1 {
 		t.Fatalf("backup=%#v", backup)
+	}
+	if backup.ModelAliases[0].Alias != "/glm5.2" || backup.ModelAliases[0].TargetModel != "glm-public" || !backup.ModelAliases[0].Enabled {
+		t.Fatalf("aliases=%#v", backup.ModelAliases)
 	}
 	provider := backup.Providers[0]
 	if provider.HealthCheckEnabled == nil || !*provider.HealthCheckEnabled {
@@ -106,6 +112,7 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 			},
 			Routes: []providerBackupRoute{{PublicName: "deepseek-public", UpstreamModel: "deepseek-test", Capabilities: "chat,stream", Enabled: true, Priority: 10, InputPriceMicros: 100, OutputPriceMicros: 200, PricingSource: "manual"}},
 		}},
+		ModelAliases: []providerBackupAlias{{Alias: "deepseek", TargetModel: "deepseek-public", Enabled: true}},
 	}
 	body, _ := json.Marshal(backup)
 	importOnce := func() providerBackupImportResult {
@@ -130,7 +137,7 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 	}
 	var providerID int64
 	var encrypted []byte
-	var providerCount, keyCount, routeCount, inventoryCount int
+	var providerCount, keyCount, routeCount, inventoryCount, aliasCount int
 	if err := a.db.QueryRow(`SELECT id,credential FROM providers WHERE name='imported'`).Scan(&providerID, &encrypted); err != nil {
 		t.Fatal(err)
 	}
@@ -150,8 +157,11 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM provider_api_key_models WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, providerID).Scan(&inventoryCount); err != nil {
 		t.Fatal(err)
 	}
-	if providerCount != 1 || keyCount != 2 || routeCount != 1 || inventoryCount != 1 {
-		t.Fatalf("counts provider=%d keys=%d routes=%d inventory=%d", providerCount, keyCount, routeCount, inventoryCount)
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM model_aliases WHERE alias='deepseek' AND target_model='deepseek-public' AND enabled=1`).Scan(&aliasCount); err != nil {
+		t.Fatal(err)
+	}
+	if providerCount != 1 || keyCount != 2 || routeCount != 1 || inventoryCount != 1 || aliasCount != 1 {
+		t.Fatalf("counts provider=%d keys=%d routes=%d inventory=%d aliases=%d", providerCount, keyCount, routeCount, inventoryCount, aliasCount)
 	}
 	var healthCheckEnabled int
 	if err := a.db.QueryRow(`SELECT health_check_enabled FROM providers WHERE id=?`, providerID).Scan(&healthCheckEnabled); err != nil || healthCheckEnabled != 1 {

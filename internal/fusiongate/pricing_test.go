@@ -553,7 +553,7 @@ func TestLiveOfficialPricingSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("live pricing sync: %v (result=%+v)", err, result)
 	}
-	if result.Sources != 4 || result.Models < 4 {
+	if result.Sources != 5 || result.Models < 5 {
 		t.Fatalf("unexpected live pricing result: %+v", result)
 	}
 }

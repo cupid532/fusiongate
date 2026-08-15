@@ -111,6 +111,28 @@ export interface Route {
   health_check_first_byte_ms: number
 }
 
+export interface ModelAlias {
+  alias: string
+  target_model: string
+  enabled: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface PricingStatus {
+  status: Record<string, string>
+  interval: string
+  sources: string[]
+}
+
+export interface PricingSyncResult {
+  sources: number
+  models: number
+  updated_routes: number
+  synced_at: string
+  errors?: string[]
+}
+
 export interface APIKey {
   id: number
   name: string

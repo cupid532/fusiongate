@@ -245,7 +245,7 @@ func TestClientPolicyUsesRealUserAgent(t *testing.T) {
 	for _, tc := range []struct {
 		ua   string
 		want int
-	}{{"codex-cli/1.0", 1}, {"claude-code/2.0", 1}, {"browser/1.0", 0}} {
+	}{{"codex-cli/1.0", 1}, {"claude-code/2.0", 1}, {"claude-cli/2.1.231", 1}, {"browser/1.0", 0}} {
 		req := httptest.NewRequest(http.MethodPost, "/", nil)
 		req.Header.Set("User-Agent", tc.ua)
 		if got := len(filterClientRoutes(routes, req)); got != tc.want {

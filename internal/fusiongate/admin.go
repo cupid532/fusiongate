@@ -234,7 +234,7 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 
 func validProviderType(t string) bool {
 	switch t {
-	case "openai", "grok", "openrouter", "openai_compatible", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "gemini_cli":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "gemini_cli":
 		return true
 	}
 	return false
@@ -242,7 +242,7 @@ func validProviderType(t string) bool {
 
 func validEditableProviderType(t string) bool {
 	switch t {
-	case "openai", "grok", "openrouter", "openai_compatible", "anthropic", "gemini":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "gemini":
 		return true
 	}
 	return false
@@ -1260,6 +1260,15 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			fail(w, http.StatusBadRequest, "invalid_request", "provider_id, public_name, and upstream_model are required")
 			return
 		}
+		var aliasConflict int
+		if err := a.db.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM model_aliases WHERE alias=?)`, in.PublicName).Scan(&aliasConflict); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if aliasConflict != 0 {
+			fail(w, http.StatusConflict, "route_conflict", "public_name conflicts with an existing model alias")
+			return
+		}
 		if in.Capabilities == "" {
 			in.Capabilities = "chat,stream"
 		}
@@ -1373,6 +1382,15 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 				fail(w, http.StatusConflict, "route_conflict", "this channel and upstream model are already in the target failover group")
 				return
 			}
+			var aliasConflict int
+			if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM model_aliases WHERE alias=?)`, newPublicName).Scan(&aliasConflict); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			if aliasConflict != 0 {
+				fail(w, http.StatusConflict, "route_conflict", "public_name conflicts with an existing model alias")
+				return
+			}
 		}
 		sortOrderExpr := `sort_order`
 		args := []any{maybeBool(in.Enabled), in.Priority, newPublicName}
@@ -1401,6 +1419,19 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM model_routes WHERE public_name=?`, newPublicName).Scan(&groupRoutes); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
+		}
+		if newPublicName != oldPublicName {
+			var oldRoutes int
+			if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM model_routes WHERE public_name=?`, oldPublicName).Scan(&oldRoutes); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			if oldRoutes == 0 {
+				if _, err := tx.ExecContext(r.Context(), `UPDATE model_aliases SET target_model=?,updated_at=? WHERE target_model=?`, newPublicName, now(), oldPublicName); err != nil {
+					fail(w, http.StatusInternalServerError, "database_error", err.Error())
+					return
+				}
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -1434,6 +1465,10 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		if _, err := tx.Exec(`DELETE FROM model_routes WHERE id=?`, id); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if _, err := tx.Exec(`DELETE FROM model_aliases WHERE target_model=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, publicName, publicName); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}

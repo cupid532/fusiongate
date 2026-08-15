@@ -155,13 +155,34 @@ func TestStreamOpenAIAsAnthropicEmitsClaudeSSE(t *testing.T) {
 		`"text":"Hello ","type":"text_delta"`,
 		`"text":"world","type":"text_delta"`,
 		`"id":"call_1","input":{},"name":"read_file","type":"tool_use"`,
-		`"partial_json":"{\"path\":\"a.go\"}","type":"input_json_delta"`,
+		`"partial_json":"{\"path\":","type":"input_json_delta"`,
+		`"partial_json":"\"a.go\"}","type":"input_json_delta"`,
 		`"stop_reason":"tool_use"`,
 		"event: message_stop",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in stream:\n%s", want, body)
 		}
+	}
+}
+
+func TestStreamOpenAIAsAnthropicWaitsForToolArgumentsBeforeStartingBlock(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
+		"",
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a.go\"}"}}]},"finish_reason":"tool_calls"}]}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n")
+	rec := httptest.NewRecorder()
+	result := streamOpenAIAsAnthropic(rec, strings.NewReader(upstream), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "tool-start", time.Second, time.Second)
+	if result.Status != http.StatusOK || !result.Handled {
+		t.Fatalf("result=%+v body=%s", result, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Count(body, "event: content_block_start") != 1 || !strings.Contains(body, `"partial_json":"{\"path\":\"a.go\"}"`) {
+		t.Fatalf("stream=%s", body)
 	}
 }
 

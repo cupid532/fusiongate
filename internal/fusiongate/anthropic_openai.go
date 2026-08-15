@@ -19,7 +19,7 @@ const maxAnthropicBridgeEvent = 4 << 20
 // OpenAI-compatible Chat Completions provider. Native Anthropic routes continue
 // to use the transparent proxy path in messages().
 func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Request, body map[string]any, z resolvedRoute, rid string, stream bool, onFirstByte func()) attemptResult {
-	encoded, err := anthropicMessagesRequestToOpenAI(body, z.Route.UpstreamModel, true, z.Provider.Type != "openai_compatible")
+	encoded, err := anthropicMessagesRequestToOpenAI(body, z.Route.UpstreamModel, true, z.Provider.Type != "openai_compatible" && z.Provider.Type != "opencode")
 	if err != nil {
 		return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
 	}
@@ -100,6 +100,9 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 	if resp.StatusCode >= 400 {
 		startTimer.Stop()
 		w.Header().Set("X-FusionGate-Request-ID", rid)
+		if w.Header().Get("request-id") == "" {
+			w.Header().Set("request-id", rid)
+		}
 		return writeAnthropicBridgeError(w, resp)
 	}
 	startTimer.Stop()
@@ -441,6 +444,8 @@ type openAIToolStream struct {
 	ID        string
 	Name      string
 	Arguments strings.Builder
+	Started   bool
+	Index     int
 }
 
 type anthropicBridgeStream struct {
@@ -512,6 +517,9 @@ func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRo
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 		w.Header().Set("X-FusionGate-Request-ID", rid)
+		if w.Header().Get("request-id") == "" {
+			w.Header().Set("request-id", rid)
+		}
 		w.WriteHeader(http.StatusOK)
 		committed = true
 		state.event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
@@ -579,6 +587,9 @@ func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRo
 			}
 			if state.writeError != nil {
 				reason = "downstream_write_error"
+			}
+			if state.writeError == nil {
+				state.event("error", map[string]any{"type": "error", "error": map[string]any{"type": "api_error", "message": "upstream stream failed"}})
 			}
 			return attemptResult{Status: status, Handled: true, Reason: reason, Err: err, Usage: state.usage}
 		}
@@ -669,7 +680,7 @@ func (s *anthropicBridgeStream) consume(chunk map[string]any) {
 		index := int(num(call["index"]))
 		tool := s.tools[index]
 		if tool == nil {
-			tool = &openAIToolStream{}
+			tool = &openAIToolStream{Index: -1}
 			s.tools[index] = tool
 			s.toolOrder = append(s.toolOrder, index)
 		}
@@ -682,6 +693,22 @@ func (s *anthropicBridgeStream) consume(chunk map[string]any) {
 		}
 		if arguments, _ := function["arguments"].(string); arguments != "" {
 			tool.Arguments.WriteString(arguments)
+			if !tool.Started {
+				if s.textOpen {
+					s.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": s.textIndex})
+					s.textOpen = false
+				}
+				tool.Index = s.nextIndex
+				s.nextIndex++
+				if tool.ID == "" {
+					tool.ID = fmt.Sprintf("toolu_%s_%d", s.messageID, index)
+				}
+				s.event("content_block_start", map[string]any{"type": "content_block_start", "index": tool.Index, "content_block": map[string]any{"type": "tool_use", "id": tool.ID, "name": tool.Name, "input": map[string]any{}}})
+				tool.Started = true
+			}
+			if tool.Started {
+				s.event("content_block_delta", map[string]any{"type": "content_block_delta", "index": tool.Index, "delta": map[string]any{"type": "input_json_delta", "partial_json": arguments}})
+			}
 		}
 	}
 }
@@ -693,16 +720,18 @@ func (s *anthropicBridgeStream) finishStream() {
 	}
 	for _, toolIndex := range s.toolOrder {
 		tool := s.tools[toolIndex]
-		index := s.nextIndex
-		s.nextIndex++
-		if tool.ID == "" {
-			tool.ID = fmt.Sprintf("toolu_%s_%d", s.messageID, toolIndex)
+		if !tool.Started {
+			tool.Index = s.nextIndex
+			s.nextIndex++
+			if tool.ID == "" {
+				tool.ID = fmt.Sprintf("toolu_%s_%d", s.messageID, toolIndex)
+			}
+			s.event("content_block_start", map[string]any{"type": "content_block_start", "index": tool.Index, "content_block": map[string]any{"type": "tool_use", "id": tool.ID, "name": tool.Name, "input": map[string]any{}}})
+			if arguments := tool.Arguments.String(); arguments != "" {
+				s.event("content_block_delta", map[string]any{"type": "content_block_delta", "index": tool.Index, "delta": map[string]any{"type": "input_json_delta", "partial_json": arguments}})
+			}
 		}
-		s.event("content_block_start", map[string]any{"type": "content_block_start", "index": index, "content_block": map[string]any{"type": "tool_use", "id": tool.ID, "name": tool.Name, "input": map[string]any{}}})
-		if arguments := tool.Arguments.String(); arguments != "" {
-			s.event("content_block_delta", map[string]any{"type": "content_block_delta", "index": index, "delta": map[string]any{"type": "input_json_delta", "partial_json": arguments}})
-		}
-		s.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": index})
+		s.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": tool.Index})
 	}
 	if s.finish == nil {
 		if len(s.toolOrder) > 0 {
@@ -749,7 +778,15 @@ func writeAnthropicBridgeError(w http.ResponseWriter, resp *http.Response) attem
 	if message == "" {
 		message = http.StatusText(resp.StatusCode)
 	}
-	writeJSON(w, resp.StatusCode, map[string]any{"type": "error", "error": map[string]any{"type": errorType, "message": message}})
+	if errorType == "api_error" {
+		errorType = anthropicErrorType(resp.StatusCode, "upstream_error")
+	}
+	id := firstNonEmpty(resp.Header.Get("request-id"), w.Header().Get("request-id"))
+	if id == "" {
+		id = requestID()
+	}
+	w.Header().Set("request-id", id)
+	writeJSON(w, resp.StatusCode, map[string]any{"type": "error", "error": map[string]any{"type": errorType, "message": message}, "request_id": id})
 	reason := retryReason(resp.StatusCode, nil)
 	if readErr != nil {
 		reason = "upstream_invalid_response"

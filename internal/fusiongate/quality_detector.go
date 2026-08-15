@@ -139,7 +139,7 @@ func writeQualityDetectorResponse(w http.ResponseWriter, data []byte, status int
 
 func qualityDetectorProviderSupported(providerType string) bool {
 	switch providerType {
-	case "openai", "grok", "openrouter", "openai_compatible", "codex_oauth", "grok_oauth":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "codex_oauth", "grok_oauth":
 		return true
 	default:
 		return false
@@ -180,6 +180,9 @@ func (a *App) qualityDetectorTargets(ctx context.Context) ([]qualityDetectorTarg
 		}
 		for _, route := range routes {
 			if !qualityDetectorProviderSupported(route.Provider.Type) {
+				continue
+			}
+			if route.Provider.Type == "opencode" && opencodeRouteProtocol(route) != opencodeProtocolResponses {
 				continue
 			}
 			target := qualityDetectorTarget{

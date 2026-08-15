@@ -89,6 +89,16 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='ip_pool_nodes'`).Scan(&ipPoolTable); err != nil || ipPoolTable != "ip_pool_nodes" {
 		t.Fatalf("ip_pool_nodes table was not migrated: table=%q err=%v", ipPoolTable, err)
 	}
+	var aliasTable string
+	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='model_aliases'`).Scan(&aliasTable); err != nil || aliasTable != "model_aliases" {
+		t.Fatalf("model_aliases table was not migrated: table=%q err=%v", aliasTable, err)
+	}
+	if _, err := a.db.Exec(`INSERT INTO model_aliases(alias,target_model,enabled,created_at,updated_at) VALUES('legacy-alias','legacy-model',1,?,?)`, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,created_at,updated_at) VALUES('legacy-alias',1,'conflict',?,?)`, stamp, stamp); err == nil {
+		t.Fatal("route/alias conflict trigger was not installed")
+	}
 	var directCount int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE ip_pool_node_id IS NULL`).Scan(&directCount); err != nil || directCount != 1 {
 		t.Fatalf("legacy provider did not remain in direct mode: count=%d err=%v", directCount, err)
