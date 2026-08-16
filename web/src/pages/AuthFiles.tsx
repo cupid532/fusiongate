@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network } from "lucide-react"
+import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network, ListChecks } from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -48,6 +48,7 @@ export function AuthFiles() {
   const [importOpen, setImportOpen] = useState(false)
   const [oauthOpen, setOauthOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [multiSelect, setMultiSelect] = useState(false)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
   const [egressOpen, setEgressOpen] = useState(false)
@@ -134,7 +135,7 @@ export function AuthFiles() {
           <p className="mt-1 text-sm text-muted-foreground">管理 Codex / Claude / Grok 的 OAuth 凭据。</p>
         </div>
         <div className="flex gap-2">
-          {selected.size > 0 && (
+          {multiSelect && selected.size > 0 && (
             <>
               <Button variant="outline" onClick={() => { setModelPickerProvider(oauth.find((p) => selected.has(p.id)) ?? null); setModelPickerOpen(true) }} disabled={new Set(oauth.filter((p) => selected.has(p.id)).map((p) => p.type)).size !== 1}>
                 <ScanSearch className="h-4 w-4" />
@@ -157,6 +158,10 @@ export function AuthFiles() {
               </Button>
             </>
           )}
+          <Button variant={multiSelect ? "default" : "outline"} onClick={() => { setMultiSelect((value) => !value); setSelected(new Set()) }}>
+            <ListChecks className="h-4 w-4" />
+            {multiSelect ? "退出多选" : "多选"}
+          </Button>
           <Button variant="outline" onClick={() => setImportOpen(true)}>
             <FileKey className="h-4 w-4" />
             导入文件
@@ -186,17 +191,7 @@ export function AuthFiles() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {g.items.map((p) => (
                     <div key={p.id} className="relative">
-                      <input
-                        type="checkbox"
-                        className="absolute left-3 top-3 z-10 h-4 w-4"
-                        checked={selected.has(p.id)}
-                        onChange={(e) => {
-                          const next = new Set(selected)
-                          if (e.target.checked) next.add(p.id)
-                          else next.delete(p.id)
-                          setSelected(next)
-                        }}
-                      />
+                      {multiSelect && <input type="checkbox" className="absolute left-3 top-3 z-10 h-4 w-4" aria-label={`选择 ${p.name}`} checked={selected.has(p.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(p.id); else next.delete(p.id); setSelected(next) }} />}
                       <CodexCard provider={p} />
                     </div>
                   ))}
@@ -215,18 +210,7 @@ export function AuthFiles() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b text-left text-xs text-muted-foreground">
-                          <th className="w-10 px-3 py-2.5">
-                            <input
-                              type="checkbox"
-                              checked={g.items.length > 0 && g.items.every((p) => selected.has(p.id))}
-                              onChange={(e) => {
-                                const next = new Set(selected)
-                                if (e.target.checked) g.items.forEach((p) => next.add(p.id))
-                                else g.items.forEach((p) => next.delete(p.id))
-                                setSelected(next)
-                              }}
-                            />
-                          </th>
+                          {multiSelect && <th className="w-10 px-3 py-2.5"><input type="checkbox" aria-label={`选择全部 ${platformLabels[g.platform] ?? g.platform} 认证`} checked={g.items.length > 0 && g.items.every((p) => selected.has(p.id))} onChange={(e) => { const next = new Set(selected); if (e.target.checked) g.items.forEach((p) => next.add(p.id)); else g.items.forEach((p) => next.delete(p.id)); setSelected(next) }} /></th>}
                           <th className="px-4 py-2.5 font-medium">名称</th>
                           <th className="px-4 py-2.5 font-medium">账号</th>
                           <th className="px-4 py-2.5 font-medium">状态</th>
@@ -238,18 +222,7 @@ export function AuthFiles() {
                       <tbody>
                         {g.items.map((p) => (
                           <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
-                            <td className="px-3 py-3">
-                              <input
-                                type="checkbox"
-                                checked={selected.has(p.id)}
-                                onChange={(e) => {
-                                  const next = new Set(selected)
-                                  if (e.target.checked) next.add(p.id)
-                                  else next.delete(p.id)
-                                  setSelected(next)
-                                }}
-                              />
-                            </td>
+                            {multiSelect && <td className="px-3 py-3"><input type="checkbox" aria-label={`选择 ${p.name}`} checked={selected.has(p.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(p.id); else next.delete(p.id); setSelected(next) }} /></td>}
                             <td className="px-4 py-3 font-medium">{p.name}</td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
                             <td className="px-4 py-3">{statusBadge(p)}</td>

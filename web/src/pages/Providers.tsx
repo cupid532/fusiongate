@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { cn } from "@/lib/utils"
@@ -61,6 +61,8 @@ export function Providers() {
   const [backupOpen, setBackupOpen] = useState(false)
   const [groupOpen, setGroupOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [multiSelect, setMultiSelect] = useState(false)
+  const [draggingId, setDraggingId] = useState<number | null>(null)
 
   const { data: routing } = useQuery({
     queryKey: ["routing"],
@@ -107,6 +109,19 @@ export function Providers() {
 
   const remove = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/providers/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
+  })
+
+  const reorder = useMutation({
+    mutationFn: async ({ sourceId, targetId }: { sourceId: number; targetId: number }) => {
+      const ids = providers.map((provider) => provider.id)
+      const sourceIndex = ids.indexOf(sourceId)
+      const targetIndex = ids.indexOf(targetId)
+      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
+      const [moved] = ids.splice(sourceIndex, 1)
+      ids.splice(targetIndex, 0, moved)
+      await api("/api/admin/providers/reorder", { method: "PATCH", body: JSON.stringify({ provider_ids: ids }) })
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
   })
 
@@ -206,7 +221,7 @@ export function Providers() {
               ))}
             </div>
             <div className="flex items-center gap-2">
-              {selected.size > 0 && (
+              {multiSelect && selected.size > 0 && (
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs text-muted-foreground">已选 {selected.size}</span>
                   <Button size="sm" variant="outline" onClick={() => batch.mutate({ ids: [...selected], action: "enable" })}>
@@ -226,6 +241,10 @@ export function Providers() {
                   </Button>
                 </div>
               )}
+              <Button size="sm" variant={multiSelect ? "default" : "outline"} onClick={() => { setMultiSelect((value) => !value); setSelected(new Set()) }}>
+                <ListChecks className="h-4 w-4" />
+                {multiSelect ? "退出多选" : "多选"}
+              </Button>
               <div className="relative">
                 <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索渠道" className="h-8 w-52 pl-8 text-xs" />
@@ -246,14 +265,7 @@ export function Providers() {
                 <thead>
                   <tr className="border-b text-left text-xs text-muted-foreground">
                     <th className="w-10 px-3 py-3">
-                      <input
-                        type="checkbox"
-                        checked={filtered.length > 0 && filtered.every((p) => selected.has(p.id))}
-                        onChange={(e) => {
-                          if (e.target.checked) setSelected(new Set(filtered.map((p) => p.id)))
-                          else setSelected(new Set())
-                        }}
-                      />
+                      {multiSelect ? <input type="checkbox" aria-label="选择全部渠道" checked={filtered.length > 0 && filtered.every((p) => selected.has(p.id))} onChange={(e) => { if (e.target.checked) setSelected(new Set(filtered.map((p) => p.id))); else setSelected(new Set()) }} /> : <span className="sr-only">拖动排序</span>}
                     </th>
                     <th className="px-4 py-3 font-medium">渠道</th>
                     <th className="px-4 py-3 font-medium">类型</th>
@@ -265,18 +277,9 @@ export function Providers() {
                 </thead>
                 <tbody>
                   {filtered.map((p) => (
-                    <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
+                    <tr key={p.id} draggable={!multiSelect} onDragStart={(event) => { setDraggingId(p.id); event.dataTransfer.effectAllowed = "move" }} onDragEnd={() => setDraggingId(null)} onDragOver={(event) => { if (!multiSelect) { event.preventDefault(); event.dataTransfer.dropEffect = "move" } }} onDrop={(event) => { event.preventDefault(); if (draggingId && draggingId !== p.id) reorder.mutate({ sourceId: draggingId, targetId: p.id }); setDraggingId(null) }} className={cn("border-b last:border-0 hover:bg-muted/40", draggingId === p.id && "opacity-50")}>
                       <td className="px-3 py-3">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(p.id)}
-                          onChange={(e) => {
-                            const next = new Set(selected)
-                            if (e.target.checked) next.add(p.id)
-                            else next.delete(p.id)
-                            setSelected(next)
-                          }}
-                        />
+                        {multiSelect ? <input type="checkbox" aria-label={`选择 ${p.name}`} checked={selected.has(p.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(p.id); else next.delete(p.id); setSelected(next) }} /> : <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground/60 active:cursor-grabbing" aria-label={`拖动 ${p.name} 排序`} />}
                       </td>
                       <td className="px-4 py-3">
                         <a href={p.base_url} target="_blank" rel="noreferrer" className="font-medium hover:text-primary hover:underline">

@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.15
+
+- Hide provider and authentication selection checkboxes behind a top-level multi-select mode, and restore provider drag-and-drop ordering with a dedicated drag handle in normal mode.
+
 ## V2.14
 
 - Fix explicit authentication-file model discovery: selected credentials now refresh their upstream model inventory even when inherited or previously configured routes already exist.
