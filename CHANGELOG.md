@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.16
+
+- Pool routes by their final upstream model across public model names. A route such as `gpt-5.6-luna -> deepseek-v4-flash` now participates at equal configured priority with native `deepseek-v4-flash` routes, without double-counting providers that expose both names.
+
 ## V2.15
 
 - Hide provider and authentication selection checkboxes behind a top-level multi-select mode, and restore provider drag-and-drop ordering with a dedicated drag handle in normal mode.

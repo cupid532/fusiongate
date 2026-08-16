@@ -463,8 +463,12 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id,p.multi_key_initialized,p.default_model,
        COALESCE(p.health_check_status,''),COALESCE(p.health_check_error,'')
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
-WHERE r.public_name=? AND r.enabled=1 AND p.enabled=1 AND p.archived=0
-ORDER BY r.sort_order,r.id`, model)
+WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0
+  AND (LOWER(r.public_name)=LOWER(?) OR LOWER(r.upstream_model) IN (
+    SELECT DISTINCT LOWER(seed.upstream_model) FROM model_routes seed
+    WHERE seed.enabled=1 AND LOWER(seed.public_name)=LOWER(?)
+  ))
+ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,r.id`, model, model, model)
 	if err != nil {
 		return nil, err
 	}
@@ -475,6 +479,7 @@ ORDER BY r.sort_order,r.id`, model)
 		multiKeyInitialized bool
 	}
 	pending := []pendingRoute{}
+	pendingIndex := map[string]int{}
 	for rows.Next() {
 		var z resolvedRoute
 		var routeEnabled, providerEnabled int
@@ -506,6 +511,16 @@ ORDER BY r.sort_order,r.id`, model)
 		if !matchesCapability(z.Route.Capabilities, requiredCapability) {
 			continue
 		}
+		// One provider gets one seat per final upstream model. A provider may expose
+		// both the requested public name and the upstream model's native public name;
+		// counting both would silently double its round-robin weight. The SQL orders
+		// direct public-name routes first, so the first entry is authoritative.
+		poolKey := strconv.FormatInt(z.Provider.ID, 10) + "\x00" + strings.ToLower(strings.TrimSpace(z.Route.UpstreamModel))
+		if _, exists := pendingIndex[poolKey]; exists {
+			continue
+		}
+		pendingIndex[poolKey] = len(pending)
+		z.Route.PublicName = model
 		pending = append(pending, pendingRoute{
 			resolved:            z,
 			credential:          append([]byte(nil), credential...),
