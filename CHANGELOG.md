@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.13
+
+- Complete authentication-file management with model discovery, checkbox-based model enablement, same-platform batch model settings, and batch network-egress assignment.
+
 ## V2.12
 
 - Add inline priority editing to provider and authentication-file lists, with compact priority controls and reduced status-column clutter.

@@ -33,11 +33,13 @@ export function ModelPicker({
   onOpenChange,
   providerId,
   providerName,
+  providerIds,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   providerId: number
   providerName: string
+  providerIds?: number[]
 }) {
   const qc = useQueryClient()
   const [models, setModels] = useState<DiscoveredModel[]>([])
@@ -65,12 +67,18 @@ export function ModelPicker({
   const enabledModels = useMemo(() => models.filter((m) => m.existing).sort((a, b) => a.id.localeCompare(b.id)), [models])
   const disabledModels = useMemo(() => models.filter((m) => !m.existing).sort((a, b) => a.id.localeCompare(b.id)), [models])
 
+  const targets = providerIds?.length ? providerIds : [providerId]
   const save = useMutation({
     mutationFn: async () =>
-      api<{ selected: number; added: number; existing: number; removed: number }>(
-        `/api/admin/providers/${providerId}/models`,
-        { method: "PUT", body: JSON.stringify({ models: [...selected] }) }
-      ),
+      targets.length > 1
+        ? api<{ selected: number; added: number; existing: number; removed: number }>("/api/admin/providers/batch", {
+            method: "POST",
+            body: JSON.stringify({ provider_ids: targets, action: "models", models: [...selected] }),
+          })
+        : api<{ selected: number; added: number; existing: number; removed: number }>(
+            `/api/admin/providers/${providerId}/models`,
+            { method: "PUT", body: JSON.stringify({ models: [...selected] }) }
+          ),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["providers"] })
       qc.invalidateQueries({ queryKey: ["routes"] })
@@ -93,8 +101,8 @@ export function ModelPicker({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>管理模型 · {providerName}</DialogTitle>
-          <DialogDescription>勾选即启用，取消勾选即关闭。已启用的模型排在上方。</DialogDescription>
+          <DialogTitle>{targets.length > 1 ? `批量管理模型 · ${targets.length} 个认证` : `管理模型 · ${providerName}`}</DialogTitle>
+          <DialogDescription>{targets.length > 1 ? "从首个认证识别模型，并将勾选结果应用到所有选中的同平台认证。" : "勾选即启用，取消勾选即关闭。已启用的模型排在上方。"}</DialogDescription>
         </DialogHeader>
 
         {loading ? (

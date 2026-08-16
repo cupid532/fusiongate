@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { FileKey, Plus, Trash2, HeartPulse } from "lucide-react"
+import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network } from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/dialog"
 import { CodexCard } from "@/components/CodexCard"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
+import { ModelPicker } from "@/components/ModelPicker"
+import { AuthEgressDialog } from "@/components/AuthEgressDialog"
 
 const platformLabels: Record<string, string> = {
   codex: "Codex (ChatGPT)",
@@ -46,6 +48,9 @@ export function AuthFiles() {
   const [importOpen, setImportOpen] = useState(false)
   const [oauthOpen, setOauthOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
+  const [egressOpen, setEgressOpen] = useState(false)
 
   const { data: providers = [], isLoading } = useQuery({
     queryKey: ["providers"],
@@ -66,6 +71,11 @@ export function AuthFiles() {
       qc.invalidateQueries({ queryKey: ["providers"] })
       qc.invalidateQueries({ queryKey: ["routes"] })
     },
+  })
+
+  const batchModelSync = useMutation({
+    mutationFn: async (ids: number[]) => api<{ providers: number }>("/api/admin/auth/models/sync", { method: "POST", body: JSON.stringify({ provider_ids: ids }) }),
+    onSuccess: (r) => { setSelected(new Set()); qc.invalidateQueries({ queryKey: ["providers"] }); alert(`已启动 ${r.providers} 个认证的模型识别`) },
   })
 
   const batchHealthCheck = useMutation({
@@ -126,6 +136,18 @@ export function AuthFiles() {
         <div className="flex gap-2">
           {selected.size > 0 && (
             <>
+              <Button variant="outline" onClick={() => { setModelPickerProvider(oauth.find((p) => selected.has(p.id)) ?? null); setModelPickerOpen(true) }} disabled={new Set(oauth.filter((p) => selected.has(p.id)).map((p) => p.type)).size !== 1}>
+                <ScanSearch className="h-4 w-4" />
+                模型设置（{selected.size}）
+              </Button>
+              <Button variant="outline" onClick={() => batchModelSync.mutate([...selected])} disabled={batchModelSync.isPending}>
+                <ScanSearch className="h-4 w-4" />
+                识别模型
+              </Button>
+              <Button variant="outline" onClick={() => setEgressOpen(true)}>
+                <Network className="h-4 w-4" />
+                指定出口
+              </Button>
               <Button variant="outline" onClick={() => batchHealthCheck.mutate([...selected])}>
                 <HeartPulse className="h-4 w-4" />
                 批量测活（{selected.size}）
@@ -235,6 +257,9 @@ export function AuthFiles() {
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                             <td className="px-4 py-3">
                               <div className="flex justify-end">
+                                <Button variant="ghost" size="icon" onClick={() => { setModelPickerProvider(p); setModelPickerOpen(true) }} aria-label={`管理模型 ${p.name}`} title="识别并勾选模型">
+                                  <ScanSearch className="h-4 w-4" />
+                                </Button>
                                 <Button
                                   variant="ghost"
                                   size="icon"
@@ -261,6 +286,8 @@ export function AuthFiles() {
 
       <AuthImportDialog open={importOpen} onOpenChange={setImportOpen} />
       <AuthOAuthDialog open={oauthOpen} onOpenChange={setOauthOpen} />
+      {modelPickerProvider && <ModelPicker open={modelPickerOpen} onOpenChange={setModelPickerOpen} providerId={modelPickerProvider.id} providerName={modelPickerProvider.name} providerIds={selected.size > 1 ? [...selected] : undefined} />}
+      <AuthEgressDialog open={egressOpen} onOpenChange={setEgressOpen} providerIds={[...selected]} />
     </motion.div>
   )
 }
