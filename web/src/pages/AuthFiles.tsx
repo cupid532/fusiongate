@@ -74,8 +74,8 @@ export function AuthFiles() {
   })
 
   const batchModelSync = useMutation({
-    mutationFn: async (ids: number[]) => api<{ providers: number }>("/api/admin/auth/models/sync", { method: "POST", body: JSON.stringify({ provider_ids: ids }) }),
-    onSuccess: (r) => { setSelected(new Set()); qc.invalidateQueries({ queryKey: ["providers"] }); alert(`已启动 ${r.providers} 个认证的模型识别`) },
+    mutationFn: async (ids: number[]) => api<{ providers: number; succeeded: number; failed: number; models: number }>("/api/admin/auth/models/sync", { method: "POST", body: JSON.stringify({ provider_ids: ids }) }),
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["providers"] }); alert(`模型识别完成：${r.succeeded}/${r.providers} 个认证成功，发现 ${r.models} 个模型${r.failed ? `，${r.failed} 个失败` : ""}`) },
   })
 
   const batchHealthCheck = useMutation({

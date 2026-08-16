@@ -1139,16 +1139,19 @@ func (a *App) authModelSync(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 			requested[id] = true
 		}
 	}
+	// Explicitly selected credentials must refresh even when they already have
+	// inherited routes. Automatic sync remains conservative and fills only empty routes.
+	forceRefresh := len(requested) > 0
 	rows, err := a.db.QueryContext(r.Context(), `SELECT p.id,p.name,p.type FROM providers p
 		WHERE p.auth_kind='oauth'
-		  AND NOT EXISTS (SELECT 1 FROM model_routes r WHERE r.provider_id=p.id)
+		  AND (? OR NOT EXISTS (SELECT 1 FROM model_routes r WHERE r.provider_id=p.id))
 		  AND NOT (
 			lower(COALESCE(p.auth_source,'')) IN ('cliproxy','cli-proxy','cli_proxy','cpa','sub2api')
 			AND p.auth_expires_at IS NOT NULL
 			AND p.auth_expires_at!=''
 			AND p.auth_expires_at<=?
 		  )
-		ORDER BY p.id LIMIT 200`, time.Now().UTC().Format(time.RFC3339))
+		ORDER BY p.id LIMIT 200`, forceRefresh, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be loaded")
 		return

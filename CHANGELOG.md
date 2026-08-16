@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.14
+
+- Fix explicit authentication-file model discovery: selected credentials now refresh their upstream model inventory even when inherited or previously configured routes already exist.
+
 ## V2.13
 
 - Complete authentication-file management with model discovery, checkbox-based model enablement, same-platform batch model settings, and batch network-egress assignment.
