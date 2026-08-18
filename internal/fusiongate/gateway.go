@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -28,6 +30,7 @@ type authKey struct {
 	AllowModels  string
 	DenyModels   string
 	AllowImages  bool
+	AllowAudio   bool
 	RPMLimit     int
 	Revoked      bool
 	ExpiresAt    *time.Time
@@ -166,14 +169,15 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	}
 	sum := sha256.Sum256([]byte(raw))
 	var x authKey
-	var allowAll, allowImages, revoked int
+	var allowAll, allowImages, allowAudio, revoked int
 	var expiresAt, createdAt string
-	err := a.reader().QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,budget_micros FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &x.RPMLimit, &revoked, &expiresAt, &createdAt, &x.BudgetMicros)
+	err := a.reader().QueryRow(`SELECT id,name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,allow_audio,rpm_limit,revoked,COALESCE(expires_at,''),created_at,budget_micros FROM api_keys WHERE key_hash=?`, hex.EncodeToString(sum[:])).Scan(&x.ID, &x.Name, &x.Prefix, &x.Hash, &allowAll, &x.AllowModels, &x.DenyModels, &allowImages, &allowAudio, &x.RPMLimit, &revoked, &expiresAt, &createdAt, &x.BudgetMicros)
 	if err != nil {
 		return authKey{}, false
 	}
 	x.AllowAll = strBool(allowAll)
 	x.AllowImages = strBool(allowImages)
+	x.AllowAudio = strBool(allowAudio)
 	x.Revoked = strBool(revoked)
 	x.ExpiresAt = parseTime(expiresAt)
 	if x.Revoked || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) {
@@ -1563,4 +1567,109 @@ func (a *App) images(w http.ResponseWriter, r *http.Request, key authKey) {
 	// (connect/timeout, 401/403/429/5xx before body copy). Once headers/body are
 	// written for a terminal non-retryable result, runRoutes stops as usual.
 	a.openAIEndpoint(w, r, key, "openai_images", "/v1/images/generations", "image", true)
+}
+
+func (a *App) audioSpeech(w http.ResponseWriter, r *http.Request, key authKey) {
+	if !key.AllowAudio {
+		fail(w, http.StatusForbidden, "audio_not_allowed", "this key is not permitted to use audio endpoints")
+		return
+	}
+	a.openAIEndpoint(w, r, key, "openai_audio_speech", "/v1/audio/speech", "audio_speech", true)
+}
+
+// audioTranscriptions forwards multipart/form-data transcription requests. The
+// OpenAI endpoint takes a file part plus a model field, so a custom thin executor
+// reads the model part, resolves audio_transcribe routes and forwards the original
+// multipart body transparently (Content-Type with its boundary must be preserved;
+// getBody/openAIEndpoint only accept JSON bodies).
+func (a *App) audioTranscriptions(w http.ResponseWriter, r *http.Request, key authKey) {
+	if !key.AllowAudio {
+		fail(w, http.StatusForbidden, "audio_not_allowed", "this key is not permitted to use audio endpoints")
+		return
+	}
+	if r.Method != http.MethodPost {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	const limit = 32 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
+	if err != nil {
+		failBodyError(w, r, err)
+		return
+	}
+	if len(body) > limit {
+		failBodyError(w, r, errRequestBodyTooLarge)
+		return
+	}
+	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
+		fail(w, http.StatusBadRequest, "invalid_request", "multipart/form-data request required")
+		return
+	}
+	model := ""
+	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	for {
+		part, partErr := mr.NextPart()
+		if partErr == io.EOF {
+			break
+		}
+		if partErr != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", "invalid multipart body")
+			return
+		}
+		fieldName := part.FormName()
+		if fieldName == "model" {
+			raw, readErr := io.ReadAll(io.LimitReader(part, 1<<10))
+			_ = part.Close()
+			if readErr != nil {
+				fail(w, http.StatusBadRequest, "invalid_request", "could not read model field")
+				return
+			}
+			model = strings.TrimSpace(string(raw))
+			break
+		}
+		_ = part.Close()
+	}
+	if model == "" {
+		fail(w, http.StatusBadRequest, "invalid_request", "model is required")
+		return
+	}
+	canonical, err := a.canonicalModel(r.Context(), model)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", "could not resolve model alias")
+		return
+	}
+	if !modelAllowed(key, model, canonical) {
+		fail(w, http.StatusForbidden, "model_not_allowed", "model not allowed")
+		return
+	}
+	routes, err := a.resolve(r.Context(), canonical, "audio_transcribe")
+	if err != nil {
+		fail(w, http.StatusNotFound, "model_not_found", err.Error())
+		return
+	}
+	routes = restrictQualityDetectorRoutes(key, routes)
+	routes = exposeRequestedModel(routes, model)
+	if len(routes) == 0 {
+		fail(w, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		return
+	}
+	compatible := routes[:0]
+	for _, z := range routes {
+		switch z.Provider.Type {
+		case "openai", "grok", "openrouter", "openai_compatible", "codex_oauth", "grok_oauth":
+			compatible = append(compatible, z)
+		}
+	}
+	if len(compatible) == 0 {
+		fail(w, http.StatusNotImplemented, "protocol_not_supported", "no OpenAI-compatible route is configured")
+		return
+	}
+	a.runRoutes(w, r, key, compatible, "openai_audio_transcriptions", "", false, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/audio/transcriptions", RawBody: body, Transparent: true, GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte})
+	})
+}
+
+func (a *App) embeddings(w http.ResponseWriter, r *http.Request, key authKey) {
+	a.openAIEndpoint(w, r, key, "openai_embeddings", "/v1/embeddings", "embedding", true)
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.19
+
+- Extend the unified `/v1` entry point to cover the full agent modality set: text-to-speech (`/v1/audio/speech`), speech-to-text transcriptions (`/v1/audio/transcriptions`, multipart passthrough) and vector embeddings (`/v1/embeddings`). All three reuse the existing capability-routing and failover pipeline (`audio_speech` / `audio_transcribe` / `embedding` route capabilities), so circuit breakers, half-open recovery, IP-pool egress and the request ledger apply unchanged.
+- Add an `allow_audio` per-Key permission alongside `allow_images`; keys without it receive `403 audio_not_allowed` on both audio endpoints. Embeddings remain governed by the existing model allow/deny lists.
+
 ## V2.18
 
 - Rebuild quality detection into a selectable, batchable workflow. Administrators can filter GPT-5.6 models, channels, and per-channel keys, then run a single target or a queued batch of up to 100 targets sequentially through the frozen detector presets; each target is re-resolved before it runs, a per-item failure continues the queue, and the batch can be cancelled at any time.

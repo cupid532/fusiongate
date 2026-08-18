@@ -17,6 +17,7 @@ type KeyForm = {
   deny_models: string
   allow_all: boolean
   allow_images: boolean
+  allow_audio: boolean
   rpm_limit: number
   budget_usd: string
 }
@@ -27,6 +28,7 @@ const emptyForm: KeyForm = {
   deny_models: "",
   allow_all: true,
   allow_images: false,
+  allow_audio: false,
   rpm_limit: 120,
   budget_usd: "",
 }
@@ -48,6 +50,7 @@ export function Keys() {
         name: f.name,
         allow_all: f.allow_all,
         allow_images: f.allow_images,
+        allow_audio: f.allow_audio,
         rpm_limit: f.rpm_limit,
       }
       if (f.allow_models.trim()) body.allow_models = f.allow_models
@@ -125,6 +128,10 @@ export function Keys() {
             <label className="col-span-2 flex items-center gap-2 text-sm">
               <input type="checkbox" checked={form.allow_images} onChange={(e) => set("allow_images", e.target.checked)} />
               允许图片生成
+            </label>
+            <label className="col-span-2 flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.allow_audio} onChange={(e) => set("allow_audio", e.target.checked)} />
+              允许音频（TTS / 转录）
             </label>
             <div className="col-span-2 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setCreating(false)}>

@@ -1581,7 +1581,7 @@ func normalizeModelList(value string) string {
 func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.reader().Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL,budget_micros,spent_micros FROM api_keys ORDER BY id DESC`)
+		rows, err := a.reader().Query(`SELECT id,name,key_prefix,allow_all,allow_models,deny_models,allow_images,allow_audio,rpm_limit,revoked,COALESCE(expires_at,''),created_at,encrypted_key IS NOT NULL,budget_micros,spent_micros FROM api_keys ORDER BY id DESC`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1590,14 +1590,15 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		out := []APIKey{}
 		for rows.Next() {
 			var x APIKey
-			var aa, ai, rv, canReveal int
+			var aa, ai, au, rv, canReveal int
 			var ex, cr string
-			if err := rows.Scan(&x.ID, &x.Name, &x.Prefix, &aa, &x.AllowModels, &x.DenyModels, &ai, &x.RPMLimit, &rv, &ex, &cr, &canReveal, &x.BudgetMicros, &x.SpentMicros); err != nil {
+			if err := rows.Scan(&x.ID, &x.Name, &x.Prefix, &aa, &x.AllowModels, &x.DenyModels, &ai, &au, &x.RPMLimit, &rv, &ex, &cr, &canReveal, &x.BudgetMicros, &x.SpentMicros); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
 			x.AllowAll = strBool(aa)
 			x.AllowImages = strBool(ai)
+			x.AllowAudio = strBool(au)
 			x.Revoked = strBool(rv)
 			x.CanReveal = strBool(canReveal)
 			if x.BudgetMicros > 0 {
@@ -1621,6 +1622,7 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			DenyModels   string `json:"deny_models"`
 			AllowAll     bool   `json:"allow_all"`
 			AllowImages  bool   `json:"allow_images"`
+			AllowAudio   bool   `json:"allow_audio"`
 			RPMLimit     int    `json:"rpm_limit"`
 			ExpiresAt    string `json:"expires_at"`
 			BudgetMicros int64  `json:"budget_micros"`
@@ -1663,7 +1665,7 @@ func (a *App) keys(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "invalid_request", "budget_micros must be zero or greater")
 			return
 		}
-		res, err := a.db.Exec(`INSERT INTO api_keys(name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,rpm_limit,expires_at,budget_micros,created_at,encrypted_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, in.Name, prefix, hex.EncodeToString(sum[:]), boolInt(in.AllowAll), in.AllowModels, in.DenyModels, boolInt(in.AllowImages), in.RPMLimit, exp, in.BudgetMicros, now(), encrypted)
+		res, err := a.db.Exec(`INSERT INTO api_keys(name,key_prefix,key_hash,allow_all,allow_models,deny_models,allow_images,allow_audio,rpm_limit,expires_at,budget_micros,created_at,encrypted_key) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, in.Name, prefix, hex.EncodeToString(sum[:]), boolInt(in.AllowAll), in.AllowModels, in.DenyModels, boolInt(in.AllowImages), boolInt(in.AllowAudio), in.RPMLimit, exp, in.BudgetMicros, now(), encrypted)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return

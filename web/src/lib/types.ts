@@ -141,6 +141,7 @@ export interface APIKey {
   deny_models: string
   allow_all: boolean
   allow_images: boolean
+  allow_audio: boolean
   revoked: boolean
   rpm_limit: number
   expires_at?: string

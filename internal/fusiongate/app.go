@@ -226,6 +226,7 @@ type APIKey struct {
 	DenyModels      string     `json:"deny_models"`
 	AllowAll        bool       `json:"allow_all"`
 	AllowImages     bool       `json:"allow_images"`
+	AllowAudio      bool       `json:"allow_audio"`
 	Revoked         bool       `json:"revoked"`
 	RPMLimit        int        `json:"rpm_limit"`
 	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
@@ -612,7 +613,7 @@ func (a *App) migrate(ctx context.Context) error {
 	  CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, key_prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
     allow_all INTEGER NOT NULL DEFAULT 1, allow_models TEXT NOT NULL DEFAULT '', deny_models TEXT NOT NULL DEFAULT '',
-    allow_images INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 120, revoked INTEGER NOT NULL DEFAULT 0,
+    allow_images INTEGER NOT NULL DEFAULT 0, allow_audio INTEGER NOT NULL DEFAULT 0, rpm_limit INTEGER NOT NULL DEFAULT 120, revoked INTEGER NOT NULL DEFAULT 0,
 	    expires_at TEXT, budget_micros INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, last_used_at TEXT, encrypted_key BLOB);
   CREATE TABLE IF NOT EXISTS request_ledger (
     id INTEGER PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, completed_at TEXT,
@@ -710,6 +711,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"api_keys", "encrypted_key", "BLOB"},
 		{"api_keys", "budget_micros", "INTEGER NOT NULL DEFAULT 0"},
 		{"api_keys", "spent_micros", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "allow_audio", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "cached_price_micros", "INTEGER NOT NULL DEFAULT 0"},
 		{"model_routes", "long_context_threshold", "INTEGER NOT NULL DEFAULT 0"},
@@ -1088,6 +1090,9 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/v1/messages", a.api(a.messages))
 	mux.HandleFunc("/v1/messages/count_tokens", a.api(a.messageTokenCount))
 	mux.HandleFunc("/v1/images/generations", a.api(a.images))
+	mux.HandleFunc("/v1/audio/speech", a.api(a.audioSpeech))
+	mux.HandleFunc("/v1/audio/transcriptions", a.api(a.audioTranscriptions))
+	mux.HandleFunc("/v1/embeddings", a.api(a.embeddings))
 	return a.security(mux)
 }
 func (a *App) security(next http.Handler) http.Handler {
