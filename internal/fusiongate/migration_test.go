@@ -93,6 +93,12 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='model_aliases'`).Scan(&aliasTable); err != nil || aliasTable != "model_aliases" {
 		t.Fatalf("model_aliases table was not migrated: table=%q err=%v", aliasTable, err)
 	}
+	for _, table := range []string{"quality_detector_jobs", "quality_detector_job_items"} {
+		var name string
+		if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name); err != nil || name != table {
+			t.Fatalf("%s table was not migrated: table=%q err=%v", table, name, err)
+		}
+	}
 	if _, err := a.db.Exec(`INSERT INTO model_aliases(alias,target_model,enabled,created_at,updated_at) VALUES('legacy-alias','legacy-model',1,?,?)`, stamp, stamp); err != nil {
 		t.Fatal(err)
 	}

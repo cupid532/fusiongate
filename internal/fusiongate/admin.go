@@ -222,7 +222,7 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		detectorCtx, detectorCancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer detectorCancel()
-		status, err := a.qualityDetectorSidecarStatus(r.Clone(detectorCtx))
+		status, err := a.qualityDetectorSidecarStatus(detectorCtx)
 		if err != nil {
 			fail(w, http.StatusServiceUnavailable, "quality_detector_unavailable", "quality detector is not ready")
 			return

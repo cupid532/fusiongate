@@ -77,6 +77,7 @@ type App struct {
 	lastLedgerCleanup        time.Time
 	healthChecker            *HealthChecker
 	healthCheckJobs          *healthCheckJobManager
+	qualityDetectorJobs      *qualityDetectorJobManager
 	healthProbeMu            sync.Mutex
 	healthProbes             map[int64]struct{}
 	balanceMu                sync.Mutex
@@ -344,6 +345,9 @@ func New(cfg Config) (*App, error) {
 	}
 	a.healthChecker = NewHealthChecker(a, healthCheckIntervalFromEnv(), healthCheckConcurrencyFromEnv())
 	a.healthCheckJobs = newHealthCheckJobManager(a)
+	a.qualityDetectorJobs = newQualityDetectorJobManager(a)
+	a.qualityDetectorJobs.convergeInterrupted(context.Background())
+	a.qualityDetectorJobs.prune(context.Background())
 	for _, file := range []string{"fusiongate.db", "fusiongate.db-wal", "fusiongate.db-shm"} {
 		if err := os.Chmod(path.Join(cfg.DataDir, file), 0600); err != nil && !errors.Is(err, os.ErrNotExist) {
 			db.Close()
@@ -474,6 +478,9 @@ func (a *App) Close() error {
 	if a.healthCheckJobs != nil {
 		a.healthCheckJobs.Close()
 	}
+	if a.qualityDetectorJobs != nil {
+		a.qualityDetectorJobs.Close()
+	}
 	if a.ipPool != nil {
 		a.ipPool.Close()
 	}
@@ -509,6 +516,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	go a.runOAuthRefreshLoop(ctx)
 	go a.runPricingSyncLoop(ctx)
 	go a.runLedgerRetentionLoop(ctx)
+	go a.runQualityDetectorRetentionLoop(ctx)
 	// Circuit recovery is performed by the next real request after cooldown.
 }
 
@@ -819,6 +827,43 @@ CREATE TABLE IF NOT EXISTS provider_groups (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_groups_order ON provider_groups(sort_order, id);`)
+	if err != nil {
+		return err
+	}
+
+	// Quality detection batch history (24h retention, redacted snapshots only).
+	_, err = a.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS quality_detector_jobs (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'queued',
+  preset TEXT NOT NULL DEFAULT 'low',
+  total INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  started_at TEXT NOT NULL DEFAULT '',
+  finished_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS quality_detector_job_items (
+  id INTEGER PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES quality_detector_jobs(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL,
+  target_id TEXT NOT NULL,
+  model TEXT NOT NULL,
+  provider_id INTEGER NOT NULL,
+  provider_name TEXT NOT NULL,
+  provider_type TEXT NOT NULL,
+  provider_key_id INTEGER NOT NULL DEFAULT 0,
+  provider_key_name TEXT NOT NULL DEFAULT '',
+  provider_key_hint TEXT NOT NULL DEFAULT '',
+  upstream_model TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  verdict TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  started_at TEXT NOT NULL DEFAULT '',
+  finished_at TEXT NOT NULL DEFAULT '',
+  report TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_qd_jobs_created ON quality_detector_jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_qd_items_job ON quality_detector_job_items(job_id, position);`)
 	if err != nil {
 		return err
 	}

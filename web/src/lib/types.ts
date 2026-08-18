@@ -256,8 +256,55 @@ export interface QualityDetectorTarget {
 export interface QualityDetectorData {
   available: boolean
   version: string
-  estimates: Record<string, any>
+  estimates: Record<string, QualityEstimate>
   targets: QualityDetectorTarget[]
+  active_job_id?: string
+}
+
+export interface QualityEstimate {
+  total_requests: number
+  fixed_32k_requests?: number
+  approximate_fixed_32k_input_tokens?: number
+}
+
+export interface QualityJob {
+  id: string
+  status: string
+  preset: string
+  total: number
+  completed: number
+  succeeded: number
+  failed: number
+  skipped: number
+  cancelled: number
+  created_at: string
+  started_at?: string
+  finished_at?: string
+  items?: QualityJobItem[]
+}
+
+export interface QualityJobItem {
+  id: number
+  position: number
+  target_id: string
+  model: string
+  provider_id: number
+  provider_name: string
+  provider_type: string
+  provider_key_id: number
+  provider_key_name: string
+  provider_key_hint: string
+  upstream_model: string
+  status: string
+  verdict: string
+  error: string
+  started_at?: string
+  finished_at?: string
+  report?: string
+}
+
+export interface QualityJobListResponse {
+  jobs: QualityJob[]
 }
 
 export interface CredentialImportPreviewItem {

@@ -26,6 +26,7 @@ var qualityDetectorSecret = regexp.MustCompile(`(?i)\b(?:fg|sk)-?_[A-Za-z0-9_-]{
 
 const qualityDetectorRouteTTL = 2 * time.Hour
 const qualityDetectorRouteMaxRequests = 512
+const qualityDetectorPollInterval = 2 * time.Second
 
 type qualityDetectorTarget struct {
 	ID              string `json:"id"`
@@ -77,7 +78,7 @@ func newQualityDetectorClient(rawURL string) (*qualityDetectorClient, error) {
 	}, nil
 }
 
-func (c *qualityDetectorClient) request(r *http.Request, method, requestPath string, body any, token string) ([]byte, int, error) {
+func (c *qualityDetectorClient) request(ctx context.Context, method, requestPath string, body any, token string) ([]byte, int, error) {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -86,7 +87,7 @@ func (c *qualityDetectorClient) request(r *http.Request, method, requestPath str
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(r.Context(), method, c.baseURL+requestPath, reader)
+	request, err := http.NewRequestWithContext(ctx, method, c.baseURL+requestPath, reader)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -106,8 +107,8 @@ func (c *qualityDetectorClient) request(r *http.Request, method, requestPath str
 	return data, response.StatusCode, err
 }
 
-func (c *qualityDetectorClient) bootstrap(r *http.Request) (map[string]any, error) {
-	data, status, err := c.request(r, http.MethodGet, "/api/bootstrap", nil, "")
+func (c *qualityDetectorClient) bootstrap(ctx context.Context) (map[string]any, error) {
+	data, status, err := c.request(ctx, http.MethodGet, "/api/bootstrap", nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -334,8 +335,8 @@ func (a *App) qualityDetectorResponseWithTarget(w http.ResponseWriter, data []by
 	writeJSON(w, status, value)
 }
 
-func (a *App) qualityDetectorSidecarStatus(r *http.Request) (string, error) {
-	data, status, err := a.qualityDetectorClient.request(r, http.MethodGet, "/api/detector/status", nil, "")
+func (a *App) qualityDetectorSidecarStatus(ctx context.Context) (string, error) {
+	data, status, err := a.qualityDetectorClient.request(ctx, http.MethodGet, "/api/detector/status", nil, "")
 	if err != nil {
 		return "", err
 	}
@@ -352,19 +353,27 @@ func (a *App) qualityDetectorSidecarStatus(r *http.Request) (string, error) {
 }
 
 func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	action := strings.TrimPrefix(r.URL.Path, "/api/admin/quality-detector")
+	if action == "/jobs" {
+		a.handleQualityDetectorJobs(w, r)
+		return
+	}
+	if strings.HasPrefix(action, "/jobs/") {
+		a.handleQualityDetectorJobByID(w, r, strings.TrimPrefix(action, "/jobs/"))
+		return
+	}
 	client := a.qualityDetectorClient
 	if client == nil {
 		fail(w, http.StatusServiceUnavailable, "quality_detector_unavailable", "quality detector is not configured")
 		return
 	}
-	action := strings.TrimPrefix(r.URL.Path, "/api/admin/quality-detector")
 	switch action {
 	case "":
 		if r.Method != http.MethodGet {
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 			return
 		}
-		bootstrap, err := client.bootstrap(r)
+		bootstrap, err := client.bootstrap(r.Context())
 		if err != nil {
 			fail(w, http.StatusBadGateway, "quality_detector_unavailable", err.Error())
 			return
@@ -376,7 +385,7 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 			if !ok {
 				continue
 			}
-			data, status, requestErr := client.request(r, http.MethodPost, "/api/detector/estimate", map[string]any{"config": config}, fmt.Sprint(bootstrap["session_token"]))
+			data, status, requestErr := client.request(r.Context(), http.MethodPost, "/api/detector/estimate", map[string]any{"config": config}, fmt.Sprint(bootstrap["session_token"]))
 			if requestErr != nil || status != http.StatusOK {
 				continue
 			}
@@ -390,13 +399,17 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 			fail(w, http.StatusInternalServerError, "database_error", targetErr.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"available": true, "version": qualityDetectorVersion, "estimates": estimates, "targets": targets})
+		activeJobID := ""
+		if a.qualityDetectorJobs != nil {
+			activeJobID = a.qualityDetectorJobs.ActiveID()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"available": true, "version": qualityDetectorVersion, "estimates": estimates, "targets": targets, "active_job_id": activeJobID})
 	case "/status", "/report":
 		if r.Method != http.MethodGet {
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 			return
 		}
-		data, status, requestErr := client.request(r, http.MethodGet, "/api/detector"+action, nil, "")
+		data, status, requestErr := client.request(r.Context(), http.MethodGet, "/api/detector"+action, nil, "")
 		if requestErr != nil {
 			fail(w, http.StatusBadGateway, "quality_detector_unavailable", requestErr.Error())
 			return
@@ -424,6 +437,10 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 			fail(w, http.StatusBadRequest, "invalid_request", "choose a supported preset, model, channel, and credential")
 			return
 		}
+		if a.qualityDetectorJobs != nil && a.qualityDetectorJobs.HasActive() {
+			fail(w, http.StatusConflict, "quality_detector_busy", "a quality detection batch is already running")
+			return
+		}
 		a.qualityDetectorControlMu.Lock()
 		defer a.qualityDetectorControlMu.Unlock()
 		target, targetErr := a.qualityDetectorTarget(r.Context(), input.TargetID)
@@ -431,7 +448,7 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 			fail(w, http.StatusBadRequest, "invalid_quality_detector_target", targetErr.Error())
 			return
 		}
-		detectorStatus, statusErr := a.qualityDetectorSidecarStatus(r)
+		detectorStatus, statusErr := a.qualityDetectorSidecarStatus(r.Context())
 		if statusErr != nil {
 			fail(w, http.StatusBadGateway, "quality_detector_unavailable", statusErr.Error())
 			return
@@ -441,7 +458,7 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 			return
 		}
 		a.clearActiveQualityDetectorRoute()
-		bootstrap, err := client.bootstrap(r)
+		bootstrap, err := client.bootstrap(r.Context())
 		if err != nil {
 			fail(w, http.StatusBadGateway, "quality_detector_unavailable", err.Error())
 			return
@@ -457,7 +474,7 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 			baseURL = "http://127.0.0.1:8787/v1"
 		}
 		routeToken, routeHash := a.registerQualityDetectorRoute(target)
-		data, status, requestErr := client.request(r, http.MethodPost, "/api/detector/start", map[string]any{
+		data, status, requestErr := client.request(r.Context(), http.MethodPost, "/api/detector/start", map[string]any{
 			"base_url": baseURL, "model": target.Model, "api_key": routeToken, "config": config,
 			"retention_enabled": false, "retention_directory": nil,
 		}, fmt.Sprint(bootstrap["session_token"]))
@@ -478,14 +495,25 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 			return
 		}
+		if a.qualityDetectorJobs != nil {
+			if activeID := a.qualityDetectorJobs.ActiveID(); activeID != "" {
+				job, cancelErr := a.qualityDetectorJobs.Cancel(activeID)
+				if cancelErr != nil {
+					fail(w, http.StatusInternalServerError, "quality_detector_failed", cancelErr.Error())
+					return
+				}
+				writeJSON(w, http.StatusOK, map[string]any{"status": "cancelling", "job": job})
+				return
+			}
+		}
 		a.qualityDetectorControlMu.Lock()
 		defer a.qualityDetectorControlMu.Unlock()
-		bootstrap, err := client.bootstrap(r)
+		bootstrap, err := client.bootstrap(r.Context())
 		if err != nil {
 			fail(w, http.StatusBadGateway, "quality_detector_unavailable", err.Error())
 			return
 		}
-		data, status, requestErr := client.request(r, http.MethodPost, "/api/detector/stop", map[string]any{}, fmt.Sprint(bootstrap["session_token"]))
+		data, status, requestErr := client.request(r.Context(), http.MethodPost, "/api/detector/stop", map[string]any{}, fmt.Sprint(bootstrap["session_token"]))
 		if requestErr != nil {
 			fail(w, http.StatusBadGateway, "quality_detector_unavailable", requestErr.Error())
 			return
@@ -498,4 +526,118 @@ func (a *App) qualityDetector(w http.ResponseWriter, r *http.Request, _ adminCtx
 	default:
 		fail(w, http.StatusNotFound, "not_found", "quality detector action not found")
 	}
+}
+
+// runQualityDetectionOnce runs a single targeted detection to completion and
+// returns the sanitized report and verdict. The control mutex is held only while
+// starting the sidecar; polling happens without it so cancellation can proceed.
+func (a *App) runQualityDetectionOnce(ctx context.Context, preset string, target qualityDetectorTarget) (report, verdict string, err error) {
+	client := a.qualityDetectorClient
+	if client == nil {
+		return "", "", errors.New("quality detector is not configured")
+	}
+
+	a.qualityDetectorControlMu.Lock()
+	detectorStatus, statusErr := a.qualityDetectorSidecarStatus(ctx)
+	if statusErr != nil {
+		a.qualityDetectorControlMu.Unlock()
+		return "", "", statusErr
+	}
+	if detectorStatus == "running" || detectorStatus == "stopping" {
+		a.qualityDetectorControlMu.Unlock()
+		return "", "", errors.New("quality detector is already running or stopping")
+	}
+	a.clearActiveQualityDetectorRoute()
+	bootstrap, err := client.bootstrap(ctx)
+	if err != nil {
+		a.qualityDetectorControlMu.Unlock()
+		return "", "", err
+	}
+	presets, _ := bootstrap["single_presets"].(map[string]any)
+	config, ok := presets[preset]
+	if !ok {
+		a.qualityDetectorControlMu.Unlock()
+		return "", "", errors.New("detector preset is unavailable")
+	}
+	baseURL := strings.TrimRight(a.cfg.QualityDetectorBaseURL, "/")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:8787/v1"
+	}
+	routeToken, routeHash := a.registerQualityDetectorRoute(target)
+	data, status, requestErr := client.request(ctx, http.MethodPost, "/api/detector/start", map[string]any{
+		"base_url": baseURL, "model": target.Model, "api_key": routeToken, "config": config,
+		"retention_enabled": false, "retention_directory": nil,
+	}, fmt.Sprint(bootstrap["session_token"]))
+	if requestErr != nil {
+		a.removeQualityDetectorRoute(routeHash)
+		a.qualityDetectorControlMu.Unlock()
+		return "", "", requestErr
+	}
+	if status >= 400 {
+		a.removeQualityDetectorRoute(routeHash)
+		a.qualityDetectorControlMu.Unlock()
+		return "", "", errors.New(qualityDetectorError(data, status))
+	}
+	a.activateQualityDetectorRoute(routeHash, target)
+	a.qualityDetectorControlMu.Unlock()
+
+	defer a.removeQualityDetectorRoute(routeHash)
+	for {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", "", ctxErr
+		}
+		sdata, scode, serr := client.request(ctx, http.MethodGet, "/api/detector/status", nil, "")
+		if serr != nil {
+			return "", "", serr
+		}
+		if scode != http.StatusOK {
+			return "", "", errors.New(qualityDetectorError(sdata, scode))
+		}
+		var statusValue struct {
+			Status string `json:"status"`
+		}
+		_ = json.Unmarshal(sdata, &statusValue)
+		state := strings.ToLower(strings.TrimSpace(statusValue.Status))
+		if state == "complete" || state == "stopped" || state == "error" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		case <-time.After(qualityDetectorPollInterval):
+		}
+	}
+
+	rdata, rcode, rerr := client.request(ctx, http.MethodGet, "/api/detector/report", nil, "")
+	if rerr != nil {
+		return "", "", rerr
+	}
+	if rcode != http.StatusOK {
+		return "", "", errors.New(qualityDetectorError(rdata, rcode))
+	}
+	report, verdict, ok = sanitizeQualityDetectorReport(rdata)
+	if !ok {
+		return "", "", errors.New("quality detector report is unavailable or unsafe to persist")
+	}
+	return report, verdict, nil
+}
+
+// stopQualityDetectorSidecar asks the sidecar to stop whatever it is running.
+func (a *App) stopQualityDetectorSidecar(ctx context.Context) error {
+	client := a.qualityDetectorClient
+	if client == nil {
+		return errors.New("quality detector is not configured")
+	}
+	bootstrap, err := client.bootstrap(ctx)
+	if err != nil {
+		return err
+	}
+	data, status, err := client.request(ctx, http.MethodPost, "/api/detector/stop", map[string]any{}, fmt.Sprint(bootstrap["session_token"]))
+	if err != nil {
+		return err
+	}
+	if status >= 400 {
+		return errors.New(qualityDetectorError(data, status))
+	}
+	return nil
 }

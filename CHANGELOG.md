@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.18
+
+- Rebuild quality detection into a selectable, batchable workflow. Administrators can filter GPT-5.6 models, channels, and per-channel keys, then run a single target or a queued batch of up to 100 targets sequentially through the frozen detector presets; each target is re-resolved before it runs, a per-item failure continues the queue, and the batch can be cancelled at any time.
+- Persist a redacted 24-hour quality-detection history (batches and per-target verdicts, errors, and reports) in SQLite. Reports are stored only when they declare `auth_values_persisted=false` and pass recursive key/secret redaction plus a size cap; upstream keys, route tokens, and detector session tokens are never written.
+- Keep the existing single-target start/status/report/stop endpoints compatible while routing them through the same targeted-token safety boundary (loopback-only `POST /v1/responses`, exact model/route/channel/key binding, no failover).
+
 ## V2.17
 
 - Adapt the console for mobile: the navigation collapses into a hamburger-triggered drawer, page headers and action bars stack instead of overflowing, dialogs and form grids resize to fit narrow screens, and the login layout drops to a single column with the brand header shown inline.
