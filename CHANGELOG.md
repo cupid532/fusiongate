@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.17
+
+- Adapt the console for mobile: the navigation collapses into a hamburger-triggered drawer, page headers and action bars stack instead of overflowing, dialogs and form grids resize to fit narrow screens, and the login layout drops to a single column with the brand header shown inline.
+
 ## V2.16
 
 - Pool routes by their final upstream model across public model names. A route such as `gpt-5.6-luna -> deepseek-v4-flash` now participates at equal configured priority with native `deepseek-v4-flash` routes, without double-counting providers that expose both names.

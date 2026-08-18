@@ -1274,7 +1274,9 @@ func TestOAuthProviderBatchModels(t *testing.T) {
 
 func TestAuthModelSyncRefreshesExplicitExistingRoutes(t *testing.T) {
 	a, err := New(testConfig(t))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer a.Close()
 	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.String() == "https://cli-chat-proxy.grok.com/v1/models" {
@@ -1283,15 +1285,25 @@ func TestAuthModelSyncRefreshesExplicitExistingRoutes(t *testing.T) {
 		return authJSONResponse(http.StatusBadGateway, `{}`), nil
 	})}
 	providerID, _, err := a.saveOAuthProvider(context.Background(), "existing routes", 1, ProviderCredential{Version: 1, Kind: "oauth", Platform: "grok", Source: "cliproxy", AccessToken: "active-access", AccountID: "existing-routes"}, 0, false)
-	if err != nil { t.Fatal(err) }
-	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,created_at,updated_at) VALUES('grok-4.5',?,'grok-4.5','chat,stream',1,0,0,?,?)`, providerID, now(), now()); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,created_at,updated_at) VALUES('grok-4.5',?,'grok-4.5','chat,stream',1,0,0,?,?)`, providerID, now(), now()); err != nil {
+		t.Fatal(err)
+	}
 	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{providerID}})
 	rec := httptest.NewRecorder()
 	a.authModelSync(rec, httptest.NewRequest(http.MethodPost, "/api/admin/auth/models/sync", strings.NewReader(string(body))), adminCtx{})
-	if rec.Code != http.StatusOK { t.Fatalf("sync status=%d body=%s", rec.Code, rec.Body.String()) }
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sync status=%d body=%s", rec.Code, rec.Body.String())
+	}
 	var summary authModelSyncSummary
-	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil { t.Fatal(err) }
-	if summary.Providers != 1 || summary.Succeeded != 1 || summary.Models != 1 { t.Fatalf("explicit existing-route sync was skipped: %#v", summary) }
+	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Providers != 1 || summary.Succeeded != 1 || summary.Models != 1 {
+		t.Fatalf("explicit existing-route sync was skipped: %#v", summary)
+	}
 }
 
 func TestAuthModelSyncKeepsCredentialWhenDiscoveryFails(t *testing.T) {

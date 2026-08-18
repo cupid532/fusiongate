@@ -50,7 +50,7 @@ export function IPPool() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
-      <div className="mb-6 flex items-end justify-between gap-6">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">IP 池</h1>
           <p className="mt-1 text-sm text-muted-foreground">管理渠道的出站代理节点。</p>

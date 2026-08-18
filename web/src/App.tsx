@@ -45,6 +45,7 @@ function pageContent(page: Page) {
 export default function App() {
   const { loading, authenticated } = useAuth()
   const [page, setPage] = useState<Page>(() => (location.hash.slice(1) as Page) || "dashboard")
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   useEffect(() => {
     const onHash = () => setPage((location.hash.slice(1) as Page) || "dashboard")
@@ -55,6 +56,7 @@ export default function App() {
   const navigate = useCallback((p: Page) => {
     location.hash = p
     setPage(p)
+    setSidebarOpen(false)
   }, [])
 
   if (loading) {
@@ -64,10 +66,10 @@ export default function App() {
 
   return (
     <div className="min-h-screen">
-      <Sidebar page={page} onNavigate={navigate} />
-      <div className="ml-[248px]">
-        <Topbar page={page} />
-        <main className="mx-auto max-w-[1680px] px-8 py-7 pb-16">
+      <Sidebar page={page} onNavigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <div className="md:ml-[248px]">
+        <Topbar page={page} onMenu={() => setSidebarOpen(true)} />
+        <main className="mx-auto max-w-[1680px] px-4 py-6 pb-16 sm:px-6 md:px-8 md:py-7">
           <AnimatePresence mode="wait">
             <motion.div
               key={page}

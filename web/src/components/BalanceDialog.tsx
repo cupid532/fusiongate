@@ -109,7 +109,7 @@ export function BalanceDialog({
 
             <div>
               <Label>计价倍率</Label>
-              <div className="mt-2 grid grid-cols-2 gap-3">
+              <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {Object.keys(multiplierLabels).map((k) => (
                   <div key={k} className="flex items-center gap-2">
                     <span className="w-16 text-xs text-muted-foreground">{multiplierLabels[k]}</span>

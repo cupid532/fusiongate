@@ -128,7 +128,7 @@ export function ProviderDialog({
           <DialogDescription>配置上游连接信息与运行参数。</DialogDescription>
         </DialogHeader>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <Label>名称</Label>
             <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="例如：粥API" />

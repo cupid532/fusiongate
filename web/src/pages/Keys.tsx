@@ -80,7 +80,7 @@ export function Keys() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
-      <div className="mb-6 flex items-end justify-between gap-6">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">访问密钥</h1>
           <p className="mt-1 text-sm text-muted-foreground">签发下游 API Key，按权限访问渠道和模型。</p>
@@ -97,7 +97,7 @@ export function Keys() {
             <CardTitle className="text-base">新建密钥</CardTitle>
             <CardDescription>密钥创建后只完整显示一次。</CardDescription>
           </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-4">
+          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="col-span-2 flex flex-col gap-1.5">
               <Label>名称</Label>
               <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="例如：Hermes local" />

@@ -159,12 +159,12 @@ export function Providers() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
-      <div className="mb-6 flex items-end justify-between gap-6">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">上游渠道</h1>
           <p className="mt-1 text-sm text-muted-foreground">管理 API 渠道、优先级与全局故障转移。</p>
         </div>
-        <div className="flex items-end gap-3">
+        <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">故障转移模式</span>
             <select
@@ -220,7 +220,7 @@ export function Providers() {
                 </button>
               ))}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {multiSelect && selected.size > 0 && (
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs text-muted-foreground">已选 {selected.size}</span>

@@ -34,7 +34,7 @@ export function Login() {
   return (
     <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[minmax(360px,1fr)_minmax(420px,560px)]">
       <motion.div
-        className="flex flex-col justify-between overflow-hidden px-[7vw] py-14"
+        className="hidden flex-col justify-between overflow-hidden px-[7vw] py-14 lg:flex"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.6 }}
@@ -87,7 +87,7 @@ export function Login() {
         <div className="text-xs text-muted-foreground/60">Self-hosted · Private by default · OpenAI compatible</div>
       </motion.div>
 
-      <div className="flex items-center border-l bg-card/60 px-16 py-12 backdrop-blur-xl">
+      <div className="flex items-center border-t bg-card/60 px-6 py-12 backdrop-blur-xl lg:border-l lg:border-t-0 lg:px-16">
         <motion.form
           onSubmit={handleSubmit}
           className="mx-auto w-full max-w-[390px]"
@@ -95,6 +95,12 @@ export function Login() {
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5, delay: 0.15 }}
         >
+          <div className="mb-8 flex items-center gap-3 lg:hidden">
+            <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-[#66ab71] to-[#458554] text-white">
+              <Octagon className="h-5 w-5" />
+            </div>
+            <span className="text-lg font-bold tracking-tight">FusionGate</span>
+          </div>
           <div className="mb-4 text-[11px] font-bold uppercase tracking-[0.18em] text-primary">
             Administrator Console
           </div>
