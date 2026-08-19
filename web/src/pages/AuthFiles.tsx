@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network, ListChecks } from "lucide-react"
+import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network, ListChecks, CloudUpload, FileText } from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -273,6 +273,29 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [priority, setPriority] = useState(1)
   const [step, setStep] = useState<"paste" | "preview">("paste")
+  const [fileError, setFileError] = useState("")
+  const [fileName, setFileName] = useState("")
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    // 允许重复选择同一个文件
+    e.target.value = ""
+    if (!file) return
+    if (!/\.(json)$/i.test(file.name)) {
+      setFileError("请选择 .json 格式的凭据文件")
+      setFileName("")
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      setContent(String(reader.result ?? ""))
+      setFileName(file.name)
+      setFileError("")
+    }
+    reader.onerror = () => { setFileError("读取文件失败，请重试") }
+    reader.readAsText(file)
+  }
 
   const preview = useMutation({
     mutationFn: async () =>
@@ -312,12 +335,34 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
         </DialogHeader>
 
         {step === "paste" ? (
-          <Textarea
-            value={content}
-            onChange={(e) => setContent(e.target.value)}
-            placeholder='粘贴凭证 JSON（例如 {"version":1,"kind":"oauth","platform":"codex",...}）'
-            className="min-h-[200px] font-mono text-xs"
-          />
+          <div className="space-y-3">
+            <div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json,application/json"
+                onChange={onPickFile}
+                className="hidden"
+              />
+              <Button variant="outline" type="button" onClick={() => fileInputRef.current?.click()} className="w-full">
+                <CloudUpload className="h-4 w-4" />
+                {fileName ? `已选择：${fileName}` : "选择本地 .json 文件"}
+              </Button>
+              {fileError && <p className="mt-1.5 text-xs text-destructive">{fileError}</p>}
+              {fileName && (
+                <p className="mt-1.5 flex items-center gap-1 text-xs text-muted-foreground">
+                  <FileText className="h-3.5 w-3.5" />
+                  已载入文件内容，可编辑下方文本后点击「预览」；也可直接粘贴代替。
+                </p>
+              )}
+            </div>
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder='粘贴凭证 JSON（例如 {"version":1,"kind":"oauth","platform":"codex",...}），或点击上方选择本地 .json 文件'
+              className="min-h-[180px] font-mono text-xs"
+            />
+          </div>
         ) : (
           <div className="space-y-2">
             <div className="text-sm text-muted-foreground">

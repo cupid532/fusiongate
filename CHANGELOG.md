@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.30
+
+- Allow importing credentials from a local `.json` file in the auth-files import dialog instead of only pasting. A file picker loads the JSON into the editor, keeps the pasted-text fallback, and validates the file extension.
+
 ## V2.29
 
 - Rework the console around a heavier operational-analytics suite. The usage page is now a multi-view analyzer with Overview / Trends / Model / Key / Provider / Heatmap tabs, per-dimension ranking with one-click drill-down, and a model-by-day usage heatmap backed by a new `heatmap` capability on the `/api/admin/token-usage` endpoint (top models by token volume, log-scaled).
