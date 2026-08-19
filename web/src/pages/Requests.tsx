@@ -4,11 +4,12 @@ import { motion } from "motion/react"
 import { RefreshCw, Search } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider, RequestLedgerRow } from "@/lib/types"
-import { cn, formatCost } from "@/lib/utils"
+import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { SegmentedTabs } from "@/components/ui/segmented-tabs"
 
 type StatusFilter = "all" | "running" | "success" | "failed"
 
@@ -39,6 +40,7 @@ export function Requests() {
   const [q, setQ] = useState("")
   const [providerId, setProviderId] = useState("")
   const [range, setRange] = useState("")
+  const [view, setView] = useState<"list" | "group">("list")
 
   const { data: providers = [] } = useQuery({
     queryKey: ["providers"],
@@ -64,6 +66,35 @@ export function Requests() {
     refetchInterval: 5000,
   })
 
+  const groupByModel = useMemo(() => {
+    const map = new Map<string, { model: string; count: number; success: number; failed: number; tokens: number; cost_micros: number; avg_latency: number }>()
+    for (const r of rows) {
+      const g = map.get(r.model) ?? { model: r.model, count: 0, success: 0, failed: 0, tokens: 0, cost_micros: 0, avg_latency: 0 }
+      g.count++
+      if (r.success) g.success++
+      else if (!r.running) g.failed++
+      g.tokens += r.total_tokens
+      g.cost_micros += r.cost_micros
+      if (r.latency_ms) g.avg_latency += r.latency_ms
+      map.set(r.model, g)
+    }
+    const list = [...map.values()]
+      .map((g) => ({ ...g, avg_latency: g.count ? Math.round(g.avg_latency / g.count) : 0 }))
+      .sort((a, b) => b.tokens - a.tokens)
+    return { list, maxTokens: Math.max(1, ...list.map((g) => g.tokens)) }
+  }, [rows])
+
+  const summary = useMemo(() => {
+    let cost = 0, tokens = 0, failed = 0, ok = 0
+    for (const r of rows) {
+      cost += r.cost_micros
+      tokens += r.total_tokens
+      if (r.success) ok++
+      else if (!r.running) failed++
+    }
+    return { count: rows.length, ok, failed, tokens, cost }
+  }, [rows])
+
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -75,6 +106,31 @@ export function Requests() {
           <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
           刷新
         </Button>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {[
+          { label: "当前范围请求", value: String(summary.count), tone: "text-foreground" },
+          { label: "成功", value: String(summary.ok), tone: "text-emerald-600" },
+          { label: "失败", value: String(summary.failed), tone: summary.failed ? "text-destructive" : "text-muted-foreground" },
+          { label: "总 Token · 费用", value: `${formatTokens(summary.tokens)} · ${formatCost(summary.cost)}`, tone: "text-primary" },
+        ].map((s) => (
+          <div key={s.label} className="rounded-xl border bg-card p-3">
+            <div className="text-[11px] text-muted-foreground">{s.label}</div>
+            <div className={cn("mt-1 text-lg font-bold tabular-nums", s.tone)}>{s.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mb-3">
+        <SegmentedTabs<"list" | "group">
+          value={view}
+          onChange={setView}
+          tabs={[
+            { value: "list", label: "明细" },
+            { value: "group", label: "按模型分组", count: groupByModel.list.length },
+          ]}
+        />
       </div>
 
       <Card>
@@ -134,6 +190,32 @@ export function Requests() {
             <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
           ) : rows.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">当前筛选范围还没有请求</div>
+          ) : view === "group" ? (
+            <div className="p-4">
+              <div className="space-y-2">
+                {groupByModel.list.map((g, i) => (
+                  <div key={g.model} className="rounded-lg border p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                        <span className="text-[10px] text-muted-foreground tabular-nums">#{i + 1}</span>
+                        <span className="truncate font-mono">{g.model}</span>
+                        <span className="shrink-0 text-[10px] text-muted-foreground">{g.count} 请求</span>
+                      </div>
+                      <div className="shrink-0 text-sm font-semibold tabular-nums">{formatTokens(g.tokens)}</div>
+                    </div>
+                    <div className="mt-2 h-1.5 rounded-full bg-muted">
+                      <div className="h-1.5 rounded-full bg-gradient-to-r from-primary/60 to-primary" style={{ width: `${(g.tokens / groupByModel.maxTokens) * 100}%` }} />
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                      <span>成功 <span className="font-semibold text-emerald-600">{g.success}</span></span>
+                      <span>失败 <span className={cn("font-semibold", g.failed ? "text-destructive" : "")}>{g.failed}</span></span>
+                      <span>均延迟 {duration(g.avg_latency)}</span>
+                      <span>费用 {formatCost(g.cost_micros)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">

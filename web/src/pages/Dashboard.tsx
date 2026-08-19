@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { animate, motion, useMotionValue } from "motion/react"
-import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, Copy, Check } from "lucide-react"
+import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, Copy, Check, ShieldCheck, HardHat } from "lucide-react"
 import { api } from "@/lib/api"
 import { formatCost, formatTokens, cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { EmptyState } from "@/components/ui/empty-state"
+import type { Provider } from "@/lib/types"
 
 type DashboardData = {
   providers: number
@@ -57,6 +59,23 @@ export function Dashboard() {
     queryFn: () => api<DashboardData>("/api/admin/dashboard"),
     staleTime: 30_000,
   })
+  const { data: providers = [] } = useQuery({
+    queryKey: ["providers"],
+    queryFn: () => api<Provider[]>("/api/admin/providers"),
+    staleTime: 30_000,
+  })
+
+  const health = useMemo(() => {
+    const totals = { total: providers.length, healthy: 0, unhealthy: 0, unknown: 0 }
+    for (const p of providers) {
+      if (!p.enabled) continue
+      if (p.health_check_status === "healthy") totals.healthy++
+      else if (p.health_check_status === "unhealthy") totals.unhealthy++
+      else totals.unknown++
+    }
+    const healthyPct = totals.total ? Math.round((totals.healthy / totals.total) * 100) : 0
+    return { ...totals, healthyPct }
+  }, [providers])
 
   const [copied, setCopied] = useState(false)
 
@@ -121,6 +140,63 @@ export function Dashboard() {
             </motion.div>
           )
         })}
+      </div>
+
+      <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-[0.65fr_1.35fr]">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-primary" />
+              <CardTitle className="text-base">渠道健康度</CardTitle>
+            </div>
+            <CardDescription>基于启用渠道的最近健康检测。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {providers.length === 0 ? (
+              <EmptyState title="暂无渠道" description="添加上游 Provider 后即可查看健康概览。" />
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-end gap-3">
+                  <div className="text-4xl font-bold tabular-nums">{health.healthyPct}%</div>
+                  <div className="pb-1 text-xs text-muted-foreground">健康率</div>
+                </div>
+                <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
+                  <div className="h-full bg-emerald-500" style={{ width: `${health.healthyPct}%` }} />
+                  <div className="h-full bg-destructive" style={{ width: `${health.unhealthy ? (health.unhealthy / Math.max(1, health.total)) * 100 : 0}%` }} />
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>渠道 <span className="font-semibold text-foreground">{health.total}</span></span>
+                  <span>健康 <span className="font-semibold text-emerald-600">{health.healthy}</span></span>
+                  <span>不健康 <span className={cn("font-semibold", health.unhealthy ? "text-destructive" : "")}>{health.unhealthy}</span></span>
+                  <span>待检测 <span className="font-semibold">{health.unknown}</span></span>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">聚合健康状态</CardTitle>
+            <CardDescription>近 24 小时请求与失败情况。</CardDescription>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {[
+              { label: "24h 失败请求", value: String(data.failures_24h), tone: data.failures_24h ? "text-destructive" : "text-emerald-600" },
+              { label: "今日请求", value: String(data.today_requests), tone: "text-foreground" },
+              { label: "累计请求", value: formatTokens(data.requests), tone: "text-foreground" },
+            ].map((s) => (
+              <div key={s.label} className="rounded-xl border bg-card p-3">
+                <div className="text-[11px] text-muted-foreground">{s.label}</div>
+                <div className={cn("mt-1 text-2xl font-bold tabular-nums", s.tone)}>{s.value}</div>
+              </div>
+            ))}
+            <div className="col-span-2 flex items-center gap-2 rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground sm:col-span-3">
+              <HardHat className="h-4 w-4 text-primary" />
+              健康状态由质量检测与健康检查共同驱动；详细情况请在「质量检测」与「上游渠道」中查看。
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.35fr_0.65fr]">

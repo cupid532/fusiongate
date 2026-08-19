@@ -1,4 +1,6 @@
-import { Menu, Moon, Sun, LogOut } from "lucide-react"
+import { useEffect, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
+import { Menu, Moon, Sun, LogOut, RefreshCw, ExternalLink } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useTheme } from "@/providers/theme"
 import { useAuth } from "@/providers/auth"
@@ -15,9 +17,25 @@ const titles: Record<string, string> = {
   quality: "质量检测",
 }
 
+const GITHUB_URL = "https://github.com/cupid532/fusiongate"
+
 export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
   const { theme, toggle } = useTheme()
   const { logout } = useAuth()
+  const queryClient = useQueryClient()
+  const [refreshing, setRefreshing] = useState(false)
+  const [version, setVersion] = useState("")
+
+  useEffect(() => {
+    setVersion(document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
+  }, [])
+
+  async function refreshAll() {
+    setRefreshing(true)
+    await queryClient.invalidateQueries()
+    // 等待后台重取一段时间后关闭动画
+    setTimeout(() => setRefreshing(false), 800)
+  }
 
   return (
     <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-2 border-b bg-background/80 px-4 backdrop-blur-md sm:px-6 md:px-8">
@@ -29,9 +47,16 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
           <span className="text-muted-foreground/60">FusionGate</span>
           <span className="mx-2">/</span>
           <span className="text-foreground">{titles[page] ?? "概览"}</span>
+          {version && <span className="ml-2 rounded border px-1.5 py-0.5 align-middle text-[10px] font-normal text-muted-foreground">{version}</span>}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button variant="ghost" size="icon" onClick={() => void refreshAll()} aria-label="刷新全部" title="刷新全部数据">
+          <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+        </Button>
+        <Button variant="ghost" size="icon" onClick={() => window.open(GITHUB_URL, "_blank")} aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库">
+          <ExternalLink className="h-4 w-4" />
+        </Button>
         <Button variant="ghost" size="icon" onClick={toggle} aria-label="切换明暗主题">
           {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
         </Button>

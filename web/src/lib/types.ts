@@ -199,6 +199,15 @@ export interface TokenUsageMetrics {
   cost_coverage: number
 }
 
+export interface TokenUsageHeatmapCell {
+  model: string
+  upstream_model?: string
+  date: string
+  requests: number
+  total_tokens: number
+  cost_micros: number
+}
+
 export interface TokenUsageResponse {
   period: { days: number; from: string; to: string; retention_days: number; timezone: string }
   totals: TokenUsageMetrics
@@ -206,6 +215,7 @@ export interface TokenUsageResponse {
   by_keys: ({ id?: number; name: string; prefix?: string } & TokenUsageMetrics)[]
   by_providers: ({ id?: number; name: string } & TokenUsageMetrics)[]
   by_models: ({ name: string; upstream_model?: string } & TokenUsageMetrics)[]
+  heatmap?: TokenUsageHeatmapCell[]
   details: any[]
   page: number
   page_size: number

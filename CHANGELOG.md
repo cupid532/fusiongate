@@ -1,5 +1,13 @@
 # Changelog
 
+## V2.29
+
+- Rework the console around a heavier operational-analytics suite. The usage page is now a multi-view analyzer with Overview / Trends / Model / Key / Provider / Heatmap tabs, per-dimension ranking with one-click drill-down, and a model-by-day usage heatmap backed by a new `heatmap` capability on the `/api/admin/token-usage` endpoint (top models by token volume, log-scaled).
+- Add a grouped view to the request ledger with an at-a-glance summary strip (requests, successes, failures, tokens and cost) plus per-model groupings and share bars.
+- Add a provider-health and aggregate-status panel to the dashboard, surfacing health rating, per-state channel counts, and 24h request/failure totals.
+- Add global console actions to the top bar: refresh-all (invalidates every active query), a link to the GitHub repository, and a running version badge.
+- Introduce reusable console primitives: `EmptyState`, `SegmentedTabs`, `StatCard`, and a lightweight `Heatmap` component.
+
 ## V2.19
 
 - Extend the unified `/v1` entry point to cover the full agent modality set: text-to-speech (`/v1/audio/speech`), speech-to-text transcriptions (`/v1/audio/transcriptions`, multipart passthrough) and vector embeddings (`/v1/embeddings`). All three reuse the existing capability-routing and failover pipeline (`audio_speech` / `audio_transcribe` / `embedding` route capabilities), so circuit breakers, half-open recovery, IP-pool egress and the request ledger apply unchanged.

@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"context"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,6 +33,16 @@ type tokenUsageMetrics struct {
 type tokenUsageSeriesPoint struct {
 	Date string `json:"date"`
 	tokenUsageMetrics
+}
+
+// tokenUsageHeatmapCell is one (model, day) cell aggregated from the request ledger.
+type tokenUsageHeatmapCell struct {
+	Model         string `json:"model"`
+	UpstreamModel string `json:"upstream_model"`
+	Date          string `json:"date"`
+	Requests      int64  `json:"requests"`
+	TotalTokens   int64  `json:"total_tokens"`
+	CostMicros    int64  `json:"cost_micros"`
 }
 
 type tokenUsageRank struct {
@@ -75,6 +86,7 @@ type tokenUsageResponse struct {
 	ByKeys      []tokenUsageRank        `json:"by_keys"`
 	ByProviders []tokenUsageRank        `json:"by_providers"`
 	ByModels    []tokenUsageRank        `json:"by_models"`
+	Heatmap     []tokenUsageHeatmapCell `json:"heatmap,omitempty"`
 	Details     []tokenUsageDetail      `json:"details"`
 	Page        int                     `json:"page"`
 	PageSize    int                     `json:"page_size"`
@@ -307,6 +319,13 @@ func (a *App) tokenUsage(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
+	if strings.TrimSpace(r.URL.Query().Get("heatmap")) == "1" {
+		response.Heatmap, err = a.tokenUsageHeatmap(from, days, where, args)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+	}
 	response.Details, response.HasMore, err = a.tokenUsageDetails(where, args, page, pageSize)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -369,6 +388,79 @@ func (a *App) tokenUsageModelRanks(where string, args []any) ([]tokenUsageRank, 
 		GROUP BY l.public_model,l.upstream_model
 		ORDER BY COALESCE(SUM(l.input_tokens+l.output_tokens),0) DESC,l.public_model,l.upstream_model LIMIT 10`
 	return a.scanTokenUsageRanks(query, args, false, true)
+}
+
+// tokenUsageHeatmap returns per-model, per-day token aggregates limited to the
+// top heatmapMaxRows models by total tokens for the requested range. The front
+// end renders this as a model-by-day heatmap.
+func (a *App) tokenUsageHeatmap(from time.Time, days int, where string, args []any) ([]tokenUsageHeatmapCell, error) {
+	const heatmapMaxRows = 12
+	query := `SELECT l.public_model,l.upstream_model,substr(l.created_at,1,10),` +
+		`COUNT(*),COALESCE(SUM(l.input_tokens+l.output_tokens),0),COALESCE(SUM(l.cost_micros),0) ` +
+		`FROM request_ledger l WHERE ` + where + ` ` +
+		`GROUP BY l.public_model,l.upstream_model,substr(l.created_at,1,10)`
+	rows, err := a.reader().Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var order []string
+	totalByModel := map[string]int64{}
+	cellsByModel := map[string]map[string]tokenUsageHeatmapCell{}
+	for rows.Next() {
+		var model, upstream, date string
+		var requests, tokens, cost int64
+		if err := rows.Scan(&model, &upstream, &date, &requests, &tokens, &cost); err != nil {
+			return nil, err
+		}
+		if _, ok := totalByModel[model]; !ok {
+			order = append(order, model)
+		}
+		totalByModel[model] += tokens
+		if cellsByModel[model] == nil {
+			cellsByModel[model] = map[string]tokenUsageHeatmapCell{}
+		}
+		cellsByModel[model][date] = tokenUsageHeatmapCell{
+			Model:         model,
+			UpstreamModel: upstream,
+			Date:          date,
+			Requests:      requests,
+			TotalTokens:   tokens,
+			CostMicros:    cost,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	sort.SliceStable(order, func(i, j int) bool {
+		return totalByModel[order[i]] > totalByModel[order[j]]
+	})
+	if len(order) > heatmapMaxRows {
+		order = order[:heatmapMaxRows]
+	}
+
+	result := make([]tokenUsageHeatmapCell, 0, len(order)*days)
+	for _, model := range order {
+		daily := cellsByModel[model]
+		var upstream string
+		for _, c := range daily {
+			upstream = c.UpstreamModel
+			break
+		}
+		for day := 0; day < days; day++ {
+			date := from.AddDate(0, 0, day).Format("2006-01-02")
+			cell, ok := daily[date]
+			if !ok {
+				cell.Model = model
+				cell.UpstreamModel = upstream
+				cell.Date = date
+			}
+			result = append(result, cell)
+		}
+	}
+	return result, nil
 }
 
 func (a *App) scanTokenUsageRanks(query string, args []any, withPrefix, modelRank bool) ([]tokenUsageRank, error) {
