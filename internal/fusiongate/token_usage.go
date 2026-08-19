@@ -105,6 +105,11 @@ func (a *App) pruneRequestLedger(ctx context.Context, force bool) error {
 	if _, err := a.db.ExecContext(ctx, `DELETE FROM request_ledger WHERE created_at < ?`, cutoff); err != nil {
 		return err
 	}
+	// Capacity-based trimming on the same schedule; a forced prune trims regardless.
+	// (pruneRequestLedger already holds the cleanup lock.)
+	if err := a.pruneLedgerToCapacityLocked(ctx); err != nil {
+		return err
+	}
 	a.lastLedgerCleanup = current
 	return nil
 }

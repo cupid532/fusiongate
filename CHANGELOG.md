@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.31
+
+- Manage the request ledger by capacity instead of a fixed row limit. The console now shows current vs. configured usage (in MB, default 100, adjustable 1 MB – 10 GB) with a progress bar, an editable cap that trims immediately when lowered, one-click clear, and JSON export that honors the current time-range and status filters.
+- Back the feature with new endpoints: `GET/PUT /api/admin/ledger` (status + capacity cap), `POST /api/admin/ledger/clear`, and `GET /api/admin/ledger/export`. The periodic retention loop now also trims the oldest rows whenever estimated on-disk usage exceeds the cap.
+
 ## V2.30
 
 - Allow importing credentials from a local `.json` file in the auth-files import dialog instead of only pasting. A file picker loads the JSON into the editor, keeps the pasted-text fallback, and validates the file extension.

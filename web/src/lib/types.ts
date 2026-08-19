@@ -208,6 +208,14 @@ export interface TokenUsageHeatmapCell {
   cost_micros: number
 }
 
+export interface LedgerStatus {
+  max_mb: number
+  used_mb: number
+  est_bytes: number
+  rows: number
+  capped: boolean
+}
+
 export interface TokenUsageResponse {
   period: { days: number; from: string; to: string; retention_days: number; timezone: string }
   totals: TokenUsageMetrics

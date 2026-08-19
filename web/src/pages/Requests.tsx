@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { RefreshCw, Search } from "lucide-react"
-import { api } from "@/lib/api"
-import type { Provider, RequestLedgerRow } from "@/lib/types"
+import { RefreshCw, Search, Trash2, Download, HardDrive, Save } from "lucide-react"
+import { api, getCsrfToken } from "@/lib/api"
+import type { Provider, RequestLedgerRow, LedgerStatus } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -46,6 +46,61 @@ export function Requests() {
     queryKey: ["providers"],
     queryFn: () => api<Provider[]>("/api/admin/providers"),
   })
+
+  const qc = useQueryClient()
+  const [capDraft, setCapDraft] = useState("")
+  const { data: ledger } = useQuery({
+    queryKey: ["ledger"],
+    queryFn: () => api<LedgerStatus>("/api/admin/ledger"),
+    staleTime: 10_000,
+  })
+  const updateCap = useMutation({
+    mutationFn: (maxMb: number) => api<LedgerStatus>("/api/admin/ledger", { method: "PUT", body: JSON.stringify({ max_mb: maxMb }) }),
+    onSuccess: (r) => {
+      qc.setQueryData(["ledger"], r)
+      qc.invalidateQueries({ queryKey: ["requests"] })
+      qc.invalidateQueries({ queryKey: ["ledger"] })
+    },
+  })
+  const clearLedger = useMutation({
+    mutationFn: () => api<{ ok: boolean }>("/api/admin/ledger/clear", { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["requests"] })
+      qc.invalidateQueries({ queryKey: ["ledger"] })
+      qc.invalidateQueries({ queryKey: ["usage"] })
+      qc.invalidateQueries({ queryKey: ["dashboard"] })
+    },
+  })
+
+  let maxMb = ledger?.max_mb ?? 100
+  if (typeof capDraft === "string" && capDraft.trim() !== "") {
+    const parsed = Number(capDraft)
+    if (Number.isFinite(parsed) && parsed > 0) maxMb = parsed
+  }
+
+  async function exportLedger() {
+    // Export honors the time-range and status filters (the same ones the list uses).
+    const q = new URLSearchParams()
+    if (status !== "all") q.set("status", status)
+    if (range) {
+      const now = new Date()
+      const ms: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
+      if (ms[range]) q.set("from", new Date(now.getTime() - ms[range]).toISOString())
+    }
+    const qs = q.toString()
+    try {
+      const res = await fetch(`/api/admin/ledger/export${qs ? `?${qs}` : ""}`, { headers: { "X-CSRF-Token": getCsrfToken() } })
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      /* ignore */
+    }
+  }
 
   const params = useMemo(() => {
     const p = new URLSearchParams({ limit: "100" })
@@ -121,6 +176,70 @@ export function Requests() {
           </div>
         ))}
       </div>
+
+      <Card className="mb-4">
+        <CardContent className="p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-1 items-center gap-4">
+              <HardDrive className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-muted-foreground">请求容量</span>
+                  <span className="tabular-nums text-muted-foreground">
+                    当前 {ledger?.used_mb ?? "—"} MB / 上限 {maxMb} MB
+                    {ledger?.rows != null && <span className="ml-2">· {ledger.rows.toLocaleString()} 行</span>}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex h-2 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className={cn("h-full rounded-full transition-all", ledger?.capped ? "bg-destructive" : "bg-gradient-to-r from-primary/60 to-primary")}
+                    style={{ width: `${Math.min(100, ((ledger?.used_mb ?? 0) / Math.max(1, maxMb)) * 100)}%` }}
+                  />
+                </div>
+                {ledger?.capped && <p className="mt-1 text-xs text-destructive">已超出容量上限，后台会自动裁剪最旧记录。</p>}
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Input
+                  type="number"
+                  min={1}
+                  max={10240}
+                  value={capDraft}
+                  onChange={(e) => setCapDraft(e.target.value)}
+                  placeholder={String(ledger?.max_mb ?? 100)}
+                  className="h-8 w-20 px-2 text-xs tabular-nums"
+                />
+                <span className="text-xs text-muted-foreground">MB</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={updateCap.isPending || !(Number(capDraft) > 0 && Number(capDraft) <= 10240)}
+                  onClick={() => updateCap.mutate(Number(capDraft))}
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  保存上限
+                </Button>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2 border-t pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+              <Button variant="outline" size="sm" onClick={() => exportLedger()} disabled={ledger?.rows === 0}>
+                <Download className="h-3.5 w-3.5" />
+                导出
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                disabled={clearLedger.isPending || ledger?.rows === 0}
+                onClick={() => {
+                  if (window.confirm("确定清空整个请求账本？此操作不可恢复。")) clearLedger.mutate()
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {clearLedger.isPending ? "清空中…" : "一键清除"}
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="mb-3">
         <SegmentedTabs<"list" | "group">
