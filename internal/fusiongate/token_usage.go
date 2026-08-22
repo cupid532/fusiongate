@@ -36,13 +36,19 @@ type tokenUsageSeriesPoint struct {
 }
 
 // tokenUsageHeatmapCell is one (model, day) cell aggregated from the request ledger.
+// It carries the full token breakdown (input/cached/output/reasoning) plus the real
+// cost so the console can render a metric-switchable heatmap and precise tooltips.
 type tokenUsageHeatmapCell struct {
-	Model         string `json:"model"`
-	UpstreamModel string `json:"upstream_model"`
-	Date          string `json:"date"`
-	Requests      int64  `json:"requests"`
-	TotalTokens   int64  `json:"total_tokens"`
-	CostMicros    int64  `json:"cost_micros"`
+	Model           string `json:"model"`
+	UpstreamModel   string `json:"upstream_model"`
+	Date            string `json:"date"`
+	Requests        int64  `json:"requests"`
+	InputTokens     int64  `json:"input_tokens"`
+	OutputTokens    int64  `json:"output_tokens"`
+	CachedTokens    int64  `json:"cached_tokens"`
+	ReasoningTokens int64  `json:"reasoning_tokens"`
+	TotalTokens     int64  `json:"total_tokens"`
+	CostMicros      int64  `json:"cost_micros"`
 }
 
 type tokenUsageRank struct {
@@ -401,7 +407,10 @@ func (a *App) tokenUsageModelRanks(where string, args []any) ([]tokenUsageRank, 
 func (a *App) tokenUsageHeatmap(from time.Time, days int, where string, args []any) ([]tokenUsageHeatmapCell, error) {
 	const heatmapMaxRows = 12
 	query := `SELECT l.public_model,l.upstream_model,substr(l.created_at,1,10),` +
-		`COUNT(*),COALESCE(SUM(l.input_tokens+l.output_tokens),0),COALESCE(SUM(l.cost_micros),0) ` +
+		`COUNT(*),` +
+		`COALESCE(SUM(l.input_tokens),0),COALESCE(SUM(l.output_tokens),0),` +
+		`COALESCE(SUM(l.cached_tokens),0),COALESCE(SUM(l.reasoning_tokens),0),` +
+		`COALESCE(SUM(l.input_tokens+l.output_tokens),0),COALESCE(SUM(l.cost_micros),0) ` +
 		`FROM request_ledger l WHERE ` + where + ` ` +
 		`GROUP BY l.public_model,l.upstream_model,substr(l.created_at,1,10)`
 	rows, err := a.reader().Query(query, args...)
@@ -415,8 +424,8 @@ func (a *App) tokenUsageHeatmap(from time.Time, days int, where string, args []a
 	cellsByModel := map[string]map[string]tokenUsageHeatmapCell{}
 	for rows.Next() {
 		var model, upstream, date string
-		var requests, tokens, cost int64
-		if err := rows.Scan(&model, &upstream, &date, &requests, &tokens, &cost); err != nil {
+		var requests, input, output, cached, reasoning, tokens, cost int64
+		if err := rows.Scan(&model, &upstream, &date, &requests, &input, &output, &cached, &reasoning, &tokens, &cost); err != nil {
 			return nil, err
 		}
 		if _, ok := totalByModel[model]; !ok {
@@ -427,12 +436,16 @@ func (a *App) tokenUsageHeatmap(from time.Time, days int, where string, args []a
 			cellsByModel[model] = map[string]tokenUsageHeatmapCell{}
 		}
 		cellsByModel[model][date] = tokenUsageHeatmapCell{
-			Model:         model,
-			UpstreamModel: upstream,
-			Date:          date,
-			Requests:      requests,
-			TotalTokens:   tokens,
-			CostMicros:    cost,
+			Model:           model,
+			UpstreamModel:   upstream,
+			Date:            date,
+			Requests:        requests,
+			InputTokens:     input,
+			OutputTokens:    output,
+			CachedTokens:    cached,
+			ReasoningTokens: reasoning,
+			TotalTokens:     tokens,
+			CostMicros:      cost,
 		}
 	}
 	if err := rows.Err(); err != nil {

@@ -43,11 +43,11 @@ func codexImageRequest(raw []byte, upstreamModel string) ([]byte, error) {
 	if value, exists := source["n"]; exists {
 		n := num(value)
 		if n != 1 {
-			return nil, errors.New("Codex OAuth image generation supports exactly one image per request (n=1); use an OpenAI-compatible image channel for n>1, or call this endpoint multiple times")
+			return nil, errors.New("codex OAuth image generation supports exactly one image per request (n=1); use an OpenAI-compatible image channel for n>1, or call this endpoint multiple times")
 		}
 	}
 	if responseFormat, _ := source["response_format"].(string); responseFormat != "" && responseFormat != "b64_json" {
-		return nil, errors.New("Codex OAuth image generation supports response_format=b64_json only")
+		return nil, errors.New("codex OAuth image generation supports response_format=b64_json only")
 	}
 
 	tool := map[string]any{"type": "image_generation"}
@@ -57,7 +57,7 @@ func codexImageRequest(raw []byte, upstreamModel string) ([]byte, error) {
 		}
 	}
 	if background, _ := tool["background"].(string); background == "transparent" {
-		return nil, errors.New("Codex OAuth image generation does not support a transparent background")
+		return nil, errors.New("codex OAuth image generation does not support a transparent background")
 	}
 
 	// gpt-image-2 is a built-in tool backend, not the outer Responses model.
@@ -105,11 +105,11 @@ func parseCodexImageSSE(raw []byte) (codexImageResult, error) {
 		if result.UpstreamError != "" {
 			return result, fmt.Errorf("image tool failed: %s", result.UpstreamError)
 		}
-		return result, errors.New("Codex response completed without an image result")
+		return result, errors.New("codex response completed without an image result")
 	}
 	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(result.Base64))
 	if _, err := io.Copy(io.Discard, decoder); err != nil {
-		return codexImageResult{}, errors.New("Codex returned an invalid base64 image result")
+		return codexImageResult{}, errors.New("codex returned an invalid base64 image result")
 	}
 	return result, nil
 }
@@ -212,7 +212,7 @@ func (a *App) codexImageProxy(w http.ResponseWriter, incoming *http.Request, raw
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_stream_interrupted", Err: err}
 	}
 	if len(responseBody) > maxCodexImageResponse {
-		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "image_response_too_large", Err: errors.New("Codex image response exceeded the gateway limit")}
+		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "image_response_too_large", Err: errors.New("codex image response exceeded the gateway limit")}
 	}
 	image, err := parseCodexImageSSE(responseBody)
 	if err != nil {

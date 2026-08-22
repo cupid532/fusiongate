@@ -1,5 +1,14 @@
 # Changelog
 
+## V2.35
+
+- Rework the usage heatmap to carry the full token breakdown (input / cached / output / reasoning) plus real cost per model-day cell, and let the console switch the heatmap coloring between total, input, cached, output, and cost.
+- Fix the heatmap tooltip showing a hardcoded zero cost; it now renders the precise input / cached / output split and the real cost for each cell.
+- Replace the single-color daily token trend with a stacked input / cached / output bar so usage is no longer reduced to a single token figure.
+- Show the input / cached / output breakdown on model, key, and provider ranking rows instead of a bare total-token count.
+- Fix a stale-closure issue in health-check job polling and stabilize the quality-detector target list to avoid needless re-memoization.
+- Remove the dead `completedResponsesSSE` helper and normalize error strings to lowercase-leading per Go conventions.
+
 ## V2.34
 
 - Generalize protocol selection with provider-level `auto` and `fixed` policies plus an ordered `protocol_preference` (`responses`, `messages`, `chat`).

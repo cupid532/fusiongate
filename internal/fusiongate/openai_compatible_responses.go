@@ -42,7 +42,7 @@ func compatibleResponsesBodyFromRequest(raw []byte, upstreamModel string) ([]byt
 		}
 	}
 	if len(messages) == 0 {
-		return nil, downstreamStream, errors.New("Responses input could not be converted to chat messages")
+		return nil, downstreamStream, errors.New("responses input could not be converted to chat messages")
 	}
 	body := map[string]any{
 		"model": upstreamModel, "messages": messages, "stream": true,

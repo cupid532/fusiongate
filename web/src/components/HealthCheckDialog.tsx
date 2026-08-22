@@ -80,11 +80,12 @@ export function HealthCheckDialog({
   }, [open])
 
   useEffect(() => {
-    if (!job) return
+    const id = job?.id
+    if (id == null) return
     let timer: ReturnType<typeof setTimeout>
     const poll = async () => {
       try {
-        const cur = await api<HealthJob>(`/api/admin/health-checks/${job.id}`)
+        const cur = await api<HealthJob>(`/api/admin/health-checks/${id}`)
         setJob(cur)
         if (cur.status === "running" || cur.status === "queued") {
           timer = setTimeout(poll, 1500)

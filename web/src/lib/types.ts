@@ -204,6 +204,10 @@ export interface TokenUsageHeatmapCell {
   upstream_model?: string
   date: string
   requests: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  reasoning_tokens: number
   total_tokens: number
   cost_micros: number
 }

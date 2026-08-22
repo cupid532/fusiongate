@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { Coins, Boxes, KeyRound, Server, Activity, BarChart3, Flame, RefreshCw } from "lucide-react"
 import { api } from "@/lib/api"
-import type { APIKey, Provider, TokenUsageResponse } from "@/lib/types"
+import type { APIKey, Provider, TokenUsageHeatmapCell, TokenUsageResponse } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -22,6 +22,8 @@ const ranges = [
 
 type Tab = "overview" | "trends" | "models" | "keys" | "providers" | "heatmap"
 
+type HeatmapMetric = "total_tokens" | "input_tokens" | "output_tokens" | "cached_tokens" | "cost_micros"
+
 const inputStyles = "h-9 rounded-md border border-input bg-transparent px-2 text-sm"
 
 export function Usage() {
@@ -30,6 +32,7 @@ export function Usage() {
   const [providerId, setProviderId] = useState("")
   const [model, setModel] = useState("")
   const [tab, setTab] = useState<Tab>("overview")
+  const [heatmapMetric, setHeatmapMetric] = useState<HeatmapMetric>("total_tokens")
 
   const { data: providers = [] } = useQuery({
     queryKey: ["providers"],
@@ -59,27 +62,32 @@ export function Usage() {
     return Math.max(1, ...data.series.map((s) => s.total_tokens))
   }, [data])
 
-  // Heatmap matrix: rows(top models) x cols(dates)
+  // Heatmap grid: rows(top models) x cols(dates). Each cell keeps the full
+  // ledger aggregate so the tooltip can show the input/cached/output split
+  // with the real cost, and the metric switcher can re-color the grid.
   const heatmap = useMemo(() => {
     const cells = data?.heatmap ?? []
     if (!cells.length) return null
     const modelOrder: string[] = []
-    const byModel = new Map<string, Map<string, number>>()
+    const byModel = new Map<string, Map<string, TokenUsageHeatmapCell>>()
     // maintain top-model order (backend already returns top first)
     for (const c of cells) {
       if (!byModel.has(c.model)) {
         byModel.set(c.model, new Map())
         modelOrder.push(c.model)
       }
-      byModel.get(c.model)!.set(c.date, c.total_tokens)
+      byModel.get(c.model)!.set(c.date, c)
     }
     const dates = [...new Set(cells.map((c) => c.date))].sort()
     const colLabels = dates.map((d) => d.slice(8)) // MM-DD -> DD
-    const colTooltips = dates
-    const matrix = modelOrder.map((model) => dates.map((date) => byModel.get(model)!.get(date) ?? 0))
-    const modelTooltips = new Map(cells.map((c) => [c.model, c.upstream_model]))
-    return { matrix, rowLabels: modelOrder, colLabels, colTooltips, modelTooltips: modelTooltips as Map<string, string | undefined> }
+    const grid = modelOrder.map((model) => dates.map((date) => byModel.get(model)!.get(date) ?? null))
+    return { grid, rowLabels: modelOrder, colLabels, dates }
   }, [data?.heatmap])
+
+  const heatmapMatrix = useMemo(() => {
+    if (!heatmap) return []
+    return heatmap.grid.map((row) => row.map((c) => (c ? c[heatmapMetric] : 0)))
+  }, [heatmap, heatmapMetric])
 
   const stats = [
     { label: "估算费用", value: formatCost(data?.totals.cost_micros ?? 0), tone: "text-amber-600", icon: <Coins className="h-4 w-4" /> },
@@ -147,13 +155,22 @@ export function Usage() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">每日 Token 趋势</CardTitle>
-                  <CardDescription>按日聚合的总 Token 用量。</CardDescription>
+                  <CardDescription>按日聚合的输入 / 缓存 / 输出 Token 堆叠。</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="flex h-48 items-end gap-1">
-                    {data.series.map((s, i) => (
-                      <motion.div key={i} className="flex-1 rounded-t bg-gradient-to-t from-primary/50 to-primary" initial={{ height: 0 }} animate={{ height: `${Math.max(2, (s.total_tokens / maxTokens) * 100)}%` }} transition={{ duration: 0.5, delay: i * 0.01, ease: [0.16, 1, 0.3, 1] }} title={`${s.date}: ${formatTokens(s.total_tokens)}`} />
-                    ))}
+                    {data.series.map((s, i) => {
+                      const total = Math.max(1, s.input_tokens + s.output_tokens)
+                      const h = Math.max(2, (total / maxTokens) * 100)
+                      const uncachedInput = Math.max(0, s.input_tokens - s.cached_tokens)
+                      return (
+                        <div key={i} className="flex h-full flex-1 flex-col justify-end gap-px" title={`${s.date}\n输入 ${formatTokens(s.input_tokens)} · 缓存 ${formatTokens(s.cached_tokens)} · 输出 ${formatTokens(s.output_tokens)}`}>
+                          <motion.div className="w-full bg-orange-400" initial={{ height: 0 }} animate={{ height: `${(s.output_tokens / total) * h}%` }} transition={{ duration: 0.5, delay: i * 0.01, ease: [0.16, 1, 0.3, 1] }} />
+                          <motion.div className="w-full bg-violet-400" initial={{ height: 0 }} animate={{ height: `${(s.cached_tokens / total) * h}%` }} transition={{ duration: 0.5, delay: i * 0.01, ease: [0.16, 1, 0.3, 1] }} />
+                          <motion.div className="w-full bg-blue-400" initial={{ height: 0 }} animate={{ height: `${(uncachedInput / total) * h}%` }} transition={{ duration: 0.5, delay: i * 0.01, ease: [0.16, 1, 0.3, 1] }} />
+                        </div>
+                      )
+                    })}
                   </div>
                   <div className="mt-2 flex justify-between text-[10px] text-muted-foreground">
                     <span>{data.series[0]?.date?.slice(0, 10)}</span>
@@ -203,23 +220,38 @@ export function Usage() {
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">用量热力图</CardTitle>
-                <CardDescription>Top 模型 × 日期的 Token 分布（对数着色）。点击上方时间范围可调节粒度。</CardDescription>
+                <CardDescription>Top 模型 × 日期，可按总量 / 输入 / 缓存 / 输出 / 费用着色；悬停查看明细。</CardDescription>
               </CardHeader>
               <CardContent>
                 {!heatmap ? (
                   <EmptyState title="暂无热力图数据" description="时间范围内没有足够的用量记录来绘制热力图。" />
                 ) : (
-                  <Heatmap
-                    matrix={heatmap.matrix}
-                    rowLabels={heatmap.rowLabels}
-                    colLabels={heatmap.colLabels}
-                    formatTooltip={(row, col, v) => {
-                      const date = heatmap.colTooltips[heatmap.colLabels.indexOf(col)]
-                      const up = heatmap.modelTooltips.get(row)
-                      return `${row}${up && up !== row ? ` (${up})` : ""} · ${date}\n${formatTokens(v)} token · ${formatCost((v / 1_000_000) * 0)}`
-                    }}
-                    formatCell={(v) => (v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(0)}K` : String(v))}
-                  />
+                  <>
+                    <SegmentedTabs<HeatmapMetric>
+                      className="mb-3"
+                      value={heatmapMetric}
+                      onChange={setHeatmapMetric}
+                      tabs={[
+                        { value: "total_tokens", label: "总量" },
+                        { value: "input_tokens", label: "输入" },
+                        { value: "cached_tokens", label: "缓存" },
+                        { value: "output_tokens", label: "输出" },
+                        { value: "cost_micros", label: "费用" },
+                      ]}
+                    />
+                    <Heatmap
+                      matrix={heatmapMatrix}
+                      rowLabels={heatmap.rowLabels}
+                      colLabels={heatmap.colLabels}
+                      formatTooltip={(row, col, _v) => {
+                        const cell = heatmap.grid[heatmap.rowLabels.indexOf(row)]?.[heatmap.colLabels.indexOf(col)]
+                        if (!cell) return `${row} · ${col}\n无数据`
+                        const up = cell.upstream_model
+                        return `${row}${up && up !== row ? ` (${up})` : ""} · ${col}\n${cell.requests} 请求\n输入 ${formatTokens(cell.input_tokens)} · 缓存 ${formatTokens(cell.cached_tokens)} · 输出 ${formatTokens(cell.output_tokens)}\n费用 ${formatCost(cell.cost_micros)}`
+                      }}
+                      formatCell={(v) => (heatmapMetric === "cost_micros" ? formatCost(v) : v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(0)}K` : String(v))}
+                    />
+                  </>
                 )}
               </CardContent>
             </Card>
@@ -271,7 +303,9 @@ function RankPanel({ tab, data, onSelectModel }: { tab: "models" | "keys" | "pro
                         {it.name && "upstream_model" in it && (it as any).upstream_model && (it as any).upstream_model !== it.name ? <span className="truncate font-mono text-[10px] text-muted-foreground">{(it as any).upstream_model}</span> : null}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
-                        <span>{formatTokens(it.total_tokens)} token</span>
+                        <span>输入 {formatTokens(it.input_tokens)}</span>
+                        <span>缓存 {formatTokens(it.cached_tokens)}</span>
+                        <span>输出 {formatTokens(it.output_tokens)}</span>
                         <span>{it.requests} 请求</span>
                         <span>{formatCost(it.cost_micros)}</span>
                         <span>失败 {it.requests - it.successful_requests}</span>

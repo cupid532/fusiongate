@@ -799,11 +799,11 @@ func parseShadowsocksLink(raw, tag string) (map[string]any, string, string, erro
 	}
 	colon := strings.Index(userInfo, ":")
 	if colon < 1 {
-		return nil, "", "", errors.New("Shadowsocks link requires method and password")
+		return nil, "", "", errors.New("shadowsocks link requires method and password")
 	}
 	host, portString, err := net.SplitHostPort(address)
 	if err != nil {
-		return nil, "", "", errors.New("Shadowsocks link requires a valid host and port")
+		return nil, "", "", errors.New("shadowsocks link requires a valid host and port")
 	}
 	port, err := strconv.Atoi(portString)
 	if err != nil {
@@ -831,7 +831,7 @@ func parseTrojanLink(raw, tag string) (map[string]any, string, string, error) {
 		password = u.User.Username()
 	}
 	if password == "" {
-		return nil, "", "", errors.New("Trojan link requires a password")
+		return nil, "", "", errors.New("trojan link requires a password")
 	}
 	out := map[string]any{"type": "trojan", "tag": tag, "server": host, "server_port": port, "password": password}
 	out["tls"] = clientTLSFromQuery(u.Query(), host, true)

@@ -91,7 +91,7 @@ export function Quality() {
   const [expandedJob, setExpandedJob] = useState<string | null>(null)
   const [expandedItem, setExpandedItem] = useState<number | null>(null)
 
-  const targets = meta?.targets ?? []
+  const targets = useMemo(() => meta?.targets ?? [], [meta?.targets])
 
   const models = useMemo(() => [...new Set(targets.map((t) => t.model))].sort(), [targets])
 

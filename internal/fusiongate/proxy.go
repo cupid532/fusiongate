@@ -223,7 +223,7 @@ func normalizeResponsesSSE(body []byte) ([]byte, error) {
 		}
 		eventType := strings.TrimSpace(asString(decoded["type"]))
 		if eventType == "" {
-			return nil, errors.New("Responses SSE event is missing type")
+			return nil, errors.New("responses SSE event is missing type")
 		}
 		if response := asMap(decoded["response"]); response != nil {
 			delete(response, "moderation")
@@ -890,7 +890,7 @@ func codexResponsesBodyFromChat(raw []byte, upstreamModel string) ([]byte, error
 					}
 				case "image_url", "input_image":
 					if role != "user" {
-						return nil, errors.New("Codex image input is supported only in user messages")
+						return nil, errors.New("codex image input is supported only in user messages")
 					}
 					imageURL := strings.TrimSpace(asString(part["image_url"]))
 					if nested := asMap(part["image_url"]); nested != nil {
@@ -1053,11 +1053,6 @@ func completedResponseFromSSE(body []byte) ([]byte, Usage, error) {
 		return nil, Usage{CostType: "unknown"}, err
 	}
 	return encoded, parseOpenAIUsage(completed), nil
-}
-
-func completedResponsesSSE(body []byte) ([]byte, string, Usage, error) {
-	completed, usage, err := completedResponseFromSSE(body)
-	return completed, "application/json", usage, err
 }
 
 func completedResponsesSSEForModel(publicModel string) func([]byte) ([]byte, string, Usage, error) {
