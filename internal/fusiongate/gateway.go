@@ -1105,7 +1105,27 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 				transformed, contentType, err := codexChatResponse(completed, stream, z.Route.PublicName)
 				return transformed, contentType, usage, err
 			}})
-		case "anthropic", "claude_oauth":
+		case "anthropic":
+			if matchesCapability(z.Route.Capabilities, "protocol:responses") {
+				encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
+				if err != nil {
+					return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+				}
+				w.Header().Set("X-FusionGate-Upstream-Protocol", "responses")
+				return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/responses", RawBody: encoded, Stream: stream, UsageFormat: "openai", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferSSE: true, SSETransform: func(body []byte) ([]byte, string, Usage, error) {
+					completed, usage, err := completedResponseFromSSE(body)
+					if err != nil {
+						return nil, "", usage, err
+					}
+					transformed, contentType, err := codexChatResponse(completed, stream, z.Route.PublicName)
+					return transformed, contentType, usage, err
+				}})
+			}
+			if stream || z.Provider.PassthroughMode == "transparent" {
+				return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
+			}
+			return a.chatAnthropic(w, r, body, z, rid, onFirstByte)
+		case "claude_oauth":
 			if stream || z.Provider.PassthroughMode == "transparent" {
 				return attemptResult{Status: http.StatusNotImplemented, Retryable: true, Reason: "protocol_not_supported"}
 			}
@@ -1320,6 +1340,12 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	compatible := routes[:0]
 	for _, z := range routes {
 		eligible := z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth"
+		if z.Provider.Type == "anthropic" {
+			// Some Anthropic-compatible aggregators expose a native OpenAI
+			// Responses endpoint alongside Messages. Opt in per route so a
+			// regular Anthropic provider is never probed with the wrong API.
+			eligible = protocol == "openai_responses" && matchesCapability(z.Route.Capabilities, "protocol:responses")
+		}
 		if z.Provider.Type == "opencode" {
 			eligible = protocol == "openai_responses" && opencodeRouteProtocol(z) == opencodeProtocolResponses
 		}
@@ -1338,6 +1364,12 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		}
 		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" {
 			return a.responsesFirstCompatibleProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
+		}
+		if protocol == "openai_responses" && z.Provider.Type == "anthropic" && matchesCapability(z.Route.Capabilities, "protocol:responses") {
+			// Keep the provider typed as Anthropic for /v1/messages while using
+			// its explicitly declared native Responses endpoint for this route.
+			w.Header().Set("X-FusionGate-Upstream-Protocol", "responses")
+			return a.openAIProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte)
 		}
 		if protocol == "openai_responses_compact" {
 			if z.Provider.Type == "opencode" {

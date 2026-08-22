@@ -162,6 +162,119 @@ func TestCompatibleResponsesFromChatJSONAndSSE(t *testing.T) {
 	}
 }
 
+func TestAnthropicRouteCanOptIntoNativeResponses(t *testing.T) {
+	var gotPath, gotAPIKey, gotAuthorization string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, codexCompletedSSEText("resp-anthropic", "native anthropic response"))
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "anthropic-responses", "anthropic", upstream.URL, "upstream-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "claude-test", "claude-upstream", "chat,stream,protocol:responses", 1)
+	key := insertTestKey(t, a, false)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"claude-test","input":"hello","stream":false}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/responses" || gotAPIKey != "upstream-secret" || gotAuthorization != "" {
+		t.Fatalf("path=%q api_key=%q authorization=%q", gotPath, gotAPIKey, gotAuthorization)
+	}
+	if rec.Header().Get("X-FusionGate-Upstream-Protocol") != "responses" {
+		t.Fatalf("protocol header=%q", rec.Header().Get("X-FusionGate-Upstream-Protocol"))
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["model"] != "claude-test" || textContent(asMap(anySlice(asMap(anySlice(response["output"])[0])["content"])[0])["text"]) != "native anthropic response" {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestAnthropicResponsesRouteBridgesChatThroughResponses(t *testing.T) {
+	var gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, codexCompletedSSEText("resp-chat-anthropic", "chat via native responses"))
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "anthropic-responses-chat", "anthropic", upstream.URL, "upstream-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "claude-test", "claude-upstream", "chat,stream,protocol:responses", 1)
+	key := insertTestKey(t, a, false)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"claude-test","messages":[{"role":"user","content":"hello"}],"stream":false}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path=%q", gotPath)
+	}
+	if rec.Header().Get("X-FusionGate-Upstream-Protocol") != "responses" {
+		t.Fatalf("protocol header=%q", rec.Header().Get("X-FusionGate-Upstream-Protocol"))
+	}
+	var chat map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &chat); err != nil {
+		t.Fatal(err)
+	}
+	choices := anySlice(chat["choices"])
+	message := asMap(asMap(choices[0])["message"])
+	if chat["model"] != "claude-test" || textContent(message["content"]) != "chat via native responses" {
+		t.Fatalf("chat=%#v", chat)
+	}
+}
+
+func TestAnthropicRouteWithoutResponsesCapabilityIsRejected(t *testing.T) {
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "anthropic-messages-only", "anthropic", upstream.URL, "upstream-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "claude-test", "claude-upstream", "chat,stream", 1)
+	key := insertTestKey(t, a, false)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"claude-test","input":"hello","stream":false}`))
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	a.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotImplemented || calls != 0 || !strings.Contains(rec.Body.String(), "protocol_not_supported") {
+		t.Fatalf("status=%d calls=%d body=%s", rec.Code, calls, rec.Body.String())
+	}
+}
+
 func TestResponsesFirstCompatibleProxyUsesNativeResponses(t *testing.T) {
 	paths := make([]string, 0, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

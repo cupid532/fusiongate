@@ -1,5 +1,12 @@
 # Changelog
 
+## V2.33
+
+- Add route-level `protocol:responses` opt-in for Anthropic-compatible providers that expose both `/v1/messages` and `/v1/responses`.
+- OpenAI Responses clients now use the provider's native Responses endpoint while native Anthropic Messages clients keep using `/v1/messages`.
+- OpenAI Chat clients on opted-in routes are bridged through upstream Responses, avoiding broken or slow Chat Completions compatibility endpoints.
+- Keep ordinary Anthropic providers safe by excluding them from Responses routing unless the route explicitly declares support.
+
 ## V2.32
 
 - Make normalized OpenAI-compatible channels Responses-first: `/v1/responses` now tries the upstream Responses endpoint before falling back on the same route to Chat Completions only when Responses fails before downstream output is committed. Authentication and rate-limit errors do not trigger the redundant protocol retry.
