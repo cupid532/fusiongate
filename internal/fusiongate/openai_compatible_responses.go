@@ -349,3 +349,38 @@ func (a *App) compatibleResponsesProxy(w http.ResponseWriter, r *http.Request, r
 		},
 	})
 }
+
+func responsesProtocolFallbackStatus(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusRequestTimeout, http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity, http.StatusNotImplemented:
+		return true
+	}
+	return status >= 500
+}
+
+func shouldFallbackResponsesToChat(result attemptResult) bool {
+	if result.Handled || !result.Retryable {
+		return false
+	}
+	switch result.Reason {
+	case "upstream_auth_error", "upstream_rate_limited", "downstream_canceled", "downstream_write_error":
+		return false
+	default:
+		return true
+	}
+}
+
+// responsesFirstCompatibleProxy preserves the downstream Responses contract while
+// preferring the upstream Responses endpoint. If that endpoint fails before any
+// response bytes are committed, the same route is retried through Chat Completions
+// and bridged back into a Responses response. Authentication and rate-limit failures
+// skip the protocol retry because changing endpoint cannot repair them.
+func (a *App) responsesFirstCompatibleProxy(w http.ResponseWriter, r *http.Request, raw []byte, z resolvedRoute, gatewayID string, stream bool, safeTransportRetry bool, onFirstByte func()) attemptResult {
+	w.Header().Set("X-FusionGate-Upstream-Protocol", "responses")
+	result := a.openAIProxyWithRetryStatus(w, r, raw, z, gatewayID, "/v1/responses", stream, safeTransportRetry, onFirstByte, responsesProtocolFallbackStatus)
+	if !shouldFallbackResponsesToChat(result) {
+		return result
+	}
+	w.Header().Set("X-FusionGate-Upstream-Protocol", "chat")
+	return a.compatibleResponsesProxy(w, r, raw, z, gatewayID, stream, safeTransportRetry, onFirstByte)
+}

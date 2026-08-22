@@ -63,7 +63,7 @@ OpenCode / SDK / 应用
 - 健康状态只处罚可归因于上游的失败；下游客户端主动取消不会污染 Provider 健康度。智能选择优先依据成功请求的首字节 EWMA，而不是被输出长度放大的完整响应耗时；请求账本会对 2 万/4 万以上输入 Token 标记“大上下文/超大上下文”。
 - `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/images/generations`。
   - 所有 `/v1/*` 网关接口支持浏览器跨域调用、无需鉴权的 `OPTIONS` 预检和常用 SDK 自定义请求头；管理后台接口不开放跨域。
-  - OpenAI Compatible：Chat、Responses、Images、Audio、Embeddings；Chat / Responses 支持安全流式转发。
+  - OpenAI Compatible：Chat、Responses、Images、Audio、Embeddings；Chat / Responses 支持安全流式转发。Responses 请求会优先调用上游 `/v1/responses`，仅在尚未向客户端提交输出且该协议失败时回退到 Chat Completions，并通过 `X-FusionGate-Upstream-Protocol` 标明最终上游协议。
   - Codex OAuth Plus 生图兼容：发现到 `gpt-5.5` 时自动提供 `gpt-image-1` 与 `gpt-image-2` 图像别名；标准 `POST /v1/images/generations` 会转换成 Codex Responses 的 `image_generation` 内置工具调用，并把 SSE 中的真实图片结果转换回 OpenAI `b64_json` 响应。Codex OAuth 路径每次只支持 `n=1`（ChatGPT 账号侧工具一次只出一张，且并发 fan-out 易被限流/拖垮）；需要多图时请对 OpenAI Compatible 生图渠道传 `n`，或对 Codex 路径发起多次请求。支持上游接受的 `size`、`output_format`、`output_compression`、`background`、`moderation` 与 `partial_images` 参数；不伪造 URL 或透明背景能力。Codex 生图默认至少 180s 超时下限。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
   - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 支持原生代理，也可安全转换到 OpenAI / OpenRouter / OpenAI Compatible / Grok Chat，覆盖文本、图片、工具调用、工具结果以及 Anthropic SSE 流。

@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.32
+
+- Make normalized OpenAI-compatible channels Responses-first: `/v1/responses` now tries the upstream Responses endpoint before falling back on the same route to Chat Completions only when Responses fails before downstream output is committed. Authentication and rate-limit errors do not trigger the redundant protocol retry.
+- Return `X-FusionGate-Upstream-Protocol: responses|chat` so clients and operators can verify which upstream protocol ultimately served a Responses request.
+
 ## V2.31
 
 - Manage the request ledger by capacity instead of a fixed row limit. The console now shows current vs. configured usage (in MB, default 100, adjustable 1 MB – 10 GB) with a progress bar, an editable cap that trims immediately when lowered, one-click clear, and JSON export that honors the current time-range and status filters.

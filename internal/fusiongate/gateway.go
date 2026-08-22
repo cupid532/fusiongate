@@ -125,7 +125,7 @@ func setGatewayCORS(w http.ResponseWriter, r *http.Request, allowlist string) {
 		requestedHeaders = "Authorization, Content-Type, X-API-Key"
 	}
 	h.Set("Access-Control-Allow-Headers", requestedHeaders)
-	h.Set("Access-Control-Expose-Headers", "Content-Type, Retry-After, Request-Id, X-FusionGate-Request-ID")
+	h.Set("Access-Control-Expose-Headers", "Content-Type, Retry-After, Request-Id, X-FusionGate-Request-ID, X-FusionGate-Upstream-Protocol")
 	h.Set("Access-Control-Max-Age", "86400")
 	h.Add("Vary", "Origin")
 	h.Add("Vary", "Access-Control-Request-Method")
@@ -971,6 +971,10 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 }
 
 func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z resolvedRoute, requestID, endpoint string, stream, safeTransportRetry bool, onFirstByte func()) attemptResult {
+	return a.openAIProxyWithRetryStatus(w, r, raw, z, requestID, endpoint, stream, safeTransportRetry, onFirstByte, nil)
+}
+
+func (a *App) openAIProxyWithRetryStatus(w http.ResponseWriter, r *http.Request, raw []byte, z resolvedRoute, requestID, endpoint string, stream, safeTransportRetry bool, onFirstByte func(), retryStatus func(int) bool) attemptResult {
 	transparent := z.Provider.PassthroughMode == "transparent"
 	body := raw
 	var err error
@@ -1017,7 +1021,7 @@ func (a *App) openAIProxy(w http.ResponseWriter, r *http.Request, raw []byte, z 
 			return chatJSONWithPublicModel(body, z.Route.PublicName)
 		}
 	}
-	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: upstreamSSE, BufferSSE: bufferSSE, SSETransform: sseTransform, JSONTransform: jsonTransform, StreamTransform: streamTransform})
+	return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: endpoint, RawBody: body, Stream: stream, Transparent: transparent, UsageFormat: "openai", GatewayID: requestID, SafeTransportRetry: safeTransportRetry, OnFirstByte: onFirstByte, UpstreamSSE: upstreamSSE, BufferSSE: bufferSSE, SSETransform: sseTransform, JSONTransform: jsonTransform, StreamTransform: streamTransform, RetryStatus: retryStatus})
 }
 
 func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
@@ -1333,7 +1337,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 			return a.codexImageProxy(w, r, raw, z, rid, onFirstByte)
 		}
 		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" {
-			return a.compatibleResponsesProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
+			return a.responsesFirstCompatibleProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
 		}
 		if protocol == "openai_responses_compact" {
 			if z.Provider.Type == "opencode" {

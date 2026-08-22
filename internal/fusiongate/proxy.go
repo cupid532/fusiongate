@@ -39,6 +39,7 @@ type proxyOptions struct {
 	StreamTransform    func([]byte) ([]byte, error)
 	OutputStartTimeout time.Duration
 	IdleTimeout        time.Duration
+	RetryStatus        func(int) bool
 }
 
 type streamReadResult struct {
@@ -1523,6 +1524,11 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		return attemptResult{Status: http.StatusBadGateway, Retryable: options.SafeTransportRetry, Reason: reason, Err: err}
 	}
 	defer resp.Body.Close()
+	if options.RetryStatus != nil && options.RetryStatus(resp.StatusCode) {
+		startTimer.Stop()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 2<<20))
+		return attemptResult{Status: resp.StatusCode, Retryable: true, Reason: "upstream_protocol_unsupported", RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"))}
+	}
 	resp.Body = observeFirstByte(resp.Body, options.OnFirstByte)
 
 	if retryableStatus(resp.StatusCode) {

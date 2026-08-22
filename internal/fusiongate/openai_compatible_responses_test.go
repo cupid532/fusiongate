@@ -162,6 +162,134 @@ func TestCompatibleResponsesFromChatJSONAndSSE(t *testing.T) {
 	}
 }
 
+func TestResponsesFirstCompatibleProxyUsesNativeResponses(t *testing.T) {
+	paths := make([]string, 0, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, codexCompletedSSEText("resp-native", "native"))
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	z := resolvedRoute{
+		Route:      Route{PublicName: "public", UpstreamModel: "upstream"},
+		Provider:   Provider{Type: "openai_compatible", BaseURL: upstream.URL, RequestTimeoutMS: 5000},
+		Credential: "secret",
+	}
+	raw := []byte(`{"model":"public","input":"hello","stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(raw))
+	result := a.responsesFirstCompatibleProxy(rec, req, raw, z, "request-id", false, true, nil)
+	if result.Status != http.StatusOK || !result.Handled || result.Err != nil {
+		t.Fatalf("result=%+v body=%s", result, rec.Body.String())
+	}
+	if strings.Join(paths, ",") != "/v1/responses" {
+		t.Fatalf("paths=%v", paths)
+	}
+	if rec.Header().Get("X-FusionGate-Upstream-Protocol") != "responses" {
+		t.Fatalf("protocol header=%q", rec.Header().Get("X-FusionGate-Upstream-Protocol"))
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["model"] != "public" || textContent(asMap(anySlice(asMap(anySlice(response["output"])[0])["content"])[0])["text"]) != "native" {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestResponsesFirstCompatibleProxyFallsBackToChat(t *testing.T) {
+	paths := make([]string, 0, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"responses unsupported"}}`)
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-fallback\",\"created\":123,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"fallback\"},\"finish_reason\":null}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"id\":\"chatcmpl-fallback\",\"created\":123,\"model\":\"upstream\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n")
+		default:
+			t.Errorf("unexpected path=%q", r.URL.Path)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	z := resolvedRoute{
+		Route:      Route{PublicName: "public", UpstreamModel: "upstream"},
+		Provider:   Provider{Type: "openai_compatible", BaseURL: upstream.URL, RequestTimeoutMS: 5000},
+		Credential: "secret",
+	}
+	raw := []byte(`{"model":"public","input":"hello","stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(raw))
+	result := a.responsesFirstCompatibleProxy(rec, req, raw, z, "request-id", false, true, nil)
+	if result.Status != http.StatusOK || !result.Handled || result.Err != nil {
+		t.Fatalf("result=%+v body=%s", result, rec.Body.String())
+	}
+	if strings.Join(paths, ",") != "/v1/responses,/v1/chat/completions" {
+		t.Fatalf("paths=%v", paths)
+	}
+	if rec.Header().Get("X-FusionGate-Upstream-Protocol") != "chat" {
+		t.Fatalf("protocol header=%q", rec.Header().Get("X-FusionGate-Upstream-Protocol"))
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["model"] != "public" || textContent(asMap(anySlice(asMap(anySlice(response["output"])[0])["content"])[0])["text"]) != "fallback" {
+		t.Fatalf("response=%#v", response)
+	}
+}
+
+func TestResponsesFirstCompatibleProxyDoesNotRetryAuthFailureAsChat(t *testing.T) {
+	paths := make([]string, 0, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	z := resolvedRoute{
+		Route:      Route{PublicName: "public", UpstreamModel: "upstream"},
+		Provider:   Provider{Type: "openai_compatible", BaseURL: upstream.URL, RequestTimeoutMS: 5000},
+		Credential: "secret",
+	}
+	raw := []byte(`{"model":"public","input":"hello","stream":false}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(raw))
+	result := a.responsesFirstCompatibleProxy(rec, req, raw, z, "request-id", false, true, nil)
+	if result.Status != http.StatusUnauthorized || !result.Retryable || result.Handled || result.Reason != "upstream_auth_error" {
+		t.Fatalf("result=%+v body=%s", result, rec.Body.String())
+	}
+	if strings.Join(paths, ",") != "/v1/responses" {
+		t.Fatalf("paths=%v", paths)
+	}
+	if rec.Header().Get("X-FusionGate-Upstream-Protocol") != "responses" {
+		t.Fatalf("protocol header=%q", rec.Header().Get("X-FusionGate-Upstream-Protocol"))
+	}
+}
+
 func TestCompatibleResponsesProxyDecodesGzipAndBridgesChat(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
