@@ -295,6 +295,59 @@ func matches(patterns, model string) bool {
 	return false
 }
 
+const (
+	protocolAuto      = "auto"
+	protocolFixed     = "fixed"
+	protocolResponses = "responses"
+	protocolMessages  = "messages"
+	protocolChat      = "chat"
+)
+
+func validProtocolPolicy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case protocolAuto, protocolFixed:
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeProtocolPreference(value string) (string, bool) {
+	seen := map[string]bool{}
+	ordered := make([]string, 0, 3)
+	for value != "" {
+		var item string
+		item, value = nextListItem(value)
+		item = strings.ToLower(strings.TrimSpace(item))
+		switch item {
+		case protocolResponses, protocolMessages, protocolChat:
+			if !seen[item] {
+				seen[item] = true
+				ordered = append(ordered, item)
+			}
+		case "":
+		default:
+			return "", false
+		}
+	}
+	return strings.Join(ordered, ","), true
+}
+
+func routeProtocolEnabled(z resolvedRoute, protocol string) bool {
+	policy := strings.ToLower(strings.TrimSpace(z.Provider.ProtocolPolicy))
+	preference, valid := normalizeProtocolPreference(z.Provider.ProtocolPreference)
+	if !valid {
+		return false
+	}
+	if policy == protocolFixed {
+		first, _ := nextListItem(preference)
+		return strings.EqualFold(first, protocol)
+	}
+	// Auto mode is capability-driven. Preference orders protocols already
+	// known to work; it never invents support that discovery did not prove.
+	return matchesCapability(z.Route.Capabilities, "protocol:"+protocol)
+}
+
 func matchesCapability(capabilities, required string) bool {
 	if required == "" {
 		return true
@@ -465,7 +518,7 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
        p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,
        p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,
        COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),p.ip_pool_node_id,p.multi_key_initialized,p.default_model,
-       COALESCE(p.health_check_status,''),COALESCE(p.health_check_error,'')
+       p.protocol_policy,p.protocol_preference,COALESCE(p.health_check_status,''),COALESCE(p.health_check_error,'')
 FROM model_routes r JOIN providers p ON p.id=r.provider_id
 WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0
   AND (LOWER(r.public_name)=LOWER(?) OR LOWER(r.upstream_model) IN (
@@ -501,7 +554,7 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 			&z.Provider.FailureThreshold, &z.Provider.CooldownSeconds, &z.Provider.ConsecutiveFailures,
 			&z.Provider.CircuitOpenUntil, &z.Provider.LastError, &z.Provider.LastLatencyMS, &z.Provider.LastFirstByteMS,
 			&z.Provider.LastSuccessAt, &z.Provider.LastFailureAt, &ipPoolNodeID, &multiKeyInitialized, &z.Provider.DefaultModel,
-			&z.Provider.HealthCheckStatus, &z.Provider.HealthCheckError,
+			&z.Provider.ProtocolPolicy, &z.Provider.ProtocolPreference, &z.Provider.HealthCheckStatus, &z.Provider.HealthCheckError,
 		); err != nil {
 			_ = rows.Close()
 			return nil, err
@@ -1106,7 +1159,7 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 				return transformed, contentType, usage, err
 			}})
 		case "anthropic":
-			if matchesCapability(z.Route.Capabilities, "protocol:responses") {
+			if routeProtocolEnabled(z, protocolResponses) {
 				encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
 				if err != nil {
 					return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
@@ -1344,7 +1397,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 			// Some Anthropic-compatible aggregators expose a native OpenAI
 			// Responses endpoint alongside Messages. Opt in per route so a
 			// regular Anthropic provider is never probed with the wrong API.
-			eligible = protocol == "openai_responses" && matchesCapability(z.Route.Capabilities, "protocol:responses")
+			eligible = protocol == "openai_responses" && routeProtocolEnabled(z, protocolResponses)
 		}
 		if z.Provider.Type == "opencode" {
 			eligible = protocol == "openai_responses" && opencodeRouteProtocol(z) == opencodeProtocolResponses
@@ -1365,11 +1418,17 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" {
 			return a.responsesFirstCompatibleProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
 		}
-		if protocol == "openai_responses" && z.Provider.Type == "anthropic" && matchesCapability(z.Route.Capabilities, "protocol:responses") {
+		if protocol == "openai_responses" && z.Provider.Type == "anthropic" && routeProtocolEnabled(z, protocolResponses) {
 			// Keep the provider typed as Anthropic for /v1/messages while using
 			// its explicitly declared native Responses endpoint for this route.
 			w.Header().Set("X-FusionGate-Upstream-Protocol", "responses")
-			return a.openAIProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte)
+			result := a.openAIProxyWithRetryStatus(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte, responsesProtocolFallbackStatus)
+			if result.Reason == "upstream_protocol_unsupported" {
+				// Discovery is stale: remove only the learned capability. This
+				// prevents future requests from repeatedly probing a dead endpoint.
+				_, _ = a.db.ExecContext(r.Context(), `UPDATE model_routes SET capabilities=TRIM(REPLACE(','||capabilities||',', ',protocol:responses,', ','), ','),updated_at=? WHERE id=?`, now(), z.Route.ID)
+			}
+			return result
 		}
 		if protocol == "openai_responses_compact" {
 			if z.Provider.Type == "opencode" {

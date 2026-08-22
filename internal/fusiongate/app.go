@@ -161,6 +161,8 @@ type Provider struct {
 	IPPoolNodeName          string  `json:"ip_pool_node_name,omitempty"`
 	IPPoolNodeProtocol      string  `json:"ip_pool_node_protocol,omitempty"`
 	DefaultModel            string  `json:"default_model,omitempty"`
+	ProtocolPolicy          string  `json:"protocol_policy"`
+	ProtocolPreference      string  `json:"protocol_preference"`
 	APIKeyCount             int     `json:"api_key_count"`
 	EnabledAPIKeyCount      int     `json:"enabled_api_key_count"`
 }
@@ -582,7 +584,7 @@ func (a *App) migrate(ctx context.Context) error {
     auth_account_id TEXT NOT NULL DEFAULT '', auth_email TEXT NOT NULL DEFAULT '', auth_expires_at TEXT,
     auth_last_refresh_at TEXT, auth_status TEXT NOT NULL DEFAULT 'ready', auth_fingerprint TEXT NOT NULL DEFAULT '',
     auth_has_refresh INTEGER NOT NULL DEFAULT 0,
-    default_model TEXT NOT NULL DEFAULT '', multi_key_initialized INTEGER NOT NULL DEFAULT 0,
+    default_model TEXT NOT NULL DEFAULT '', protocol_policy TEXT NOT NULL DEFAULT 'auto', protocol_preference TEXT NOT NULL DEFAULT '', multi_key_initialized INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_api_keys (
     id INTEGER PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
@@ -694,6 +696,8 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "balance_multiplier_other", "REAL NOT NULL DEFAULT 1"},
 		{"providers", "ip_pool_node_id", "INTEGER REFERENCES ip_pool_nodes(id) ON DELETE SET NULL"},
 		{"providers", "default_model", "TEXT NOT NULL DEFAULT ''"},
+		{"providers", "protocol_policy", "TEXT NOT NULL DEFAULT 'auto'"},
+		{"providers", "protocol_preference", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "multi_key_initialized", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "archived", "INTEGER NOT NULL DEFAULT 0"},

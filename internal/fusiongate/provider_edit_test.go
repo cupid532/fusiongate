@@ -91,6 +91,32 @@ func TestEditAPIKeyProviderConnectionAndCredential(t *testing.T) {
 	}
 }
 
+func TestEditProviderProtocolPolicy(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	id := insertTestProvider(t, a, "protocol-policy", "anthropic", "http://protocol.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	rec := patchProviderForTest(t, a, id, `{"protocol_policy":"fixed","protocol_preference":" responses, messages,responses "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var policy, preference string
+	if err := a.db.QueryRow(`SELECT protocol_policy,protocol_preference FROM providers WHERE id=?`, id).Scan(&policy, &preference); err != nil {
+		t.Fatal(err)
+	}
+	if policy != "fixed" || preference != "responses,messages" {
+		t.Fatalf("policy=%q preference=%q", policy, preference)
+	}
+	for _, body := range []string{`{"protocol_policy":"random"}`, `{"protocol_preference":"responses,bogus"}`, `{"protocol_policy":"fixed","protocol_preference":""}`} {
+		rec := patchProviderForTest(t, a, id, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body=%s status=%d response=%s", body, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestEditProviderBlankCredentialKeepsExistingSecret(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

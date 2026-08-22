@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -91,6 +92,8 @@ type discoveryProvider struct {
 	AuthCredential     *ProviderCredential
 	RequestTimeoutMS   int
 	HealthCheckEnabled bool
+	ProtocolPolicy     string
+	ProtocolPreference string
 	IPPoolNodeID       *int64
 }
 
@@ -213,6 +216,9 @@ func (a *App) fetchDiscoveryCandidate(parent context.Context, p discoveryProvide
 	defer cancel()
 	started := time.Now()
 	models, err := a.fetchDiscoveredModels(ctx, p)
+	if err == nil {
+		models = a.applyDiscoveredProtocolCapabilities(ctx, p, models)
+	}
 	if err != nil && p.AuthCredential != nil && isDiscoveryAuthenticationError(err) {
 		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type, IPPoolNodeID: p.IPPoolNodeID}, Credential: p.Credential, AuthCredential: p.AuthCredential}
 		if refreshErr := a.refreshProviderCredential(ctx, &z, true); refreshErr != nil {
@@ -220,6 +226,9 @@ func (a *App) fetchDiscoveryCandidate(parent context.Context, p discoveryProvide
 		}
 		p.Credential, p.AuthCredential = z.Credential, z.AuthCredential
 		models, err = a.fetchDiscoveredModels(ctx, p)
+		if err == nil {
+			models = a.applyDiscoveredProtocolCapabilities(ctx, p, models)
+		}
 	}
 	return models, time.Since(started).Milliseconds(), err
 }
@@ -290,7 +299,7 @@ func (a *App) loadDiscoveryProvider(ctx context.Context, id int64) (discoveryPro
 	var ipPoolNodeID sql.NullInt64
 	var multiKeyInitialized int
 	var healthCheckEnabled int
-	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,health_check_enabled,ip_pool_node_id,multi_key_initialized FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS, &healthCheckEnabled, &ipPoolNodeID, &multiKeyInitialized)
+	err := a.db.QueryRowContext(ctx, `SELECT id,name,type,base_url,credential,auth_kind,request_timeout_ms,health_check_enabled,protocol_policy,protocol_preference,ip_pool_node_id,multi_key_initialized FROM providers WHERE id=?`, id).Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &encrypted, &authKind, &p.RequestTimeoutMS, &healthCheckEnabled, &p.ProtocolPolicy, &p.ProtocolPreference, &ipPoolNodeID, &multiKeyInitialized)
 	if err != nil {
 		return p, err
 	}
@@ -536,6 +545,82 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, envelope.NextPageToken, nil
+}
+
+func addCapability(capabilities, capability string) string {
+	if matchesCapability(capabilities, capability) {
+		return capabilities
+	}
+	if strings.TrimSpace(capabilities) == "" {
+		return capability
+	}
+	return capabilities + "," + capability
+}
+
+func (a *App) probeProviderResponses(parent context.Context, p discoveryProvider, model string) bool {
+	if p.Type != "anthropic" || strings.EqualFold(strings.TrimSpace(p.ProtocolPolicy), protocolFixed) {
+		return false
+	}
+	preference, valid := normalizeProtocolPreference(p.ProtocolPreference)
+	if !valid {
+		return false
+	}
+	if preference != "" && !strings.Contains(","+preference+",", ",responses,") {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(parent, 12*time.Second)
+	defer cancel()
+	endpoint, err := healthProbeURL(p.BaseURL, "/v1/responses")
+	if err != nil {
+		return false
+	}
+	payload, _ := json.Marshal(map[string]any{"model": model, "input": "Reply exactly: OK", "max_output_tokens": 8, "stream": false})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("x-api-key", p.Credential)
+	resp, err := a.doProviderRequest(req, p.IPPoolNodeID)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
+	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false
+	}
+	var response map[string]any
+	if json.Unmarshal(body, &response) != nil || response["output"] == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(asString(response["status"])), "completed") || len(anySlice(response["output"])) > 0
+}
+
+func (a *App) applyDiscoveredProtocolCapabilities(parent context.Context, p discoveryProvider, models []discoveredModel) []discoveredModel {
+	if len(models) == 0 || p.Type != "anthropic" {
+		return models
+	}
+	probeModel := ""
+	for _, model := range models {
+		if model.Capabilities != "unsupported" && matchesCapability(model.Capabilities, "chat") {
+			probeModel = model.UpstreamID
+			if probeModel == "" {
+				probeModel = model.ID
+			}
+			break
+		}
+	}
+	if probeModel == "" || !a.probeProviderResponses(parent, p, probeModel) {
+		return models
+	}
+	for i := range models {
+		if models[i].Capabilities != "unsupported" && matchesCapability(models[i].Capabilities, "chat") {
+			models[i].Capabilities = addCapability(models[i].Capabilities, "protocol:responses")
+		}
+	}
+	return models
 }
 
 func discoveredModelCapabilities(base string, reasoningEfforts []string, defaultReasoningEffort string, inputModalities []string) string {
@@ -1095,6 +1180,9 @@ func (a *App) applySelectedModelsToProvider(parent context.Context, providerID i
 			return modelSelectionResult{}, err
 		}
 		if currentModels[id] {
+			if _, err := tx.ExecContext(parent, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, model.Capabilities, stamp, providerID, upstream); err != nil {
+				return modelSelectionResult{}, err
+			}
 			result.Existing++
 			continue
 		}
@@ -1173,6 +1261,9 @@ func (a *App) importDiscoveredModels(parent context.Context, providerID int64, m
 			if _, err := tx.ExecContext(parent, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name) IN (?,?) OR LOWER(upstream_model) IN (?,?))`, providerID, model.ID, model.UpstreamID, model.ID, model.UpstreamID); err != nil {
 				return modelImportResult{}, err
 			}
+		}
+		if _, err := tx.ExecContext(parent, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, model.Capabilities, stamp, providerID, model.UpstreamID); err != nil {
+			return modelImportResult{}, err
 		}
 		var res sql.Result
 		if model.ID == model.UpstreamID {

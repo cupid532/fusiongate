@@ -1,5 +1,13 @@
 # Changelog
 
+## V2.34
+
+- Generalize protocol selection with provider-level `auto` and `fixed` policies plus an ordered `protocol_preference` (`responses`, `messages`, `chat`).
+- Discover native Responses support for Anthropic-compatible API-key providers during model discovery and persist `protocol:responses` on imported routes only after a successful generation probe.
+- Preserve the route capability as the safe runtime contract: Responses and Chat clients use native upstream Responses only when discovery or an operator has declared support; native Messages clients remain on `/v1/messages`.
+- Retire stale learned Responses support when an upstream returns an explicit protocol/endpoint error, preventing repeated probes on later requests.
+- Include protocol policy and preference in provider APIs and provider backup/export imports, with validation and safe defaults.
+
 ## V2.33
 
 - Add route-level `protocol:responses` opt-in for Anthropic-compatible providers that expose both `/v1/messages` and `/v1/responses`.

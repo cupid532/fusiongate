@@ -12,6 +12,81 @@ import (
 	"time"
 )
 
+func TestAnthropicDiscoveryAutomaticallyDetectsResponses(t *testing.T) {
+	var responseProbes atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "claude-auto"}}})
+		case "/v1/responses":
+			responseProbes.Add(1)
+			if r.Header.Get("x-api-key") != "secret" {
+				t.Errorf("api key=%q", r.Header.Get("x-api-key"))
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"id": "resp-probe", "status": "completed", "output": []any{map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": "OK"}}}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "anthropic-auto", "anthropic", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	discovery, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if responseProbes.Load() != 1 || len(discovery.Models) != 1 || !matchesCapability(discovery.Models[0].Capabilities, "protocol:responses") {
+		t.Fatalf("probes=%d models=%#v", responseProbes.Load(), discovery.Models)
+	}
+	result, err := a.importDiscoveredModels(context.Background(), providerID, discovery.Models, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Added != 1 {
+		t.Fatalf("result=%#v", result)
+	}
+	var capabilities string
+	if err := a.db.QueryRow(`SELECT capabilities FROM model_routes WHERE provider_id=?`, providerID).Scan(&capabilities); err != nil {
+		t.Fatal(err)
+	}
+	if !matchesCapability(capabilities, "protocol:responses") {
+		t.Fatalf("capabilities=%q", capabilities)
+	}
+}
+
+func TestAnthropicDiscoveryDoesNotInventResponsesCapability(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "claude-messages-only"}}})
+		case "/v1/responses":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "anthropic-messages-only", "anthropic", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	discovery, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Models) != 1 || matchesCapability(discovery.Models[0].Capabilities, "protocol:responses") {
+		t.Fatalf("models=%#v", discovery.Models)
+	}
+}
+
 func TestProviderCreationDiscoversCandidatesWithoutCreatingRoutes(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
