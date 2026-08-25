@@ -99,6 +99,16 @@ func validRoutingStrategy(v string) bool {
 	return false
 }
 
+func schedulingModel(routes []resolvedRoute) string {
+	if len(routes) == 0 {
+		return ""
+	}
+	if model := strings.TrimSpace(routes[0].CanonicalModel); model != "" {
+		return model
+	}
+	return routes[0].Route.PublicName
+}
+
 // prepareRoutes builds a deterministic request-local failover plan. Priority mode
 // sorts by provider priority descending, provider position, route priority
 // descending, route position, and route ID. Provider priority and position remain
@@ -144,7 +154,7 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 	if len(groups) < 2 {
 		return planned
 	}
-	model := planned[0].Route.PublicName
+	model := schedulingModel(planned)
 	a.routeMu.Lock()
 	start := a.roundRobinCursor[model] % len(groups)
 	a.roundRobinCursor[model] = (start + 1) % len(groups)
@@ -359,7 +369,7 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 		return resolvedRoute{}, availability, false
 	}
 
-	weights := a.smoothWeightsForLocked(routes[0].Route.PublicName)
+	weights := a.smoothWeightsForLocked(schedulingModel(routes))
 	var selected adaptiveCandidate
 	selectedID := int64(0)
 	best := -math.MaxFloat64

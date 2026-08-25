@@ -55,6 +55,116 @@ func TestModelAliasRoutesToCanonicalFailoverGroup(t *testing.T) {
 	}
 }
 
+func TestModelAliasSharesCanonicalRoundRobinCursor(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	canonicalRoutes := []resolvedRoute{
+		{Route: Route{ID: 1, ProviderID: 1, PublicName: "canonical", SortOrder: 0}, Provider: Provider{ID: 1, SortOrder: 0}, CanonicalModel: "canonical"},
+		{Route: Route{ID: 2, ProviderID: 2, PublicName: "canonical", SortOrder: 1}, Provider: Provider{ID: 2, SortOrder: 1}, CanonicalModel: "canonical"},
+	}
+	aliasRoutes := exposeRequestedModel(append([]resolvedRoute(nil), canonicalRoutes...), "/canonical")
+
+	firstPlan := a.prepareRoutes(canonicalRoutes, StrategySmartRoundRobin)
+	if firstPlan[0].Provider.ID != 1 {
+		t.Fatalf("canonical first provider=%d, want 1", firstPlan[0].Provider.ID)
+	}
+	secondPlan := a.prepareRoutes(aliasRoutes, StrategySmartRoundRobin)
+	if secondPlan[0].Provider.ID != 2 {
+		t.Fatalf("alias first provider=%d, want shared cursor to advance to 2", secondPlan[0].Provider.ID)
+	}
+	thirdPlan := a.prepareRoutes(canonicalRoutes, StrategySmartRoundRobin)
+	if thirdPlan[0].Provider.ID != 1 {
+		t.Fatalf("canonical third provider=%d, want shared cursor to wrap to 1", thirdPlan[0].Provider.ID)
+	}
+}
+
+func TestModelAliasSharesCanonicalAdaptiveState(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	routes := []resolvedRoute{
+		{Route: Route{ID: 1, ProviderID: 1, PublicName: "canonical"}, Provider: Provider{ID: 1, Weight: 100}, CanonicalModel: "canonical"},
+		{Route: Route{ID: 2, ProviderID: 2, PublicName: "canonical"}, Provider: Provider{ID: 2, Weight: 100}, CanonicalModel: "canonical"},
+	}
+	selected, _, ok := a.acquireRoute(routes, map[int64]bool{}, StrategyAdaptive)
+	if !ok {
+		t.Fatal("canonical route was not selected")
+	}
+	releaseSelectedRoute(a, selected)
+	aliasRoutes := exposeRequestedModel(append([]resolvedRoute(nil), routes...), "/canonical")
+	selected, _, ok = a.acquireRoute(aliasRoutes, map[int64]bool{}, StrategyAdaptive)
+	if !ok {
+		t.Fatal("alias route was not selected")
+	}
+	releaseSelectedRoute(a, selected)
+
+	a.routeMu.Lock()
+	_, canonicalExists := a.smoothWeights["canonical"]
+	_, aliasExists := a.smoothWeights["/canonical"]
+	a.routeMu.Unlock()
+	if !canonicalExists || aliasExists {
+		t.Fatalf("adaptive state keys canonical=%v alias=%v", canonicalExists, aliasExists)
+	}
+}
+
+func TestModelAliasFailsOverAcrossCanonicalProviders(t *testing.T) {
+	firstCalls := 0
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls++
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "temporary"})
+	}))
+	defer first.Close()
+	secondCalls := 0
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondCalls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id": "chatcmpl-alias-failover", "model": body["model"],
+			"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "ok"}, "finish_reason": "stop"}},
+		})
+	}))
+	defer second.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	firstProvider := insertTestProvider(t, a, "alias-first", "openai_compatible", first.URL, "first", 2, 100, "normalized", "any", 0, 3, 30)
+	secondProvider := insertTestProvider(t, a, "alias-second", "openai_compatible", second.URL, "second", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, firstProvider, "canonical", "first-upstream", "chat,stream", 1)
+	insertTestRoute(t, a, secondProvider, "canonical", "second-upstream", "chat,stream", 1)
+	if _, err := a.db.Exec(`INSERT INTO model_aliases(alias,target_model,enabled,created_at,updated_at) VALUES('/canonical','canonical',1,?,?)`, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	key := insertTestKey(t, a, false)
+	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"/canonical","messages":[{"role":"user","content":"ping"}]}`, "opencode/1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if firstCalls != 1 || secondCalls != 1 {
+		t.Fatalf("upstream calls first=%d second=%d", firstCalls, secondCalls)
+	}
+	a.flushLedgerWrites()
+	var attempts, maxAttempt int
+	if err := a.db.QueryRow(`SELECT COUNT(*),MAX(attempt) FROM request_ledger WHERE public_model='/canonical'`).Scan(&attempts, &maxAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 || maxAttempt != 2 {
+		t.Fatalf("ledger attempts=%d max=%d", attempts, maxAttempt)
+	}
+}
+
 func TestModelAliasPermissionsApplyToAliasAndCanonicalName(t *testing.T) {
 	key := authKey{AllowModels: "/glm5.2", DenyModels: "glm5-2"}
 	if modelAllowed(key, "/glm5.2", "glm5-2") {

@@ -42,6 +42,7 @@ type authKey struct {
 type resolvedRoute struct {
 	Route          Route
 	Provider       Provider
+	CanonicalModel string
 	ProviderKeyID  int64
 	AttemptID      int64
 	Credential     string
@@ -578,6 +579,7 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 		}
 		pendingIndex[poolKey] = len(pending)
 		z.Route.PublicName = model
+		z.CanonicalModel = model
 		pending = append(pending, pendingRoute{
 			resolved:            z,
 			credential:          append([]byte(nil), credential...),

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-import type { Provider } from "@/lib/types"
+import type { Provider, Route } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -12,7 +12,9 @@ export function RouteDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   const qc = useQueryClient()
   const [form, setForm] = useState({ provider_id: 0, public_name: "", upstream_model: "", capabilities: "chat,stream,tools", priority: 0, enabled: true })
   const { data: providers = [] } = useQuery({ queryKey: ["providers"], queryFn: () => api<Provider[]>("/api/admin/providers") })
+  const { data: routes = [] } = useQuery({ queryKey: ["routes"], queryFn: () => api<Route[]>("/api/admin/routes") })
   const activeProviders = providers.filter((provider) => provider.enabled && !provider.archived)
+  const modelGroups = [...new Set(routes.map((route) => route.public_name))].sort()
   const firstProviderID = activeProviders[0]?.id ?? 0
 
   useEffect(() => {
@@ -45,8 +47,10 @@ export function RouteDialog({ open, onOpenChange }: { open: boolean; onOpenChang
             </select>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label>公开模型名</Label>
-            <Input value={form.public_name} onChange={(event) => setForm((value) => ({ ...value, public_name: event.target.value }))} placeholder="glm5-2" className="font-mono" />
+            <Label>故障转移组（公开模型名）</Label>
+            <Input list="route-model-groups" value={form.public_name} onChange={(event) => setForm((value) => ({ ...value, public_name: event.target.value }))} placeholder="deepseek-v4-flash" className="font-mono" />
+            <datalist id="route-model-groups">{modelGroups.map((model) => <option key={model} value={model} />)}</datalist>
+            <span className="text-xs text-muted-foreground">选择现有名称即可加入同一轮询组；创建后可在组卡片一键添加带 / 的调用名。</span>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>上游模型名</Label>

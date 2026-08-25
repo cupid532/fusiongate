@@ -173,9 +173,9 @@ export function Providers() {
               className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
             >
               <option value="priority_failover">按优先级故障转移</option>
-              <option value="ordered_round_robin">固定轮询</option>
-              <option value="smart_round_robin">智能轮询</option>
-              <option value="adaptive">自适应</option>
+              <option value="ordered_round_robin">顺序故障转移（每次从首个开始）</option>
+              <option value="smart_round_robin">轮询分流 + 故障转移</option>
+              <option value="adaptive">自适应选择 + 故障转移</option>
             </select>
           </div>
           <Button variant="outline" onClick={() => setGroupOpen(true)}>

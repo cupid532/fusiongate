@@ -1,5 +1,13 @@
 # Changelog
 
+## V2.36
+
+- Make model aliases and their canonical model share the same smart-round-robin cursor and adaptive weight state while continuing to preserve the client-requested model name in responses and request accounting.
+- Rebuild the model-routing console around canonical failover groups: every card now combines call aliases and channel members, shows configured versus currently schedulable routes, explains channel/route/circuit exclusions, and mirrors the configured strategy order.
+- Add fast `/<model>` call-alias creation for both canonical and upstream model names plus custom aliases directly inside each model group, with inline enable/delete controls. Route creation can select an existing failover group, and existing routes can be moved interactively between groups without changing their upstream model IDs.
+- Expose provider priority, configured position, archive state and circuit cooldown through the admin route response so the console can explain the real scheduling state instead of treating an enabled route on a disabled channel as available.
+- Rename the routing strategy labels in the console to distinguish fixed-start sequential failover from request-rotating distribution, and allow the strategy to be inspected and changed directly on the model-routing page.
+
 ## V2.35
 
 - Rework the usage heatmap to carry the full token breakdown (input / cached / output / reasoning) plus real cost per model-day cell, and let the console switch the heatmap coloring between total, input, cached, output, and cost.

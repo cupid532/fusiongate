@@ -97,6 +97,10 @@ export interface Route {
   provider_name?: string
   provider_type?: string
   provider_enabled: boolean
+  provider_archived: boolean
+  provider_priority: number
+  provider_sort_order: number
+  provider_circuit_open_until?: string
   sort_order: number
   provider_status?: string
   provider_latency_ms: number

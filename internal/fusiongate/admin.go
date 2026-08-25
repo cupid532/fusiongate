@@ -1253,7 +1253,8 @@ SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enable
 	       r.input_price_micros,r.cached_price_micros,r.output_price_micros,
 	       r.long_context_threshold,r.long_input_price_micros,r.long_cached_price_micros,r.long_output_price_micros,
 	       r.pricing_source,COALESCE(r.pricing_updated_at,''),p.name,p.type,
-	       p.enabled,p.status,p.last_latency_ms,p.last_first_byte_ms,p.consecutive_failures,
+	       p.enabled,p.archived,p.priority,p.sort_order,COALESCE(p.circuit_open_until,''),
+	       p.status,p.last_latency_ms,p.last_first_byte_ms,p.consecutive_failures,
 	       COALESCE(r.last_health_check_at,''),r.health_check_status,r.health_check_error,
 	       r.health_check_latency_ms,r.health_check_first_byte_ms
 FROM model_routes r
@@ -1267,11 +1268,12 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 		out := []Route{}
 		for rows.Next() {
 			var x Route
-			var en, providerEnabled int
+			var en, providerEnabled, providerArchived int
 			if err := rows.Scan(&x.ID, &x.ProviderID, &x.PublicName, &x.UpstreamModel, &x.Capabilities, &en, &x.Priority, &x.SortOrder,
 				&x.InputPriceMicros, &x.CachedPriceMicros, &x.OutputPriceMicros,
 				&x.LongContextThreshold, &x.LongInputPriceMicros, &x.LongCachedPriceMicros, &x.LongOutputPriceMicros,
-				&x.PricingSource, &x.PricingUpdatedAt, &x.ProviderName, &x.ProviderType, &providerEnabled,
+				&x.PricingSource, &x.PricingUpdatedAt, &x.ProviderName, &x.ProviderType, &providerEnabled, &providerArchived,
+				&x.ProviderPriority, &x.ProviderSortOrder, &x.ProviderCircuitOpenUntil,
 				&x.ProviderStatus, &x.ProviderLatencyMS, &x.ProviderFirstByteMS, &x.ProviderFailures,
 				&x.LastHealthCheckAt, &x.HealthCheckStatus, &x.HealthCheckError,
 				&x.HealthCheckLatencyMS, &x.HealthCheckFirstByteMS); err != nil {
@@ -1280,6 +1282,7 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			}
 			x.Enabled = strBool(en)
 			x.ProviderEnabled = strBool(providerEnabled)
+			x.ProviderArchived = strBool(providerArchived)
 			x.ProviderInflight = a.providerInflight(x.ProviderID)
 			if x.ProviderEnabled {
 				observedLatency := x.ProviderFirstByteMS
