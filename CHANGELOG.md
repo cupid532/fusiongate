@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.38
+
+- Treat failover as exhaustive by default: a request now tries its entire in-request candidate plan before returning failure instead of stopping at a fixed 15-attempt cap. Larger channel fleets simply get more attempts; termination behavior, statuses and response headers for explicitly configured caps are unchanged. Set `FUSIONGATE_MAX_FAILOVER_ATTEMPTS=N` (N >= 1) to re-enable the optional fuse cap.
+
 ## V2.37
 
 - Rename the routing strategy labels in the console to describe how each new request picks its starting channel (fixed by priority, fixed by configured order, rotating across channels, or adaptive weighted scoring) instead of overloading "failover" - all four strategies share identical in-request failover and circuit protection, so the old names obscured the real difference and `ordered_round_robin` never actually rotated.

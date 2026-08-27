@@ -937,6 +937,8 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 	lastStatus := http.StatusBadGateway
 	var retryAfter time.Duration
 	for attempt := 1; ; attempt++ {
+		// Only an explicitly configured positive cap ends the loop early;
+		// the default (<= 0) tries every candidate in the plan before failing.
 		if a.cfg.MaxFailoverAttempts > 0 && attempt > a.cfg.MaxFailoverAttempts {
 			status := lastStatus
 			if status < http.StatusBadRequest {

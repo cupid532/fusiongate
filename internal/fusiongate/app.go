@@ -39,9 +39,8 @@ type Config struct {
 }
 
 const (
-	DefaultStreamStartTimeout  = 30 * time.Second
-	DefaultMaxFailoverAttempts = 15
-	DefaultFailureThreshold    = 5
+	DefaultStreamStartTimeout = 30 * time.Second
+	DefaultFailureThreshold   = 5
 )
 
 type App struct {
@@ -264,9 +263,9 @@ func New(cfg Config) (*App, error) {
 	if cfg.Addr == "" {
 		cfg.Addr = "127.0.0.1:8787"
 	}
-	if cfg.MaxFailoverAttempts <= 0 {
-		cfg.MaxFailoverAttempts = DefaultMaxFailoverAttempts
-	}
+	// MaxFailoverAttempts <= 0 keeps the failover loop unlimited: the request
+	// tries its entire in-request candidate plan before failing. A positive
+	// value acts as an optional fuse cap.
 	if cfg.MaxConcurrentRequests <= 0 {
 		cfg.MaxConcurrentRequests = 64
 	}

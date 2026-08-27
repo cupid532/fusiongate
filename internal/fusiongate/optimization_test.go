@@ -63,3 +63,38 @@ func TestProviderHealthFactorPenalizesUnhealthyChecks(t *testing.T) {
 		t.Fatalf("healthy=%v degraded=%v", healthy, degraded)
 	}
 }
+
+func TestFailoverExhaustsEntirePlan(t *testing.T) {
+	cfg := testConfig(t)
+	if cfg.MaxFailoverAttempts != 0 {
+		t.Fatalf("default MaxFailoverAttempts=%d, want 0 (unlimited)", cfg.MaxFailoverAttempts)
+	}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	routes := []resolvedRoute{
+		schedulerRoute(1, 1, "model", 1, 0),
+		schedulerRoute(2, 2, "model", 1, 1),
+		schedulerRoute(3, 3, "model", 1, 2),
+		schedulerRoute(4, 4, "model", 1, 3),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	calls := 0
+	a.runRoutes(rec, req, authKey{}, routes, "test", "", false, func(resolvedRoute, string, func()) attemptResult {
+		calls++
+		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_server_error"}
+	})
+	if calls != 4 {
+		t.Fatalf("attempts=%d, want 4 (entire plan exhausted)", calls)
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if !strings.Contains(rec.Body.String(), "all eligible providers failed") {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}

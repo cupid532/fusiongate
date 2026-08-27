@@ -194,7 +194,7 @@ sudo bash install.sh
 | `FUSIONGATE_ADMIN_PASSWORD_FILE` | 可选，读取管理员密码的文件路径；生产 Compose 使用该方式挂载 secret。 |
 | `FUSIONGATE_ADDR` | 监听地址，默认 `127.0.0.1:8787`。 |
 | `FUSIONGATE_DATA_DIR` | SQLite 数据目录，默认 `./data`。 |
-| `FUSIONGATE_MAX_FAILOVER_ATTEMPTS` | 单次请求最多尝试的上游渠道数，默认 `8`，用于避免失效渠道造成重试风暴。 |
+| `FUSIONGATE_MAX_FAILOVER_ATTEMPTS` | 可选保险丝：单次请求最多尝试的上游渠道数。默认不限（逐个试完请求内全部候选渠道后才返回失败），渠道越多尝试越多；设为 N（N≥1）时恢复固定上限，用于避免失效渠道造成重试风暴。 |
 | `FUSIONGATE_MAX_CONCURRENT_REQUESTS` | 网关同时处理的 API 请求上限，默认 `64`；达到上限返回 `503` 并带 `Retry-After`。 |
 | `FUSIONGATE_STREAM_START_TIMEOUT` | 流式响应等待首个有效模型事件的时间，默认 `30s`；适合首字节较慢的 Claude 等推理渠道。 |
 | `FUSIONGATE_STREAM_IDLE_TIMEOUT` | 流式响应有效事件之间的最大空闲时间，默认 `5m`。 |
