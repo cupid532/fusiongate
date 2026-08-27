@@ -221,11 +221,11 @@ func requestListForTest(t *testing.T, a *App) []requestListRow {
 	}
 	var payload struct {
 		Items []struct {
-		Running     bool   `json:"running"`
-		CompletedAt string `json:"completed_at"`
-		FirstByteMS *int64 `json:"first_byte_ms"`
-		Success     bool   `json:"success"`
-		LatencyMS   int64  `json:"latency_ms"`
+			Running     bool   `json:"running"`
+			CompletedAt string `json:"completed_at"`
+			FirstByteMS *int64 `json:"first_byte_ms"`
+			Success     bool   `json:"success"`
+			LatencyMS   int64  `json:"latency_ms"`
 		}
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
