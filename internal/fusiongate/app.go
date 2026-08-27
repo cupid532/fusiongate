@@ -337,6 +337,9 @@ func New(cfg Config) (*App, error) {
 	readDB.SetMaxIdleConns(readPoolSize())
 	a.readDB = readDB
 	a.startLedgerWriter()
+	// Any open ledger row predating this process is abandoned work:
+	// close it once so the console stops reporting ghost in-flight attempts.
+	a.reconcileStartupLedgerRows()
 	if err := a.pruneRequestLedger(context.Background(), true); err != nil {
 		a.closeDatabases()
 		return nil, err
@@ -522,6 +525,7 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	go a.runOAuthRefreshLoop(ctx)
 	go a.runPricingSyncLoop(ctx)
 	go a.runLedgerRetentionLoop(ctx)
+	go a.runLedgerReconcileLoop(ctx)
 	go a.runQualityDetectorRetentionLoop(ctx)
 	// Circuit recovery is performed by the next real request after cooldown.
 }

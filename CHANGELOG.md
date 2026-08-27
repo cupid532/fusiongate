@@ -1,5 +1,12 @@
 # Changelog
 
+## V2.39
+
+- Break the request-ledger token column into granular parts (input, cached, reasoning, output) instead of a single total.
+- Show live per-second elapsed clocks for running requests, distinguishing waiting-for-first-byte from streaming, timed against the server clock.
+- Flag running rows that have outrun every plausible completion window as suspected-stalled.
+- Reconcile orphaned ledger rows: startup closes rows left open by a previous process, and a periodic sweep force-closes rows older than two hours.
+
 ## V2.38
 
 - Treat failover as exhaustive by default: a request now tries its entire in-request candidate plan before returning failure instead of stopping at a fixed 15-attempt cap. Larger channel fleets simply get more attempts; termination behavior, statuses and response headers for explicitly configured caps are unchanged. Set `FUSIONGATE_MAX_FAILOVER_ATTEMPTS=N` (N >= 1) to re-enable the optional fuse cap.

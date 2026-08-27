@@ -59,10 +59,13 @@ func TestReasoningEffortIsRecordedOnTheLedger(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("requests API status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	var rows []map[string]any
-	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
+	rows := payload.Items
 	if len(rows) != 1 || rows[0]["reasoning_effort"] != "high" {
 		t.Fatalf("requests API reasoning effort=%v", rows)
 	}

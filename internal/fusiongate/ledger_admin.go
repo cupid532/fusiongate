@@ -169,8 +169,9 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 
-	q := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip,l.reasoning_effort
+	q := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms
 		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id ASC LIMIT ?`
+	serverNow := time.Now().UTC()
 	pageArgs := append([]any{}, args...)
 	pageArgs = append(pageArgs, ledgerExportLimit)
 	rows, err := a.reader().Query(q, pageArgs...)
@@ -186,7 +187,8 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, clientIP, reasoningEffort string
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &clientIP, &reasoningEffort); err != nil {
+		var requestTimeoutMS int64
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -204,6 +206,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			"cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output,
 			"cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported),
 			"reasoning_effort": reasoningEffort,
+			"stale":            completed == "" && ledgerRowStale(created, requestTimeoutMS, serverNow),
 		})
 	}
 	if err := rows.Err(); err != nil {
@@ -214,7 +217,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	if len(out) > 0 {
 		lastID = out[len(out)-1]["id"].(int)
 	}
-	payload := map[string]any{"items": out, "count": len(out), "last_id": lastID, "truncated": len(out) >= ledgerExportLimit}
+	payload := map[string]any{"items": out, "count": len(out), "last_id": lastID, "truncated": len(out) >= ledgerExportLimit, "server_now": serverNow.Format(time.RFC3339Nano)}
 	b, _ := json.Marshal(payload)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="fusiongate-requests.json"`)

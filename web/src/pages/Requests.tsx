@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { RefreshCw, Search, Trash2, Download, HardDrive, Save } from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
-import type { Provider, RequestLedgerRow, LedgerStatus } from "@/lib/types"
+import type { Provider, RequestLedgerPayload, LedgerStatus } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -33,6 +33,31 @@ function duration(ms: number | null) {
   if (ms == null) return "—"
   if (ms < 1000) return `${ms} ms`
   return `${(ms / 1000).toFixed(1)} s`
+}
+
+function clockPad(n: number) {
+  return String(n).padStart(2, "0")
+}
+
+// LiveClock renders a self-ticking elapsed timer for a running ledger row.
+// Timing anchors to the server clock so client clock skew cannot distort it:
+// each poll response carries server_now, and the created_at of the row is a
+// server-side timestamp, so their difference cancels local drift.
+function LiveClock({ startIso, serverNow, phase, stale }: { startIso: string; serverNow: number; phase: "first" | "stream"; stale: boolean }) {
+  const [tick, setTick] = useState(() => Date.now())
+  useEffect(() => {
+    const t = window.setInterval(() => setTick(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [])
+  const elapsed = Math.max(0, Math.floor((tick - serverNow + new Date(startIso).getTime()) / 1000))
+  const label = `${clockPad(Math.floor(elapsed / 60))}:${clockPad(elapsed % 60)}`
+  if (stale) return <Badge variant="danger">疑似停滞 {label}</Badge>
+  if (phase === "first") return <Badge variant="warning">等待首字节 {label}</Badge>
+  return (
+    <Badge variant="warning">
+      输出中 <span className="tabular-nums">{label}</span>
+    </Badge>
+  )
 }
 
 export function Requests() {
@@ -115,11 +140,24 @@ export function Requests() {
     return p.toString()
   }, [status, q, providerId, range])
 
-  const { data: rows = [], isLoading, isFetching, refetch } = useQuery({
+  const requestsQuery = useQuery({
     queryKey: ["requests", status, q, providerId, range],
-    queryFn: () => api<RequestLedgerRow[]>(`/api/admin/requests?${params}`),
+    queryFn: () => api<RequestLedgerPayload>(`/api/admin/requests?${params}`),
     refetchInterval: 5000,
   })
+  const rows = requestsQuery.data?.items ?? []
+  const isLoading = requestsQuery.isLoading
+  const isFetching = requestsQuery.isFetching
+  const refetch = requestsQuery.refetch
+
+  // Server-clock baseline shared by every LiveClock in the current poll.
+  const serverNowMs = useMemo(() => {
+    const iso = requestsQuery.data?.server_now
+    if (!iso || rows.length === 0) return Date.now()
+    const t = new Date(iso).getTime()
+    return Number.isFinite(t) ? t : Date.now()
+    // Recompute when either side changes; rows guard empty pages.
+  }, [requestsQuery.data])
 
   const groupByModel = useMemo(() => {
     const map = new Map<string, { model: string; count: number; success: number; failed: number; tokens: number; cost_micros: number; avg_latency: number }>()
@@ -359,8 +397,10 @@ export function Requests() {
                       </td>
                       <td className="px-4 py-3 text-xs">{r.provider_name || "—"}</td>
                       <td className="px-4 py-3">
-                        {r.running ? (
-                          <Badge variant="warning">进行中</Badge>
+                        {r.running && r.first_byte_ms == null ? (
+                          <LiveClock startIso={r.created_at} serverNow={serverNowMs} phase="first" stale={!!r.stale} />
+                        ) : r.running ? (
+                          <LiveClock startIso={r.created_at} serverNow={serverNowMs} phase="stream" stale={!!r.stale} />
                         ) : r.success ? (
                           <Badge variant="success">成功</Badge>
                         ) : (
@@ -368,7 +408,18 @@ export function Requests() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{duration(r.first_byte_ms)}</td>
-                      <td className="px-4 py-3 text-xs">{r.total_tokens}</td>
+                      <td className="px-4 py-3 text-xs">
+                          {(() => {
+                            const parts: string[] = []
+                            if (r.input_tokens > 0) parts.push(`入 ${formatTokens(r.input_tokens)}`)
+                            if (r.cached_tokens > 0) parts.push(`缓 ${formatTokens(r.cached_tokens)}`)
+                            if (r.reasoning_tokens > 0) parts.push(`思 ${formatTokens(r.reasoning_tokens)}`)
+                            if (r.output_tokens > 0) parts.push(`出 ${formatTokens(r.output_tokens)}`)
+                            if (parts.length) return parts.join(" · ")
+                            if (r.running) return ""
+                            return r.usage_reported ? "0" : "未采集"
+                          })()}
+                        </td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{formatCost(r.cost_micros)}</td>
                     </tr>
                   ))}

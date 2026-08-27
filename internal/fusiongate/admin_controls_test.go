@@ -100,9 +100,15 @@ func TestRequestLedgerFiltersByDetailedTimeStatusProviderAndQuery(t *testing.T) 
 	var rows []struct {
 		RequestID string `json:"request_id"`
 	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
+	var envelope struct {
+		Items []struct {
+			RequestID string `json:"request_id"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &envelope); err != nil {
 		t.Fatal(err)
 	}
+	rows = envelope.Items
 	if len(rows) != 1 || rows[0].RequestID != "matching" {
 		t.Fatalf("filtered rows=%+v", rows)
 	}

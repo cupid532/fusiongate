@@ -219,16 +219,19 @@ func requestListForTest(t *testing.T, a *App) []requestListRow {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("requests status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var raw []struct {
+	var payload struct {
+		Items []struct {
 		Running     bool   `json:"running"`
 		CompletedAt string `json:"completed_at"`
 		FirstByteMS *int64 `json:"first_byte_ms"`
 		Success     bool   `json:"success"`
 		LatencyMS   int64  `json:"latency_ms"`
+		}
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
+	raw := payload.Items
 	out := make([]requestListRow, 0, len(raw))
 	for _, row := range raw {
 		converted := requestListRow{Running: row.Running, CompletedAt: row.CompletedAt, Success: row.Success, LatencyMS: row.LatencyMS}

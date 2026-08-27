@@ -185,6 +185,13 @@ export interface RequestLedgerRow {
   cost_type: string
   usage_reported: boolean
   reasoning_effort: string
+  stale?: boolean
+}
+
+export interface RequestLedgerPayload {
+  items: RequestLedgerRow[]
+  count: number
+  server_now: string
 }
 
 export interface TokenUsageMetrics {
