@@ -40,16 +40,15 @@ function clockPad(n: number) {
 }
 
 // LiveClock renders a self-ticking elapsed timer for a running ledger row.
-// Timing anchors to the server clock so client clock skew cannot distort it:
-// each poll response carries server_now, and the created_at of the row is a
-// server-side timestamp, so their difference cancels local drift.
-function LiveClock({ startIso, serverNow, phase, stale }: { startIso: string; serverNow: number; phase: "first" | "stream"; stale: boolean }) {
+// Both timestamps are absolute millisecond values; subtracting creation
+// time keeps the badge focused on elapsed duration rather than a Unix timestamp.
+function LiveClock({ startIso, phase, stale }: { startIso: string; phase: "first" | "stream"; stale: boolean }) {
   const [tick, setTick] = useState(() => Date.now())
   useEffect(() => {
     const t = window.setInterval(() => setTick(Date.now()), 1000)
     return () => window.clearInterval(t)
   }, [])
-  const elapsed = Math.max(0, Math.floor((tick - serverNow + new Date(startIso).getTime()) / 1000))
+  const elapsed = Math.max(0, Math.floor((tick - new Date(startIso).getTime()) / 1000))
   const label = `${clockPad(Math.floor(elapsed / 60))}:${clockPad(elapsed % 60)}`
   if (stale) return <Badge variant="danger">疑似停滞 {label}</Badge>
   if (phase === "first") return <Badge variant="warning">等待首字节 {label}</Badge>
@@ -149,15 +148,6 @@ export function Requests() {
   const isLoading = requestsQuery.isLoading
   const isFetching = requestsQuery.isFetching
   const refetch = requestsQuery.refetch
-
-  // Server-clock baseline shared by every LiveClock in the current poll.
-  const serverNowMs = useMemo(() => {
-    const iso = requestsQuery.data?.server_now
-    if (!iso || rows.length === 0) return Date.now()
-    const t = new Date(iso).getTime()
-    return Number.isFinite(t) ? t : Date.now()
-    // Recompute when either side changes; rows guard empty pages.
-  }, [requestsQuery.data])
 
   const groupByModel = useMemo(() => {
     const map = new Map<string, { model: string; count: number; success: number; failed: number; tokens: number; cost_micros: number; avg_latency: number }>()
@@ -398,9 +388,9 @@ export function Requests() {
                       <td className="px-4 py-3 text-xs">{r.provider_name || "—"}</td>
                       <td className="px-4 py-3">
                         {r.running && r.first_byte_ms == null ? (
-                          <LiveClock startIso={r.created_at} serverNow={serverNowMs} phase="first" stale={!!r.stale} />
+                          <LiveClock startIso={r.created_at} phase="first" stale={!!r.stale} />
                         ) : r.running ? (
-                          <LiveClock startIso={r.created_at} serverNow={serverNowMs} phase="stream" stale={!!r.stale} />
+                          <LiveClock startIso={r.created_at} phase="stream" stale={!!r.stale} />
                         ) : r.success ? (
                           <Badge variant="success">成功</Badge>
                         ) : (

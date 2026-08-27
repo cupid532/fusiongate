@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.40
+
+- Fix request-ledger live elapsed badges to subtract the request creation timestamp instead of rendering a Unix timestamp-sized value.
+
 ## V2.39
 
 - Break the request-ledger token column into granular parts (input, cached, reasoning, output) instead of a single total.
