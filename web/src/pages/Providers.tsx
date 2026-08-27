@@ -4,6 +4,7 @@ import { motion } from "motion/react"
 import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider, RoutingStrategy } from "@/lib/types"
+import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -162,21 +163,24 @@ export function Providers() {
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">上游渠道</h1>
-          <p className="mt-1 text-sm text-muted-foreground">管理 API 渠道、优先级与全局故障转移。</p>
+          <p className="mt-1 text-sm text-muted-foreground">管理 API 渠道、优先级与全局起始渠道策略。</p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">故障转移模式</span>
+            <span className="text-xs font-medium text-muted-foreground">起始渠道选择</span>
             <select
               value={routing?.strategy ?? "priority_failover"}
               onChange={(e) => setStrategy.mutate(e.target.value as RoutingStrategy)}
+              title={ROUTING_STRATEGY_HELP[routing?.strategy ?? "priority_failover"]}
               className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
             >
-              <option value="priority_failover">按优先级故障转移</option>
-              <option value="ordered_round_robin">顺序故障转移（每次从首个开始）</option>
-              <option value="smart_round_robin">轮询分流 + 故障转移</option>
-              <option value="adaptive">自适应选择 + 故障转移</option>
+              {(Object.keys(ROUTING_STRATEGY_LABELS) as RoutingStrategy[]).map((value) => (
+                <option key={value} value={value}>{ROUTING_STRATEGY_LABELS[value]}</option>
+              ))}
             </select>
+            {routing?.strategy && (
+              <span className="max-w-sm text-xs text-muted-foreground">{ROUTING_STRATEGY_HELP[routing.strategy]}</span>
+            )}
           </div>
           <Button variant="outline" onClick={() => setGroupOpen(true)}>
             <FolderTree className="h-4 w-4" />

@@ -4,6 +4,7 @@ import { motion } from "motion/react"
 import { Coins, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
 import type { ModelAlias, PricingStatus, PricingSyncResult, Route, RoutingStrategy } from "@/lib/types"
+import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -16,18 +17,8 @@ import { RouteDialog } from "@/components/RouteDialog"
 const price = (micros: number) => `$${(micros / 1_000_000).toFixed(micros % 1_000_000 === 0 ? 0 : 3)}`
 const pricingSource = (source?: string) => !source ? "未定价" : source === "manual" ? "手工" : source.includes("openrouter.ai") ? "OpenRouter" : "官网"
 
-const strategyLabels: Record<RoutingStrategy, string> = {
-  priority_failover: "按优先级故障转移",
-  ordered_round_robin: "顺序故障转移（每次从首个开始）",
-  smart_round_robin: "轮询分流 + 故障转移",
-  adaptive: "自适应选择 + 故障转移",
-}
-const strategyHelp: Record<RoutingStrategy, string> = {
-  priority_failover: "优先使用高优先级渠道，当前渠道失败后继续下一渠道。",
-  ordered_round_robin: "每个请求都从配置顺序中的首个可用渠道开始，仅在失败时继续。",
-  smart_round_robin: "每个新请求移动到下一个可用渠道；单次请求失败后继续环上的后续渠道。",
-  adaptive: "根据首字节延迟、失败、权重和当前并发动态选择，同时保留请求内故障转移。",
-}
+const strategyLabels = ROUTING_STRATEGY_LABELS
+const strategyHelp = ROUTING_STRATEGY_HELP
 
 type StatusVariant = "success" | "warning" | "danger" | "neutral"
 
@@ -94,15 +85,15 @@ export function Routes() {
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div><h1 className="text-2xl font-bold tracking-tight">模型路由</h1><p className="mt-1 text-sm text-muted-foreground">按规范模型组管理调用名称、渠道成员、轮询与健康感知故障转移。</p></div>
+        <div><h1 className="text-2xl font-bold tracking-tight">模型路由</h1><p className="mt-1 text-sm text-muted-foreground">按规范模型组管理调用名称、渠道成员与健康感知的请求内故障转移。</p></div>
         <div className="flex flex-wrap items-center gap-2"><div className="relative"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input value={q} onChange={(event) => setQ(event.target.value)} placeholder="搜索模型、别名、渠道" className="h-9 w-60 pl-8 text-xs" /></div><Button onClick={() => setRouteOpen(true)}><Plus />添加渠道成员</Button></div>
       </div>
 
       <Card className="mb-4 overflow-hidden">
         <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">当前调度策略</div><Badge variant="default">{strategyLabels[strategy]}</Badge></div>
-            <div className="mt-1 text-xs text-muted-foreground">{strategyHelp[strategy]} 调用别名与规范名称共享同一调度状态。</div>
+            <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">起始渠道选择策略</div><Badge variant="default">{strategyLabels[strategy]}</Badge></div>
+            <div className="mt-1 text-xs text-muted-foreground">{strategyHelp[strategy]} 所有策略都带请求内故障转移：起点失败后自动依次尝试其余渠道，并受熔断与半开探活保护；调用别名与规范名称共享同一调度状态。</div>
           </div>
           <select value={strategy} onChange={(event) => setStrategy.mutate(event.target.value as RoutingStrategy)} disabled={setStrategy.isPending} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm">
             {(Object.keys(strategyLabels) as RoutingStrategy[]).map((value) => <option key={value} value={value}>{strategyLabels[value]}</option>)}

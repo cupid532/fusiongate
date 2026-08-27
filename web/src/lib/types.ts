@@ -350,6 +350,30 @@ export interface CredentialImportPreviewItem {
 
 export type RoutingStrategy = "priority_failover" | "ordered_round_robin" | "smart_round_robin" | "adaptive"
 
+/**
+ * 全局路由（起始渠道选择）策略的展示文案。
+ *
+ * 注意：四种策略都带有相同的请求内故障转移（首选渠道失败后依次尝试其余渠道、
+ * 受熔断与半开探活保护），区别只在于每个新请求的「起始渠道」如何选出：
+ * - priority_failover: 始终从优先级最高的渠道开始
+ * - ordered_round_robin: 始终从配置顺序的第一个渠道开始（固定起点，不轮换）
+ * - smart_round_robin: 在可用渠道间轮换起点，分摊负载
+ * - adaptive: 按权重/延迟/失败/并发动态打分选起点（平滑加权轮询）
+ */
+export const ROUTING_STRATEGY_LABELS: Record<RoutingStrategy, string> = {
+  priority_failover: "优先级固定（总从最高优先级开始）",
+  ordered_round_robin: "配置顺序固定（总从第一个开始）",
+  smart_round_robin: "渠道间轮换（平均分摊）",
+  adaptive: "自适应加权（按延迟/失败/并发打分）",
+}
+
+export const ROUTING_STRATEGY_HELP: Record<RoutingStrategy, string> = {
+  priority_failover: "每个请求都从优先级最高的可用渠道开始；仅当它失败或熔断时才转移。适合有明确主备关系的场景。",
+  ordered_round_robin: "每个请求都从配置列表最上方的可用渠道开始；不主动轮换，仅失败时顺延。",
+  smart_round_robin: "每个新请求自动换下一个可用渠道作为起点，均匀分摊负载；单次请求内仍会故障转移到后续渠道。",
+  adaptive: "按权重、首字节延迟、连续失败和当前并发综合打分，把新请求发给当前得分最高的渠道；恢复冷却的渠道会被优先探测。",
+}
+
 export interface ProviderKey {
   id: number
   name: string

@@ -1,6 +1,12 @@
 # Changelog
 
+## V2.37
+
+- Rename the routing strategy labels in the console to describe how each new request picks its starting channel (fixed by priority, fixed by configured order, rotating across channels, or adaptive weighted scoring) instead of overloading "failover" - all four strategies share identical in-request failover and circuit protection, so the old names obscured the real difference and `ordered_round_robin` never actually rotated.
+- Share one label/help source of truth (`ROUTING_STRATEGY_LABELS` / `ROUTING_STRATEGY_HELP`) between the upstream-channels page and the model-routing page; the channels selector now shows an inline explanation of the selected strategy instead of unlabeled options.
+
 ## V2.36
+
 
 - Make model aliases and their canonical model share the same smart-round-robin cursor and adaptive weight state while continuing to preserve the client-requested model name in responses and request accounting.
 - Rebuild the model-routing console around canonical failover groups: every card now combines call aliases and channel members, shows configured versus currently schedulable routes, explains channel/route/circuit exclusions, and mirrors the configured strategy order.
