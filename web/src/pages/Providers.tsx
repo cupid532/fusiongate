@@ -5,7 +5,7 @@ import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wal
 import { api } from "@/lib/api"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
-import { cn } from "@/lib/utils"
+import { cn, formatCost } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -293,9 +293,9 @@ export function Providers() {
                         {balanceMap.has(p.id) && (
                           <div className="mt-2 max-w-[220px]">
                             <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                              <span>余额已用</span>
+                              <span>剩余余额</span>
                               <span className="font-medium text-foreground">
-                                {balanceMap.get(p.id)!.used_percent.toFixed(1)}%
+                                {formatCost(balanceMap.get(p.id)!.remaining_micros)}
                               </span>
                             </div>
                             <div className="h-1.5 overflow-hidden rounded-full bg-muted">

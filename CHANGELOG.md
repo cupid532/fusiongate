@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.41
+
+- Replace the provider balance progress-bar percentage label with the remaining balance amount while preserving the existing usage-based progress bar.
+
 ## V2.40
 
 - Fix request-ledger live elapsed badges to subtract the request creation timestamp instead of rendering a Unix timestamp-sized value.
