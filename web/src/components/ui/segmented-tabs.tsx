@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils"
 
-export interface SegmentedTab<T extends string> {
+interface SegmentedTab<T extends string> {
   value: T
   label: React.ReactNode
   count?: number

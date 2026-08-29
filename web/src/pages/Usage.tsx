@@ -106,15 +106,15 @@ export function Usage() {
           <p className="mt-1 text-sm text-muted-foreground">按时间、模型、密钥与渠道多维分析 Token 用量与估算费用。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <select value={providerId} onChange={(e) => setProviderId(e.target.value)} className={inputStyles}>
+          <select aria-label="按渠道筛选用量" value={providerId} onChange={(e) => setProviderId(e.target.value)} className={inputStyles}>
             <option value="">全部渠道</option>
             {providers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
           </select>
-          <select value={apiKeyId} onChange={(e) => setApiKeyId(e.target.value)} className={inputStyles}>
+          <select aria-label="按访问密钥筛选用量" value={apiKeyId} onChange={(e) => setApiKeyId(e.target.value)} className={inputStyles}>
             <option value="">全部 Key</option>
             {keys.map((k) => (<option key={k.id} value={k.id}>{k.name}</option>))}
           </select>
-          <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="模型名（可选）" className={cn(inputStyles, "px-3")} />
+          <input aria-label="按模型筛选用量" value={model} onChange={(e) => setModel(e.target.value)} placeholder="模型名（可选）" className={cn(inputStyles, "px-3")} />
           <div className="flex gap-1.5">
             {ranges.map((r) => (
               <button key={r.d} onClick={() => setDays(r.d)} className={cn("rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors", days === r.d ? "border-primary bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground")}>
@@ -263,7 +263,8 @@ export function Usage() {
 }
 
 function RankPanel({ tab, data, onSelectModel }: { tab: "models" | "keys" | "providers"; data: TokenUsageResponse; onSelectModel: (m: string) => void }) {
-  const config: Record<string, { title: string; desc: string; icon: React.ReactNode; list: (typeof data.by_models) | (typeof data.by_keys) | (typeof data.by_providers); onSelect?: (item: any) => void }> = {
+  type RankItem = (typeof data.by_models)[number] | (typeof data.by_keys)[number] | (typeof data.by_providers)[number]
+  const config: Record<string, { title: string; desc: string; icon: React.ReactNode; list: RankItem[]; onSelect?: (item: RankItem) => void }> = {
     models: {
       title: "模型分析", desc: "按公开模型聚合的用量与费用。", icon: <Boxes className="h-4 w-4" />,
       list: data.by_models, onSelect: (it) => onSelectModel(it.name),
@@ -300,7 +301,7 @@ function RankPanel({ tab, data, onSelectModel }: { tab: "models" | "keys" | "pro
                       <div className="flex items-center gap-2 text-sm font-medium">
                         <span className="text-[10px] text-muted-foreground tabular-nums">#{i + 1}</span>
                         <span className="truncate">{name}</span>
-                        {it.name && "upstream_model" in it && (it as any).upstream_model && (it as any).upstream_model !== it.name ? <span className="truncate font-mono text-[10px] text-muted-foreground">{(it as any).upstream_model}</span> : null}
+                        {it.name && "upstream_model" in it && it.upstream_model && it.upstream_model !== it.name ? <span className="truncate font-mono text-[10px] text-muted-foreground">{it.upstream_model}</span> : null}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
                         <span>输入 {formatTokens(it.input_tokens)}</span>

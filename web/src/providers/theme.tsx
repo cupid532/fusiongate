@@ -20,6 +20,9 @@ function getInitialTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
 }
 
+// The provider and hook intentionally share this module; the warning is about
+// hot-reload boundaries only, not runtime correctness.
+// oxlint-disable-next-line react/only-export-components
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
 
@@ -37,6 +40,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }
 
+// oxlint-disable-next-line react/only-export-components
 export function useTheme() {
   const ctx = useContext(ThemeContext)
   if (!ctx) throw new Error("useTheme must be used within ThemeProvider")

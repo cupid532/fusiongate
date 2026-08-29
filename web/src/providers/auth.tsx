@@ -23,6 +23,9 @@ type AuthState = {
 
 const AuthContext = createContext<AuthState | null>(null)
 
+// The provider and hook intentionally share this module; the warning is about
+// hot-reload boundaries only, not runtime correctness.
+// oxlint-disable-next-line react/only-export-components
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [authenticated, setAuthenticated] = useState(false)
@@ -62,6 +65,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
+// oxlint-disable-next-line react/only-export-components
 export function useAuth() {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error("useAuth must be used within AuthProvider")

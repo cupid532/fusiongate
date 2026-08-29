@@ -169,6 +169,7 @@ export function Providers() {
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-medium text-muted-foreground">起始渠道选择</span>
             <select
+              aria-label="全局起始渠道选择策略"
               value={routing?.strategy ?? "priority_failover"}
               onChange={(e) => setStrategy.mutate(e.target.value as RoutingStrategy)}
               title={ROUTING_STRATEGY_HELP[routing?.strategy ?? "priority_failover"]}
@@ -253,7 +254,7 @@ export function Providers() {
                 <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                 <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索渠道" className="h-8 w-52 pl-8 text-xs" />
               </div>
-              <Button variant="ghost" size="icon" onClick={() => void refetch()} aria-label="刷新">
+              <Button variant="ghost" size="icon" onClick={() => void refetch()} aria-label="刷新渠道" title="刷新渠道">
                 <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
               </Button>
             </div>

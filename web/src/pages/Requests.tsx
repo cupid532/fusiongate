@@ -144,7 +144,7 @@ export function Requests() {
     queryFn: () => api<RequestLedgerPayload>(`/api/admin/requests?${params}`),
     refetchInterval: 5000,
   })
-  const rows = requestsQuery.data?.items ?? []
+  const rows = useMemo(() => requestsQuery.data?.items ?? [], [requestsQuery.data?.items])
   const isLoading = requestsQuery.isLoading
   const isFetching = requestsQuery.isFetching
   const refetch = requestsQuery.refetch
@@ -228,6 +228,7 @@ export function Requests() {
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
                 <Input
+                  aria-label="请求账本容量上限（MB）"
                   type="number"
                   min={1}
                   max={10240}
@@ -305,9 +306,10 @@ export function Requests() {
             <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
               <div className="relative min-w-0 flex-1 sm:flex-none">
                 <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / IP / 错误" className="h-8 w-full pl-8 text-xs sm:w-56" />
+                <Input aria-label="搜索请求账本" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / IP / 错误" className="h-8 w-full pl-8 text-xs sm:w-56" />
               </div>
               <select
+                aria-label="按渠道筛选请求"
                 value={providerId}
                 onChange={(e) => setProviderId(e.target.value)}
                 className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
@@ -320,6 +322,7 @@ export function Requests() {
                 ))}
               </select>
               <select
+                aria-label="按时间范围筛选请求"
                 value={range}
                 onChange={(e) => setRange(e.target.value)}
                 className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"

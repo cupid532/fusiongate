@@ -1,5 +1,12 @@
 # Changelog
 
+## V2.42
+
+- Add one-click copy controls with visible success feedback for the overview Base URL and revealed downstream API keys, including a fallback for browsers without the modern Clipboard API.
+- Fix the overview cost card to format micro-dollar values exactly once and align the channel-health total with enabled, non-archived channels.
+- Improve compact-screen key creation layout and add accessible labels to filtering and routing controls.
+- Remove unused UI exports and duplicate frontend response types, and resolve the request-ledger memoization lint warning.
+
 ## V2.41
 
 - Replace the provider balance progress-bar percentage label with the remaining balance amount while preserving the existing usage-based progress bar.

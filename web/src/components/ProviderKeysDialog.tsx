@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import type { ProviderKey } from "@/lib/types"
 import {
   Dialog,
   DialogContent,
@@ -13,17 +14,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
-
-type ProviderKey = {
-  id: number
-  name: string
-  key_hint: string
-  enabled: boolean
-  status: string
-  model?: string
-  discovered_models: number
-  last_test_latency_ms: number
-}
 
 export function ProviderKeysDialog({
   open,

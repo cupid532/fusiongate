@@ -1,24 +1,13 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { animate, motion, useMotionValue } from "motion/react"
-import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, Copy, Check, ShieldCheck, HardHat } from "lucide-react"
+import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, ShieldCheck, HardHat } from "lucide-react"
 import { api } from "@/lib/api"
 import { formatCost, formatTokens, cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { CopyButton } from "@/components/ui/copy-button"
 import { EmptyState } from "@/components/ui/empty-state"
-import type { Provider } from "@/lib/types"
-
-type DashboardData = {
-  providers: number
-  models: number
-  keys: number
-  requests: number
-  today_requests: number
-  failures_24h: number
-  total_tokens: number
-  cost_micros: number
-}
+import type { DashboardData, Provider } from "@/lib/types"
 
 function CountUp({ value, format }: { value: number; format?: (n: number) => string }) {
   const mv = useMotionValue(0)
@@ -50,7 +39,7 @@ const statItems: {
   { key: "keys", label: "活跃密钥", icon: KeyRound, tone: "text-violet-500 bg-violet-500/10" },
   { key: "today_requests", label: "今日请求", icon: Activity, tone: "text-cyan-500 bg-cyan-500/10" },
   { key: "failures_24h", label: "24h 失败", icon: AlertTriangle, tone: "text-destructive bg-destructive/10" },
-  { key: "cost_micros", label: "近一年费用", icon: Coins, tone: "text-amber-500 bg-amber-500/10", format: (n) => formatCost(n) },
+  { key: "cost_micros", label: "近一年费用", icon: Coins, tone: "text-amber-500 bg-amber-500/10", format: formatCost },
 ]
 
 export function Dashboard() {
@@ -66,9 +55,9 @@ export function Dashboard() {
   })
 
   const health = useMemo(() => {
-    const totals = { total: providers.length, healthy: 0, unhealthy: 0, unknown: 0 }
-    for (const p of providers) {
-      if (!p.enabled) continue
+    const enabled = providers.filter((p) => p.enabled && !p.archived)
+    const totals = { total: enabled.length, healthy: 0, unhealthy: 0, unknown: 0 }
+    for (const p of enabled) {
       if (p.health_check_status === "healthy") totals.healthy++
       else if (p.health_check_status === "unhealthy") totals.unhealthy++
       else totals.unknown++
@@ -77,18 +66,7 @@ export function Dashboard() {
     return { ...totals, healthyPct }
   }, [providers])
 
-  const [copied, setCopied] = useState(false)
-
-  async function copyBaseUrl() {
-    const url = `${location.origin}/v1`
-    try {
-      await navigator.clipboard.writeText(url)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1500)
-    } catch {
-      /* ignore */
-    }
-  }
+  const baseUrl = `${location.origin}/v1`
 
   if (isLoading || !data) {
     return <div className="animate-pulse text-sm text-muted-foreground">加载中…</div>
@@ -103,16 +81,11 @@ export function Dashboard() {
             统一观察 Provider、模型路由、访问密钥和请求状态。
           </p>
         </div>
-        <Button variant="outline" onClick={copyBaseUrl}>
-          {copied ? <Check className="h-4 w-4 text-primary" /> : <Copy className="h-4 w-4" />}
-          复制 Base URL
-        </Button>
       </div>
 
       <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {statItems.map((item, i) => {
-          const raw = data[item.key] as number
-          const value = item.key === "cost_micros" ? data.cost_micros / 1_000_000 : raw
+          const value = data[item.key] as number
           return (
             <motion.div
               key={item.key}
@@ -152,8 +125,8 @@ export function Dashboard() {
             <CardDescription>基于启用渠道的最近健康检测。</CardDescription>
           </CardHeader>
           <CardContent>
-            {providers.length === 0 ? (
-              <EmptyState title="暂无渠道" description="添加上游 Provider 后即可查看健康概览。" />
+            {health.total === 0 ? (
+              <EmptyState title="暂无启用渠道" description="启用上游 Provider 后即可查看健康概览。" />
             ) : (
               <div className="space-y-4">
                 <div className="flex items-end gap-3">
@@ -230,9 +203,20 @@ export function Dashboard() {
             <CardDescription>兼容 OpenAI SDK 与常用客户端。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="rounded-lg bg-muted p-3">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Base URL</div>
-              <div className="mt-1 truncate font-mono text-sm">{location.origin}/v1</div>
+            <div className="group flex items-center gap-2 rounded-lg bg-muted p-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Base URL</div>
+                <div className="mt-1 truncate font-mono text-sm" title={baseUrl}>{baseUrl}</div>
+              </div>
+              <CopyButton
+                value={baseUrl}
+                label="复制 Base URL"
+                copiedLabel="Base URL 已复制"
+                iconOnly
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+              />
             </div>
             <div className="text-xs text-muted-foreground">
               近一年累计 <span className="font-semibold text-foreground">{formatTokens(data.total_tokens)}</span> token ·{" "}

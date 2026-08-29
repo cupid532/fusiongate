@@ -7,6 +7,7 @@ import type { APIKey } from "@/lib/types"
 import { formatCost } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { CopyButton } from "@/components/ui/copy-button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -101,15 +102,15 @@ export function Keys() {
             <CardDescription>密钥创建后只完整显示一次。</CardDescription>
           </CardHeader>
           <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="col-span-2 flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
               <Label>名称</Label>
               <Input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="例如：Hermes local" />
             </div>
-            <div className="col-span-2 flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
               <Label>允许的模型（逗号分隔，留空配合下方「全部模型」）</Label>
               <Input value={form.allow_models} onChange={(e) => set("allow_models", e.target.value)} placeholder="gpt-4,claude-3-5" />
             </div>
-            <div className="col-span-2 flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
               <Label>拒绝的模型（逗号分隔）</Label>
               <Input value={form.deny_models} onChange={(e) => set("deny_models", e.target.value)} placeholder="gpt-4-mini" />
             </div>
@@ -121,19 +122,19 @@ export function Keys() {
               <Label>预算（USD，留空无限制）</Label>
               <Input value={form.budget_usd} onChange={(e) => set("budget_usd", e.target.value)} placeholder="0.00" type="number" step="0.01" />
             </div>
-            <label className="col-span-2 flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={form.allow_all} onChange={(e) => set("allow_all", e.target.checked)} />
               允许全部模型
             </label>
-            <label className="col-span-2 flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={form.allow_images} onChange={(e) => set("allow_images", e.target.checked)} />
               允许图片生成
             </label>
-            <label className="col-span-2 flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={form.allow_audio} onChange={(e) => set("allow_audio", e.target.checked)} />
               允许音频（TTS / 转录）
             </label>
-            <div className="col-span-2 flex justify-end gap-2">
+            <div className="flex justify-end gap-2 sm:col-span-2">
               <Button variant="ghost" onClick={() => setCreating(false)}>
                 取消
               </Button>
@@ -147,12 +148,20 @@ export function Keys() {
 
       {revealed && (
         <Card className="mb-4 border-primary/40">
-          <CardContent className="flex items-center gap-3 p-4">
-            <KeyRound className="h-5 w-5 shrink-0 text-primary" />
-            <code className="flex-1 break-all font-mono text-sm">{revealed}</code>
-            <Button variant="outline" size="sm" onClick={() => setRevealed("")}>
-              关闭
-            </Button>
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
+            <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
+              <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-primary sm:mt-0" />
+              <div className="min-w-0 flex-1">
+                <div className="mb-1 text-xs font-medium text-muted-foreground">完整访问密钥</div>
+                <code className="block break-all font-mono text-sm">{revealed}</code>
+              </div>
+            </div>
+            <div className="flex shrink-0 justify-end gap-2">
+              <CopyButton value={revealed} label="复制密钥" copiedLabel="密钥已复制" variant="outline" size="sm" />
+              <Button variant="outline" size="sm" onClick={() => setRevealed("")}>
+                关闭
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}

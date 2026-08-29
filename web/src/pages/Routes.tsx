@@ -86,7 +86,7 @@ export function Routes() {
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div><h1 className="text-2xl font-bold tracking-tight">模型路由</h1><p className="mt-1 text-sm text-muted-foreground">按规范模型组管理调用名称、渠道成员与健康感知的请求内故障转移。</p></div>
-        <div className="flex flex-wrap items-center gap-2"><div className="relative"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input value={q} onChange={(event) => setQ(event.target.value)} placeholder="搜索模型、别名、渠道" className="h-9 w-60 pl-8 text-xs" /></div><Button onClick={() => setRouteOpen(true)}><Plus />添加渠道成员</Button></div>
+        <div className="flex flex-wrap items-center gap-2"><div className="relative"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input aria-label="搜索模型路由" value={q} onChange={(event) => setQ(event.target.value)} placeholder="搜索模型、别名、渠道" className="h-9 w-60 pl-8 text-xs" /></div><Button onClick={() => setRouteOpen(true)}><Plus />添加渠道成员</Button></div>
       </div>
 
       <Card className="mb-4 overflow-hidden">
@@ -95,7 +95,7 @@ export function Routes() {
             <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">起始渠道选择策略</div><Badge variant="default">{strategyLabels[strategy]}</Badge></div>
             <div className="mt-1 text-xs text-muted-foreground">{strategyHelp[strategy]} 所有策略都带请求内故障转移：起点失败后自动依次尝试其余渠道，并受熔断与半开探活保护；调用别名与规范名称共享同一调度状态。</div>
           </div>
-          <select value={strategy} onChange={(event) => setStrategy.mutate(event.target.value as RoutingStrategy)} disabled={setStrategy.isPending} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm">
+          <select aria-label="全局起始渠道选择策略" value={strategy} onChange={(event) => setStrategy.mutate(event.target.value as RoutingStrategy)} disabled={setStrategy.isPending} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm">
             {(Object.keys(strategyLabels) as RoutingStrategy[]).map((value) => <option key={value} value={value}>{strategyLabels[value]}</option>)}
           </select>
         </CardContent>
@@ -143,6 +143,7 @@ export function Routes() {
                 </div>
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
                   <select
+                    aria-label={`将 ${item.provider_name || item.upstream_model} 移入其他故障转移组`}
                     value=""
                     onChange={(event) => {
                       const target = event.target.value
