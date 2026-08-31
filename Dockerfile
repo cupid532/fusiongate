@@ -5,7 +5,7 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.25.12-alpine AS build
+FROM golang:1.27.0-alpine AS build
 ARG FUSIONGATE_BUILD_REVISION=unknown
 RUN apk add --no-cache build-base curl
 ARG SING_BOX_VERSION=1.13.13
