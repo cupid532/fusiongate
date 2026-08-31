@@ -1,14 +1,19 @@
 package fusiongate
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mattn/go-sqlite3"
 )
 
 func insertProviderKeyForTest(t *testing.T, a *App, providerID int64, raw, name, model, egress string, nodeID any, enabled, order int) int64 {
@@ -23,6 +28,28 @@ func insertProviderKeyForTest(t *testing.T, a *App, providerID int64, raw, name,
 	}
 	id, _ := res.LastInsertId()
 	return id
+}
+
+func registerProviderKeyAuthorizerForTest(t *testing.T, a *App, callback func(int, string, string, string) int) {
+	t.Helper()
+	for _, db := range []*sql.DB{a.db, a.readDB} {
+		db.SetMaxOpenConns(1)
+		db.SetMaxIdleConns(1)
+		conn, err := db.Conn(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := conn.Raw(func(driverConn any) error {
+			driverConn.(*sqlite3.SQLiteConn).RegisterAuthorizer(callback)
+			return nil
+		}); err != nil {
+			conn.Close()
+			t.Fatal(err)
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestLegacyAPIKeyProviderMigratesToDefaultCard(t *testing.T) {
@@ -88,6 +115,189 @@ func TestProviderKeySelectionUsesOrderModelAndEgressOverride(t *testing.T) {
 	}
 	if _, err := a.selectProviderKey(context.Background(), providerID, "unsupported", &providerNode, nil, true); err == nil {
 		t.Fatal("unsupported model unexpectedly selected a key")
+	}
+}
+
+func TestProviderKeySelectionUsesReaderPool(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	providerID := insertTestProvider(t, a, "reader-key-provider", "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	insertProviderKeyForTest(t, a, providerID, "sk-reader", "reader", "model", providerKeyEgressInherit, nil, 1, 0)
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	keys, err := a.selectProviderKeys(ctx, providerID, "model", nil, nil, true)
+	if err != nil {
+		t.Fatalf("provider key selection waited for writer connection: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Credential != "sk-reader" {
+		t.Fatalf("keys=%+v", keys)
+	}
+}
+
+func TestResolveBatchesProviderKeySelectionAcrossCandidates(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	for i, upstreamModel := range []string{"upstream-one", "upstream-two"} {
+		providerID := insertTestProvider(t, a, "batch-key-provider-"+intString(int64(i+1)), "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+		insertTestRoute(t, a, providerID, "public-model", upstreamModel, "chat", i)
+		if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+			t.Fatal(err)
+		}
+		insertProviderKeyForTest(t, a, providerID, "sk-batch-"+intString(int64(i+1)), "batch", upstreamModel, providerKeyEgressInherit, nil, 1, 0)
+	}
+
+	var credentialReads atomic.Int64
+	registerProviderKeyAuthorizerForTest(t, a, func(op int, table, column, _ string) int {
+		if op == sqlite3.SQLITE_READ && table == "provider_api_keys" && column == "credential" {
+			credentialReads.Add(1)
+		}
+		return sqlite3.SQLITE_OK
+	})
+
+	routes, err := a.resolve(context.Background(), "public-model", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("routes=%d, want 2: %#v", len(routes), routes)
+	}
+	if reads := credentialReads.Load(); reads != 1 {
+		t.Fatalf("provider-key reader operations=%d, want 1 for both route candidates", reads)
+	}
+}
+
+func TestResolveReturnsProviderKeyBatchQueryFailure(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	initializedID := insertTestProvider(t, a, "failing-batch-provider", "openai_compatible", "https://example.test", "legacy-initialized", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, initializedID, "public-model", "upstream-initialized", "chat", 0)
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, initializedID); err != nil {
+		t.Fatal(err)
+	}
+	insertProviderKeyForTest(t, a, initializedID, "sk-initialized", "initialized", "upstream-initialized", providerKeyEgressInherit, nil, 1, 0)
+
+	legacyID := insertTestProvider(t, a, "legacy-fallback-provider", "openai_compatible", "https://example.test", "sk-legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, legacyID, "public-model", "upstream-legacy", "chat", 1)
+
+	registerProviderKeyAuthorizerForTest(t, a, func(op int, table, column, _ string) int {
+		if op == sqlite3.SQLITE_READ && table == "provider_api_keys" && column == "credential" {
+			return sqlite3.SQLITE_DENY
+		}
+		return sqlite3.SQLITE_OK
+	})
+
+	if _, err := a.resolve(context.Background(), "public-model", "chat"); err == nil {
+		t.Fatal("resolve silently dropped the failed initialized API-key candidate")
+	} else if strings.Contains(err.Error(), "no eligible route") {
+		t.Fatalf("resolve replaced the provider-key query failure with a generic routing error: %v", err)
+	}
+}
+
+func TestResolveIsolatesCorruptKeysWithinProviderCandidate(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		badOrder int
+	}{
+		{name: "bad key first", badOrder: 0},
+		{name: "bad key last", badOrder: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, err := New(testConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+
+			const providerName = "isolated-corrupt-key-provider"
+			providerID := insertTestProvider(t, a, providerName, "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+			insertTestRoute(t, a, providerID, "isolated-key-model", "isolated-upstream-model", "chat", 0)
+			if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+				t.Fatal(err)
+			}
+
+			firstHealthyOrder, secondHealthyOrder := 0, 1
+			if test.badOrder == 0 {
+				firstHealthyOrder, secondHealthyOrder = 1, 2
+			}
+			firstHealthyID := insertProviderKeyForTest(t, a, providerID, "sk-isolated-healthy-first", "healthy-first", "isolated-upstream-model", providerKeyEgressInherit, nil, 1, firstHealthyOrder)
+			secondHealthyID := insertProviderKeyForTest(t, a, providerID, "sk-isolated-healthy-second", "healthy-second", "isolated-upstream-model", providerKeyEgressInherit, nil, 1, secondHealthyOrder)
+			badID := insertProviderKeyForTest(t, a, providerID, "sk-isolated-corrupt-value", "corrupt", "isolated-upstream-model", providerKeyEgressInherit, nil, 1, test.badOrder)
+			if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=X'00' WHERE id=?`, badID); err != nil {
+				t.Fatal(err)
+			}
+
+			var logs bytes.Buffer
+			a.log = slog.New(slog.NewTextHandler(&logs, nil))
+			routes, err := a.resolve(context.Background(), "isolated-key-model", "chat")
+			if err != nil {
+				t.Fatalf("resolve rejected healthy keys after one key failed: %v", err)
+			}
+			if len(routes) != 2 {
+				t.Fatalf("routes=%#v, want both healthy keys", routes)
+			}
+			if routes[0].ProviderKeyID != firstHealthyID || routes[0].Credential != "sk-isolated-healthy-first" || routes[1].ProviderKeyID != secondHealthyID || routes[1].Credential != "sk-isolated-healthy-second" {
+				t.Fatalf("healthy key order changed: %#v", routes)
+			}
+
+			output := logs.String()
+			if !strings.Contains(output, "provider_id="+intString(providerID)) || !strings.Contains(output, "provider_key_id="+intString(badID)) || !strings.Contains(output, "invalid encrypted credential") {
+				t.Fatalf("bad key log lacks safe diagnostic fields: %s", output)
+			}
+			for _, sensitive := range []string{providerName, "sk-isolated-healthy-first", "sk-isolated-healthy-second", "sk-isolated-corrupt-value"} {
+				if strings.Contains(output, sensitive) {
+					t.Fatalf("bad key log leaked %q: %s", sensitive, output)
+				}
+			}
+		})
+	}
+}
+
+func TestResolveKeepsHealthyRouteWhenAnotherProviderKeyCredentialIsCorrupt(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	bad := insertQualityDetectorTarget(t, a, "corrupt-fallback-provider", "sk-corrupt-fallback-12345678")
+	healthy := insertQualityDetectorTarget(t, a, "healthy-fallback-provider", "sk-healthy-fallback-12345678")
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=X'00' WHERE id=?`, bad.ProviderKeyID); err != nil {
+		t.Fatal(err)
+	}
+
+	routes, err := a.resolve(context.Background(), "gpt-5.6-sol", "chat")
+	if err != nil {
+		t.Fatalf("resolve rejected healthy fallback after another credential failed: %v", err)
+	}
+	if len(routes) != 1 || routes[0].Provider.ID != healthy.ProviderID || routes[0].ProviderKeyID != healthy.ProviderKeyID || routes[0].Credential != "sk-healthy-fallback-12345678" {
+		t.Fatalf("routes=%#v, want only healthy provider/key", routes)
 	}
 }
 

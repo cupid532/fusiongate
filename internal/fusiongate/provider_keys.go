@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var errNoProviderKeySupportsModel = errors.New("no enabled API key supports this model")
+
 const providerKeySoftLimit = 500
 
 const (
@@ -160,6 +162,28 @@ func (a *App) migrateProviderAPIKeys(ctx context.Context) error {
 	return nil
 }
 
+type providerKeySelectionKey struct {
+	providerID    int64
+	upstreamModel string
+}
+
+type providerKeySelectionRequest struct {
+	providerID          int64
+	upstreamModel       string
+	providerNodeID      *int64
+	legacyCredential    []byte
+	multiKeyInitialized bool
+}
+
+type providerKeySelectionResult struct {
+	keys []selectedProviderKey
+	err  error
+}
+
+func makeProviderKeySelectionKey(providerID int64, upstreamModel string) providerKeySelectionKey {
+	return providerKeySelectionKey{providerID: providerID, upstreamModel: normalizeProviderKeyModel(upstreamModel)}
+}
+
 func (a *App) selectProviderKey(ctx context.Context, providerID int64, upstreamModel string, providerNodeID *int64, legacyCredential []byte, initialized bool) (selectedProviderKey, error) {
 	keys, err := a.selectProviderKeys(ctx, providerID, upstreamModel, providerNodeID, legacyCredential, initialized)
 	if err != nil {
@@ -169,53 +193,116 @@ func (a *App) selectProviderKey(ctx context.Context, providerID int64, upstreamM
 }
 
 func (a *App) selectProviderKeys(ctx context.Context, providerID int64, upstreamModel string, providerNodeID *int64, legacyCredential []byte, initialized bool) ([]selectedProviderKey, error) {
-	if !initialized {
-		raw, err := a.decrypt(legacyCredential)
-		if err != nil {
-			return nil, err
-		}
-		return []selectedProviderKey{{Credential: raw, Hint: providerKeyHint(raw), IPPoolNodeID: providerNodeID}}, nil
+	request := providerKeySelectionRequest{
+		providerID:          providerID,
+		upstreamModel:       upstreamModel,
+		providerNodeID:      providerNodeID,
+		legacyCredential:    legacyCredential,
+		multiKeyInitialized: initialized,
 	}
-	rows, err := a.db.QueryContext(ctx, `
-SELECT k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id
-FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id
-WHERE k.provider_id=? AND k.enabled=1
-  AND (
-    (k.model<>'' AND lower(k.model)=lower(?))
-    OR (k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?)))
-    OR (k.model='' AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id) AND (p.default_model='' OR lower(p.default_model)=lower(?)))
-  )
-ORDER BY k.sort_order,k.id`, providerID, upstreamModel, upstreamModel, upstreamModel)
+	selected, err := a.selectProviderKeysBatch(ctx, []providerKeySelectionRequest{request})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var providerNode sql.NullInt64
-	if providerNodeID != nil {
-		providerNode = sql.NullInt64{Int64: *providerNodeID, Valid: true}
+	result := selected[makeProviderKeySelectionKey(providerID, upstreamModel)]
+	return result.keys, result.err
+}
+
+func (a *App) selectProviderKeysBatch(ctx context.Context, requests []providerKeySelectionRequest) (map[providerKeySelectionKey]providerKeySelectionResult, error) {
+	selected := make(map[providerKeySelectionKey]providerKeySelectionResult, len(requests))
+	type initializedRequest struct {
+		key     providerKeySelectionKey
+		request providerKeySelectionRequest
 	}
-	selected := make([]selectedProviderKey, 0)
+	initialized := make([]initializedRequest, 0, len(requests))
+	for _, request := range requests {
+		key := makeProviderKeySelectionKey(request.providerID, request.upstreamModel)
+		if _, exists := selected[key]; exists {
+			continue
+		}
+		if !request.multiKeyInitialized {
+			raw, err := a.decrypt(request.legacyCredential)
+			if err != nil {
+				selected[key] = providerKeySelectionResult{err: err}
+				continue
+			}
+			selected[key] = providerKeySelectionResult{keys: []selectedProviderKey{{Credential: raw, Hint: providerKeyHint(raw), IPPoolNodeID: request.providerNodeID}}}
+			continue
+		}
+		selected[key] = providerKeySelectionResult{err: errNoProviderKeySupportsModel}
+		initialized = append(initialized, initializedRequest{key: key, request: request})
+	}
+	if len(initialized) == 0 {
+		return selected, nil
+	}
+
+	var query strings.Builder
+	query.WriteString(`WITH candidates(ordinal,provider_id,upstream_model) AS (VALUES `)
+	args := make([]any, 0, len(initialized)*3)
+	for i, item := range initialized {
+		if i > 0 {
+			query.WriteByte(',')
+		}
+		query.WriteString("(?,?,?)")
+		args = append(args, i, item.request.providerID, item.request.upstreamModel)
+	}
+	query.WriteString(`)
+SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id
+FROM candidates c
+JOIN providers p ON p.id=c.provider_id
+JOIN provider_api_keys k ON k.provider_id=c.provider_id AND k.enabled=1
+WHERE
+  (k.model<>'' AND lower(k.model)=lower(c.upstream_model))
+  OR (k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(c.upstream_model)))
+  OR (k.model='' AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id) AND (p.default_model='' OR lower(p.default_model)=lower(c.upstream_model)))
+ORDER BY c.ordinal,k.sort_order,k.id`)
+
+	rows, err := a.reader().QueryContext(ctx, query.String(), args...)
+	if err != nil {
+		return nil, err
+	}
 	for rows.Next() {
+		var ordinal int
 		var key selectedProviderKey
 		var encrypted []byte
 		var keyNodeID sql.NullInt64
 		var egressMode string
-		if err := rows.Scan(&key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID); err != nil {
+		if err := rows.Scan(&ordinal, &key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		if ordinal < 0 || ordinal >= len(initialized) {
+			rows.Close()
+			return nil, errors.New("provider key batch returned an invalid candidate")
+		}
+		item := initialized[ordinal]
 		raw, err := a.decrypt(encrypted)
 		if err != nil {
-			return nil, err
+			a.log.Error("provider key credential decrypt", "provider_id", item.request.providerID, "provider_key_id", key.ID, "error", sanitizeError(err.Error()))
+			result := selected[item.key]
+			if len(result.keys) == 0 && errors.Is(result.err, errNoProviderKeySupportsModel) {
+				result.err = err
+			}
+			selected[item.key] = result
+			continue
 		}
 		key.Credential = raw
+		var providerNode sql.NullInt64
+		if item.request.providerNodeID != nil {
+			providerNode = sql.NullInt64{Int64: *item.request.providerNodeID, Valid: true}
+		}
 		key.IPPoolNodeID, _ = effectiveProviderKeyNode(egressMode, keyNodeID, providerNode)
-		selected = append(selected, key)
+		result := selected[item.key]
+		result.err = nil
+		result.keys = append(result.keys, key)
+		selected[item.key] = result
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
 	}
-	if len(selected) == 0 {
-		return nil, errors.New("no enabled API key supports this model")
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 	return selected, nil
 }

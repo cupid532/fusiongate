@@ -233,76 +233,112 @@ func (m *qualityDetectorJobManager) persistNewJob(jobID, preset string, items []
 func (m *qualityDetectorJobManager) run(ctx context.Context, jobID string) {
 	defer m.release(jobID)
 
-	preset := m.loadPreset(jobID)
-	_, _ = m.app.db.Exec(`UPDATE quality_detector_jobs SET status='running', started_at=? WHERE id=?`, now(), jobID)
+	preset, err := m.loadPreset(jobID)
+	if err != nil {
+		m.failJob(jobID, fmt.Errorf("load preset: %w", err))
+		return
+	}
+	if _, err := m.app.db.Exec(`UPDATE quality_detector_jobs SET status='running', started_at=? WHERE id=?`, now(), jobID); err != nil {
+		m.failJob(jobID, fmt.Errorf("mark running: %w", err))
+		return
+	}
 
-	items := m.loadItemsForRun(jobID)
+	items, err := m.loadItemsForRun(jobID)
+	if err != nil {
+		m.failJob(jobID, fmt.Errorf("load items: %w", err))
+		return
+	}
 	cancelled := false
 	for _, item := range items {
 		if ctx.Err() != nil {
 			cancelled = true
-			m.finishItem(jobID, item.ID, "cancelled", "", "", "")
+			if err := m.finishItem(jobID, item.ID, "cancelled", "", "", ""); err != nil {
+				m.failJob(jobID, fmt.Errorf("cancel item %d: %w", item.ID, err))
+				return
+			}
 			continue
 		}
-		m.runItem(ctx, jobID, preset, item)
+		if err := m.runItem(ctx, jobID, preset, item); err != nil {
+			m.failJob(jobID, fmt.Errorf("run item %d: %w", item.ID, err))
+			return
+		}
 		if ctx.Err() != nil {
 			cancelled = true
 		}
 	}
+	status := "completed"
 	if cancelled {
-		_, _ = m.app.db.Exec(`UPDATE quality_detector_jobs SET status='cancelled', finished_at=? WHERE id=?`, now(), jobID)
-	} else {
-		_, _ = m.app.db.Exec(`UPDATE quality_detector_jobs SET status='completed', finished_at=? WHERE id=?`, now(), jobID)
+		status = "cancelled"
+	}
+	if _, err := m.app.db.Exec(`UPDATE quality_detector_jobs SET status=?, finished_at=? WHERE id=?`, status, now(), jobID); err != nil {
+		m.failJob(jobID, fmt.Errorf("mark %s: %w", status, err))
 	}
 }
 
-func (m *qualityDetectorJobManager) runItem(ctx context.Context, jobID, preset string, item qualityDetectorJobItem) {
-	target, err := m.app.qualityDetectorTarget(ctx, item.TargetID)
-	if err != nil {
-		m.finishItem(jobID, item.ID, "skipped", "", sanitizeError(err.Error()), "")
-		return
+func (m *qualityDetectorJobManager) failJob(jobID string, runErr error) {
+	m.app.log.Error("quality detector job failed", "job_id", jobID, "error", sanitizeQualityDetectorJobError(runErr))
+	if _, err := m.app.db.Exec(`UPDATE quality_detector_jobs SET status='failed', finished_at=? WHERE id=?`, now(), jobID); err != nil {
+		m.app.log.Error("quality detector job failure status", "job_id", jobID, "error", sanitizeQualityDetectorJobError(err))
 	}
-	_, _ = m.app.db.Exec(`UPDATE quality_detector_job_items SET status='running', started_at=? WHERE id=? AND job_id=?`, now(), item.ID, jobID)
+}
+
+func sanitizeQualityDetectorJobError(err error) string {
+	return sanitizeError(qualityDetectorSecret.ReplaceAllString(err.Error(), "<redacted-key>"))
+}
+
+func (m *qualityDetectorJobManager) runItem(ctx context.Context, jobID, preset string, item qualityDetectorJobItem) error {
+	target, err := m.app.qualityDetectorTarget(ctx, item.TargetID)
+	if errors.Is(err, errQualityDetectorTargetUnavailable) {
+		return m.finishItem(jobID, item.ID, "skipped", "", sanitizeError(err.Error()), "")
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := m.app.db.Exec(`UPDATE quality_detector_job_items SET status='running', started_at=? WHERE id=? AND job_id=?`, now(), item.ID, jobID); err != nil {
+		return err
+	}
 	report, verdict, runErr := m.app.runQualityDetectionOnce(ctx, preset, target)
 	if runErr != nil {
 		if ctx.Err() != nil {
-			m.finishItem(jobID, item.ID, "cancelled", "", "", "")
-		} else {
-			m.finishItem(jobID, item.ID, "failed", "", sanitizeError(qualityDetectorSecret.ReplaceAllString(runErr.Error(), "<redacted-key>")), "")
+			return m.finishItem(jobID, item.ID, "cancelled", "", "", "")
 		}
-		return
+		return m.finishItem(jobID, item.ID, "failed", "", sanitizeError(qualityDetectorSecret.ReplaceAllString(runErr.Error(), "<redacted-key>")), "")
 	}
-	m.finishItem(jobID, item.ID, "completed", verdict, "", report)
+	return m.finishItem(jobID, item.ID, "completed", verdict, "", report)
 }
 
-func (m *qualityDetectorJobManager) finishItem(jobID string, itemID int64, status, verdict, errMsg, report string) {
-	_, _ = m.app.db.Exec(`UPDATE quality_detector_job_items SET status=?, verdict=?, error=?, report=?, finished_at=? WHERE id=? AND job_id=?`,
+func (m *qualityDetectorJobManager) finishItem(jobID string, itemID int64, status, verdict, errMsg, report string) error {
+	_, err := m.app.db.Exec(`UPDATE quality_detector_job_items SET status=?, verdict=?, error=?, report=?, finished_at=? WHERE id=? AND job_id=?`,
 		status, verdict, errMsg, report, now(), itemID, jobID)
+	return err
 }
 
-func (m *qualityDetectorJobManager) loadPreset(jobID string) string {
+func (m *qualityDetectorJobManager) loadPreset(jobID string) (string, error) {
 	var preset string
-	if err := m.app.db.QueryRow(`SELECT preset FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&preset); err != nil || preset == "" {
-		return "low"
+	if err := m.app.reader().QueryRow(`SELECT preset FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&preset); err != nil {
+		return "", err
 	}
-	return preset
+	if preset == "" {
+		return "", errors.New("quality detector job preset is empty")
+	}
+	return preset, nil
 }
 
-func (m *qualityDetectorJobManager) loadItemsForRun(jobID string) []qualityDetectorJobItem {
-	rows, err := m.app.db.Query(`SELECT id,target_id,model,provider_id,provider_name,provider_type,provider_key_id,provider_key_name,provider_key_hint,upstream_model FROM quality_detector_job_items WHERE job_id=? ORDER BY position`, jobID)
+func (m *qualityDetectorJobManager) loadItemsForRun(jobID string) ([]qualityDetectorJobItem, error) {
+	rows, err := m.app.reader().Query(`SELECT id,target_id,model,provider_id,provider_name,provider_type,provider_key_id,provider_key_name,provider_key_hint,upstream_model FROM quality_detector_job_items WHERE job_id=? ORDER BY position`, jobID)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	items := make([]qualityDetectorJobItem, 0)
 	for rows.Next() {
 		var it qualityDetectorJobItem
 		if err := rows.Scan(&it.ID, &it.TargetID, &it.Model, &it.ProviderID, &it.ProviderName, &it.ProviderType, &it.ProviderKeyID, &it.ProviderKeyName, &it.ProviderKeyHint, &it.UpstreamModel); err != nil {
-			continue
+			return nil, err
 		}
 		items = append(items, it)
 	}
-	return items
+	return items, rows.Err()
 }
 
 func (m *qualityDetectorJobManager) Get(jobID string) (qualityDetectorJob, error) {

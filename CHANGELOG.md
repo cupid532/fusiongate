@@ -1,5 +1,12 @@
 # Changelog
 
+## V2.43
+
+- Fix usage heatmap aggregation across mixed upstream models and use full dates for cross-month columns and tooltips.
+- Make quality-detector persistence failures stop jobs instead of allowing them to be reported as completed.
+- Batch route Provider Key selection through one request-local reader-pool query while preserving existing routing behavior.
+- Run frontend lint, tests, and builds in CI, and generate fresh Vite assets when building production Docker images.
+
 ## V2.42
 
 - Add one-click copy controls with visible success feedback for the overview Base URL and revealed downstream API keys, including a fallback for browsers without the modern Clipboard API.

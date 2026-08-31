@@ -79,7 +79,7 @@ export function Usage() {
       byModel.get(c.model)!.set(c.date, c)
     }
     const dates = [...new Set(cells.map((c) => c.date))].sort()
-    const colLabels = dates.map((d) => d.slice(8)) // MM-DD -> DD
+    const colLabels = dates.map((d) => d.slice(5))
     const grid = modelOrder.map((model) => dates.map((date) => byModel.get(model)!.get(date) ?? null))
     return { grid, rowLabels: modelOrder, colLabels, dates }
   }, [data?.heatmap])
@@ -243,11 +243,11 @@ export function Usage() {
                       matrix={heatmapMatrix}
                       rowLabels={heatmap.rowLabels}
                       colLabels={heatmap.colLabels}
-                      formatTooltip={(row, col, _v) => {
-                        const cell = heatmap.grid[heatmap.rowLabels.indexOf(row)]?.[heatmap.colLabels.indexOf(col)]
-                        if (!cell) return `${row} · ${col}\n无数据`
+                      formatTooltip={(row, col, _v, rowIndex, colIndex) => {
+                        const cell = heatmap.grid[rowIndex]?.[colIndex]
+                        if (!cell) return `${row} · ${heatmap.dates[colIndex] ?? col}\n无数据`
                         const up = cell.upstream_model
-                        return `${row}${up && up !== row ? ` (${up})` : ""} · ${col}\n${cell.requests} 请求\n输入 ${formatTokens(cell.input_tokens)} · 缓存 ${formatTokens(cell.cached_tokens)} · 输出 ${formatTokens(cell.output_tokens)}\n费用 ${formatCost(cell.cost_micros)}`
+                        return `${row}${up && up !== row ? ` (${up})` : ""} · ${cell.date}\n${cell.requests} 请求\n输入 ${formatTokens(cell.input_tokens)} · 缓存 ${formatTokens(cell.cached_tokens)} · 输出 ${formatTokens(cell.output_tokens)}\n费用 ${formatCost(cell.cost_micros)}`
                       }}
                       formatCell={(v) => (heatmapMetric === "cost_micros" ? formatCost(v) : v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : v >= 1000 ? `${(v / 1000).toFixed(0)}K` : String(v))}
                     />

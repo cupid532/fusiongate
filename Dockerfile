@@ -1,3 +1,10 @@
+FROM node:24-alpine AS web-build
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM golang:1.25.12-alpine AS build
 ARG FUSIONGATE_BUILD_REVISION=unknown
 RUN apk add --no-cache build-base curl
@@ -15,6 +22,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+RUN rm -rf internal/fusiongate/ui \
+    && mkdir -p internal/fusiongate/ui
+COPY --from=web-build /src/web/dist/ internal/fusiongate/ui/
 RUN CGO_ENABLED=1 GOOS=linux go build -trimpath \
     -ldflags="-s -w -X github.com/fusiongate/fusiongate/internal/fusiongate.BuildRevision=${FUSIONGATE_BUILD_REVISION}" \
     -o /out/fusiongate ./cmd/fusiongate

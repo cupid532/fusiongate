@@ -83,6 +83,40 @@ func TestTokenUsageBreaksDownByDateKeyProviderAndModel(t *testing.T) {
 	}
 }
 
+func TestTokenUsageHeatmapAggregatesMultipleUpstreamsPerPublicModel(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	day := time.Now().UTC().Truncate(24 * time.Hour)
+	created := day.Add(time.Hour).Format(time.RFC3339Nano)
+	insertUsageFixture(t, a, "heatmap-a", "heatmap-a", created, 1, 11, "client", "fg_heat", "primary", "shared", "upstream-a", 100, 20, 10, 3, true)
+	insertUsageFixture(t, a, "heatmap-b", "heatmap-b", created, 1, 12, "client", "fg_heat", "backup", "shared", "upstream-b", 40, 15, 5, 2, true)
+	if _, err := a.db.Exec(`UPDATE request_ledger SET cost_micros=CASE request_id WHEN 'heatmap-a' THEN 300 WHEN 'heatmap-b' THEN 200 ELSE cost_micros END WHERE request_id IN ('heatmap-a','heatmap-b')`); err != nil {
+		t.Fatal(err)
+	}
+
+	cells, err := a.tokenUsageHeatmap(day, 1, "l.created_at>=? AND l.created_at<?", []any{day.Format(time.RFC3339Nano), day.AddDate(0, 0, 1).Format(time.RFC3339Nano)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) != 1 {
+		t.Fatalf("cells=%d, want 1: %+v", len(cells), cells)
+	}
+	cell := cells[0]
+	if cell.Model != "shared" || cell.Date != day.Format("2006-01-02") {
+		t.Fatalf("unexpected cell identity: %+v", cell)
+	}
+	if cell.UpstreamModel != "" {
+		t.Fatalf("mixed upstream cell reports one arbitrary upstream: %+v", cell)
+	}
+	if cell.Requests != 2 || cell.InputTokens != 140 || cell.OutputTokens != 35 || cell.CachedTokens != 15 || cell.ReasoningTokens != 5 || cell.TotalTokens != 175 || cell.CostMicros != 500 {
+		t.Fatalf("mixed upstream usage was not aggregated: %+v", cell)
+	}
+}
+
 func TestTokenUsageSupportsRequestTypeFilters(t *testing.T) {
 	from := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
 	to := from.Add(time.Hour)

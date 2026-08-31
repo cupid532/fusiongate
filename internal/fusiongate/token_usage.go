@@ -406,13 +406,15 @@ func (a *App) tokenUsageModelRanks(where string, args []any) ([]tokenUsageRank, 
 // end renders this as a model-by-day heatmap.
 func (a *App) tokenUsageHeatmap(from time.Time, days int, where string, args []any) ([]tokenUsageHeatmapCell, error) {
 	const heatmapMaxRows = 12
-	query := `SELECT l.public_model,l.upstream_model,substr(l.created_at,1,10),` +
+	query := `SELECT l.public_model,` +
+		`CASE WHEN COUNT(DISTINCT l.upstream_model)=1 THEN MIN(l.upstream_model) ELSE '' END,` +
+		`substr(l.created_at,1,10),` +
 		`COUNT(*),` +
 		`COALESCE(SUM(l.input_tokens),0),COALESCE(SUM(l.output_tokens),0),` +
 		`COALESCE(SUM(l.cached_tokens),0),COALESCE(SUM(l.reasoning_tokens),0),` +
 		`COALESCE(SUM(l.input_tokens+l.output_tokens),0),COALESCE(SUM(l.cost_micros),0) ` +
 		`FROM request_ledger l WHERE ` + where + ` ` +
-		`GROUP BY l.public_model,l.upstream_model,substr(l.created_at,1,10)`
+		`GROUP BY l.public_model,substr(l.created_at,1,10)`
 	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		return nil, err

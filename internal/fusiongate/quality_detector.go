@@ -21,6 +21,8 @@ import (
 
 const qualityDetectorVersion = "4.0.1"
 
+var errQualityDetectorTargetUnavailable = errors.New("the selected channel or credential is unavailable for this model")
+
 var qualityDetectorPresets = map[string]bool{"low": true, "medium": true, "high": true}
 var qualityDetectorSecret = regexp.MustCompile(`(?i)\b(?:fg|sk)-?_[A-Za-z0-9_-]{8,}|\bsk-[A-Za-z0-9_-]{8,}`)
 
@@ -176,8 +178,11 @@ func (a *App) qualityDetectorTargets(ctx context.Context) ([]qualityDetectorTarg
 	targets := make([]qualityDetectorTarget, 0)
 	for _, model := range []string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} {
 		routes, resolveErr := a.resolve(ctx, model, "chat")
-		if resolveErr != nil {
+		if errors.Is(resolveErr, errNoEligibleRoute) {
 			continue
+		}
+		if resolveErr != nil {
+			return nil, resolveErr
 		}
 		for _, route := range routes {
 			if !qualityDetectorProviderSupported(route.Provider.Type) {
@@ -231,7 +236,7 @@ func (a *App) qualityDetectorTarget(ctx context.Context, id string) (qualityDete
 			return target, nil
 		}
 	}
-	return qualityDetectorTarget{}, errors.New("the selected channel or credential is unavailable for this model")
+	return qualityDetectorTarget{}, errQualityDetectorTargetUnavailable
 }
 
 func qualityDetectorRequestIsLoopback(r *http.Request) bool {

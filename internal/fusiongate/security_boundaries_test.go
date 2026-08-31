@@ -147,6 +147,44 @@ func TestLoginClientIDIgnoresForgedForwardedPrefix(t *testing.T) {
 	}
 }
 
+func TestResolveClassifiesProviderCredentialFailuresAsOperational(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		corruptSQL string
+	}{
+		{name: "encrypted payload cannot be decrypted", corruptSQL: `UPDATE providers SET credential=X'00' WHERE id=?`},
+		{name: "OAuth payload cannot be decoded", corruptSQL: `UPDATE providers SET auth_kind='oauth' WHERE id=?`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a, err := New(testConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+
+			providerName := "private-operational-provider"
+			providerID := insertTestProvider(t, a, providerName, "codex_oauth", "https://example.test", "not-an-oauth-document", 1, 100, "normalized", "any", 0, 3, 30)
+			insertTestRoute(t, a, providerID, "public-operational-model", "private-upstream-model", "chat,stream", 0)
+			if _, err := a.db.Exec(test.corruptSQL, providerID); err != nil {
+				t.Fatal(err)
+			}
+
+			_, resolveErr := a.resolve(t.Context(), "public-operational-model", "chat")
+			if resolveErr == nil {
+				t.Fatal("resolve accepted an unusable provider credential")
+			}
+			if errors.Is(resolveErr, errNoEligibleRoute) {
+				t.Fatalf("credential operation was classified as no eligible route: %v", resolveErr)
+			}
+			for _, private := range []string{providerName, "private-upstream-model", "not-an-oauth-document", "decrypt", "credential", "invalid encrypted"} {
+				if strings.Contains(strings.ToLower(resolveErr.Error()), strings.ToLower(private)) {
+					t.Fatalf("resolve error leaked operator detail %q in %q", private, resolveErr)
+				}
+			}
+		})
+	}
+}
+
 func TestBrokenProviderCredentialDoesNotLeakDetailsToAPI(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

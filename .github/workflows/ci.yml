@@ -18,6 +18,25 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Frontend lint
+        working-directory: web
+        run: npm run lint
+      - name: Frontend test
+        working-directory: web
+        run: npm test
+      - name: Frontend build
+        working-directory: web
+        run: npm run build
+      - name: Frontend embed is current
+        run: diff -qr web/dist internal/fusiongate/ui
       - name: Format
         run: test -z "$(gofmt -l .)"
       - name: Deployment scripts parse

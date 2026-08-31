@@ -18,7 +18,7 @@ export function Heatmap({
   rowLabels: string[]
   colLabels: string[]
   formatCell?: (v: number) => string
-  formatTooltip?: (row: string, col: string, v: number) => string
+  formatTooltip?: (row: string, col: string, v: number, rowIndex: number, colIndex: number) => string
   className?: string
   cellClassName?: string
 }) {
@@ -46,7 +46,7 @@ export function Heatmap({
                   key={ci}
                   className={cn("grid aspect-square min-h-[22px] place-items-center rounded-[4px] text-[9px] tabular-nums text-white/90", cellClassName)}
                   style={{ backgroundColor: v > 0 ? `rgba(56, 189, 248, ${alpha(v)})` : "transparent", outline: v > 0 ? "none" : "1px solid var(--border, #e2e8f0)" }}
-                  title={formatTooltip ? formatTooltip(rowLabels[ri], colLabels[ci], v) : `${rowLabels[ri]} / ${colLabels[ci]}: ${formatCell ? formatCell(v) : v}`}
+                  title={formatTooltip ? formatTooltip(rowLabels[ri], colLabels[ci], v, ri, ci) : `${rowLabels[ri]} / ${colLabels[ci]}: ${formatCell ? formatCell(v) : v}`}
                 >
                   {v > 0 && (formatCell ? formatCell(v) : v)}
                 </div>

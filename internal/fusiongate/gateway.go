@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -19,6 +20,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+)
+
+var (
+	errNoEligibleRoute = errors.New("no eligible route")
+	errRouteResolution = errors.New("model route resolution failed")
 )
 
 type authKey struct {
@@ -595,33 +601,69 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 		return nil, err
 	}
 
+	selectionRequests := make([]providerKeySelectionRequest, 0, len(pending))
+	for _, candidate := range pending {
+		if candidate.authKind != "api_key" {
+			continue
+		}
+		z := candidate.resolved
+		selectionRequests = append(selectionRequests, providerKeySelectionRequest{
+			providerID:          z.Provider.ID,
+			upstreamModel:       z.Route.UpstreamModel,
+			providerNodeID:      z.Provider.IPPoolNodeID,
+			legacyCredential:    candidate.credential,
+			multiKeyInitialized: candidate.multiKeyInitialized,
+		})
+	}
+	selectedByCandidate, selectionErr := a.selectProviderKeysBatch(ctx, selectionRequests)
+	if selectionErr != nil {
+		a.log.Error("provider key selection", "error", sanitizeError(selectionErr.Error()))
+		return nil, errRouteResolution
+	}
+	var firstOperationalErr error
+
 	out := make([]resolvedRoute, 0, len(pending))
 	for _, candidate := range pending {
 		z := candidate.resolved
 		if candidate.authKind == "api_key" {
-			selectedKeys, selectErr := a.selectProviderKeys(ctx, z.Provider.ID, z.Route.UpstreamModel, z.Provider.IPPoolNodeID, candidate.credential, candidate.multiKeyInitialized)
-			if selectErr != nil {
+			selected := selectedByCandidate[makeProviderKeySelectionKey(z.Provider.ID, z.Route.UpstreamModel)]
+			if errors.Is(selected.err, errNoProviderKeySupportsModel) {
 				continue
 			}
-			for _, selected := range selectedKeys {
+			if selected.err != nil {
+				if firstOperationalErr == nil {
+					firstOperationalErr = selected.err
+				}
+				if !candidate.multiKeyInitialized {
+					a.log.Error("provider credential decrypt", "provider_id", z.Provider.ID, "error", sanitizeError(selected.err.Error()))
+				}
+				continue
+			}
+			for _, providerKey := range selected.keys {
 				keyRoute := z
-				keyRoute.ProviderKeyID = selected.ID
-				keyRoute.Credential = selected.Credential
-				keyRoute.Provider.IPPoolNodeID = selected.IPPoolNodeID
+				keyRoute.ProviderKeyID = providerKey.ID
+				keyRoute.Credential = providerKey.Credential
+				keyRoute.Provider.IPPoolNodeID = providerKey.IPPoolNodeID
 				out = append(out, keyRoute)
 			}
 			continue
 		}
 		plaintext, decryptErr := a.decrypt(candidate.credential)
 		if decryptErr != nil {
+			if firstOperationalErr == nil {
+				firstOperationalErr = decryptErr
+			}
 			// Credential faults are an operator problem; the API caller only learns
-			// that the route is unavailable, not which provider or why.
-			a.log.Error("provider credential decrypt", "provider_id", z.Provider.ID, "provider", z.Provider.Name, "error", decryptErr)
+			// that route resolution failed, not which provider or why.
+			a.log.Error("provider credential decrypt", "provider_id", z.Provider.ID, "provider", z.Provider.Name, "error", sanitizeError(decryptErr.Error()))
 			continue
 		}
 		authCredential, accessToken, decodeErr := decodeStoredCredential(candidate.authKind, plaintext)
 		if decodeErr != nil {
-			a.log.Error("provider credential decode", "provider_id", z.Provider.ID, "provider", z.Provider.Name, "error", decodeErr)
+			if firstOperationalErr == nil {
+				firstOperationalErr = decodeErr
+			}
+			a.log.Error("provider credential decode", "provider_id", z.Provider.ID, "provider", z.Provider.Name, "error", sanitizeError(decodeErr.Error()))
 			continue
 		}
 		z.Credential = accessToken
@@ -629,7 +671,10 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 		out = append(out, z)
 	}
 	if len(out) == 0 {
-		return nil, fmt.Errorf("no eligible route for model %q", model)
+		if firstOperationalErr != nil {
+			return nil, errRouteResolution
+		}
+		return nil, fmt.Errorf("%w for model %q", errNoEligibleRoute, model)
 	}
 	return out, nil
 }

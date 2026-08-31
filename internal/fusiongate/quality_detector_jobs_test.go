@@ -1,14 +1,19 @@
 package fusiongate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mattn/go-sqlite3"
 )
 
 type qualityJobFixture struct {
@@ -87,7 +92,7 @@ func waitQualityJob(t *testing.T, m *qualityDetectorJobManager, id string) quali
 			t.Fatalf("get job: %v", err)
 		}
 		switch job.Status {
-		case "completed", "cancelled", "interrupted":
+		case "completed", "failed", "cancelled", "interrupted":
 			return job
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -220,6 +225,297 @@ func TestQualityDetectorBatchDedupAndValidation(t *testing.T) {
 		t.Fatalf("dedup total=%d want 1", job.Total)
 	}
 	_ = waitQualityJob(t, a.qualityDetectorJobs, job.ID)
+}
+
+func TestQualityDetectorPersistedJobFailsWhenProviderKeyCredentialReadIsDenied(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	const secret = "sk-authorizer-secret-12345678"
+	target := insertQualityDetectorTarget(t, a, "authorizer-denied-provider", secret)
+	manager := a.qualityDetectorJobs
+	jobID := "provider-key-read-denied"
+	items := []qualityDetectorJobItem{{
+		Position:      0,
+		TargetID:      target.ID,
+		Model:         target.Model,
+		ProviderID:    target.ProviderID,
+		ProviderKeyID: target.ProviderKeyID,
+		Status:        "queued",
+	}}
+	if err := manager.persistNewJob(jobID, "low", items, now()); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	a.log = slog.New(slog.NewTextHandler(&logs, nil))
+	registerProviderKeyAuthorizerForTest(t, a, func(op int, table, column, _ string) int {
+		if op == sqlite3.SQLITE_READ && table == "provider_api_keys" && column == "credential" {
+			return sqlite3.SQLITE_DENY
+		}
+		return sqlite3.SQLITE_OK
+	})
+
+	manager.run(context.Background(), jobID)
+
+	var status string
+	if err := a.db.QueryRow(`SELECT status FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("status=%q, want failed when provider-key credentials cannot be read", status)
+	}
+	output := logs.String()
+	if !strings.Contains(output, "provider_api_keys.credential") {
+		t.Fatalf("job failure log did not retain the authorizer error: %s", output)
+	}
+	if strings.Contains(output, secret) {
+		t.Fatalf("job failure log leaked provider credential: %s", output)
+	}
+}
+
+func TestQualityDetectorPersistedJobFailsWhenProviderKeyCredentialIsCorrupt(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	target := insertQualityDetectorTarget(t, a, "corrupt-key-provider", "sk-corrupt-key-12345678")
+	manager := a.qualityDetectorJobs
+	jobID := "provider-key-credential-corrupt"
+	items := []qualityDetectorJobItem{{
+		Position:      0,
+		TargetID:      target.ID,
+		Model:         target.Model,
+		ProviderID:    target.ProviderID,
+		ProviderKeyID: target.ProviderKeyID,
+		Status:        "queued",
+	}}
+	if err := manager.persistNewJob(jobID, "low", items, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=X'00' WHERE id=?`, target.ProviderKeyID); err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	a.log = slog.New(slog.NewTextHandler(&logs, nil))
+	manager.run(context.Background(), jobID)
+
+	var status string
+	if err := a.db.QueryRow(`SELECT status FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("status=%q, want failed when the persisted target credential is corrupt", status)
+	}
+	output := logs.String()
+	if !strings.Contains(output, "provider key credential decrypt") {
+		t.Fatalf("job failure did not log the credential operation: %s", output)
+	}
+	if strings.Contains(output, "sk-corrupt-key-12345678") {
+		t.Fatalf("job failure log leaked provider credential: %s", output)
+	}
+}
+
+func TestQualityDetectorPersistedJobSkipsDynamicallyUnavailableTarget(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	target := insertQualityDetectorTarget(t, a, "disabled-provider", "sk-disabled-provider-12345678")
+	manager := a.qualityDetectorJobs
+	jobID := "target-dynamically-unavailable"
+	items := []qualityDetectorJobItem{{
+		Position:      0,
+		TargetID:      target.ID,
+		Model:         target.Model,
+		ProviderID:    target.ProviderID,
+		ProviderKeyID: target.ProviderKeyID,
+		Status:        "queued",
+	}}
+	if err := manager.persistNewJob(jobID, "low", items, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET enabled=0 WHERE id=?`, target.ProviderID); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.run(context.Background(), jobID)
+
+	var jobStatus, itemStatus, itemError string
+	if err := a.db.QueryRow(`SELECT j.status,i.status,i.error FROM quality_detector_jobs j JOIN quality_detector_job_items i ON i.job_id=j.id WHERE j.id=?`, jobID).Scan(&jobStatus, &itemStatus, &itemError); err != nil {
+		t.Fatal(err)
+	}
+	if jobStatus != "completed" || itemStatus != "skipped" {
+		t.Fatalf("job status=%q item status=%q, want completed/skipped", jobStatus, itemStatus)
+	}
+	if itemError != "the selected channel or credential is unavailable for this model" {
+		t.Fatalf("item error=%q", itemError)
+	}
+}
+
+func TestQualityDetectorJobLoadFailureDoesNotComplete(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	manager := a.qualityDetectorJobs
+	jobID := "load-failure"
+	items := []qualityDetectorJobItem{{Position: 0, TargetID: "target", Model: "model", ProviderName: "provider", ProviderType: "openai_compatible", UpstreamModel: "model"}}
+	if err := manager.persistNewJob(jobID, "low", items, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`DROP TABLE quality_detector_job_items`); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.run(context.Background(), jobID)
+
+	var status string
+	if err := a.db.QueryRow(`SELECT status FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("status=%q, want failed when job items cannot be loaded", status)
+	}
+}
+
+func TestQualityDetectorJobRunningWriteFailureMarksFailed(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	manager := a.qualityDetectorJobs
+	jobID := "running-write-failure"
+	if err := manager.persistNewJob(jobID, "low", nil, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`
+		CREATE TRIGGER reject_quality_job_running
+		BEFORE UPDATE OF status ON quality_detector_jobs
+		WHEN NEW.id = 'running-write-failure' AND NEW.status = 'running'
+		BEGIN
+			SELECT RAISE(ABORT, 'blocked running status');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.run(context.Background(), jobID)
+
+	var status string
+	if err := a.db.QueryRow(`SELECT status FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("status=%q, want failed when writing running status fails", status)
+	}
+}
+
+func TestQualityDetectorJobCompletedWriteFailureMarksFailed(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	manager := a.qualityDetectorJobs
+	jobID := "completed-write-failure"
+	if err := manager.persistNewJob(jobID, "low", nil, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`
+		CREATE TRIGGER reject_quality_job_completed
+		BEFORE UPDATE OF status ON quality_detector_jobs
+		WHEN NEW.id = 'completed-write-failure' AND NEW.status = 'completed'
+		BEGIN
+			SELECT RAISE(ABORT, 'blocked completed status');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.run(context.Background(), jobID)
+
+	var status string
+	if err := a.db.QueryRow(`SELECT status FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("status=%q, want failed when writing completed status fails", status)
+	}
+}
+
+func TestQualityDetectorJobItemScanFailureMarksFailed(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	manager := a.qualityDetectorJobs
+	jobID := "item-scan-failure"
+	items := []qualityDetectorJobItem{{Position: 0, TargetID: "target", Model: "model", ProviderName: "provider", ProviderType: "openai_compatible", UpstreamModel: "model"}}
+	if err := manager.persistNewJob(jobID, "low", items, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE quality_detector_job_items SET provider_id='not-an-integer' WHERE job_id=?`, jobID); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.run(context.Background(), jobID)
+
+	var status string
+	if err := a.db.QueryRow(`SELECT status FROM quality_detector_jobs WHERE id=?`, jobID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if status != "failed" {
+		t.Fatalf("status=%q, want failed when a job item cannot be scanned", status)
+	}
+}
+
+func TestQualityDetectorJobFailureStatusLogRedactsTriggerSecret(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	var logs bytes.Buffer
+	a.log = slog.New(slog.NewTextHandler(&logs, nil))
+	manager := a.qualityDetectorJobs
+	jobID := "failure-log-redaction"
+	if err := manager.persistNewJob(jobID, "low", nil, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`
+		CREATE TRIGGER reject_quality_job_failed
+		BEFORE UPDATE OF status ON quality_detector_jobs
+		WHEN NEW.id = 'failure-log-redaction' AND NEW.status = 'failed'
+		BEGIN
+			SELECT RAISE(ABORT, 'sk-secret-value');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+
+	manager.failJob(jobID, errors.New("runner failed"))
+
+	output := logs.String()
+	if strings.Contains(output, "sk-secret-value") {
+		t.Fatalf("job failure log leaked trigger secret: %s", output)
+	}
+	if !strings.Contains(output, "<redacted-key>") {
+		t.Fatalf("job failure log missing redaction marker: %s", output)
+	}
 }
 
 func TestQualityDetectorReportSanitization(t *testing.T) {
