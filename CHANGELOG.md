@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.44
+
+- Increase the CI race-suite timeout to accommodate slower hosted runners and prevent valid release builds from failing at the previous ten-minute limit.
+
 ## V2.43
 
 - Fix usage heatmap aggregation across mixed upstream models and use full dates for cross-month columns and tooltips.
