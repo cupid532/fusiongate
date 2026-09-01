@@ -87,7 +87,7 @@ export function BalanceDialog({
       <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>余额设置 · {providerName}</DialogTitle>
-          <DialogDescription>设置手动余额与计价倍率，用于成本追踪。</DialogDescription>
+          <DialogDescription>设置渠道余额基线与模型分类换算倍率，用于计算余额消耗；不会替代每张 Key 的成本倍率。</DialogDescription>
         </DialogHeader>
 
         {balance ? (
@@ -108,7 +108,8 @@ export function BalanceDialog({
             </div>
 
             <div>
-              <Label>计价倍率</Label>
+              <Label>余额分类换算倍率</Label>
+              <div className="mt-1 text-xs text-muted-foreground">账本成本已包含命中 Key 的成本倍率；这里再按模型类别换算渠道余额扣减。</div>
               <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {Object.keys(multiplierLabels).map((k) => (
                   <div key={k} className="flex items-center gap-2">

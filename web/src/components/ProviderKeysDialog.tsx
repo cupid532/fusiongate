@@ -109,7 +109,7 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
                 {isExpanded ? <ChevronDown className="mt-0.5 h-4 w-4 shrink-0" /> : <ChevronRight className="mt-0.5 h-4 w-4 shrink-0" />}
                 <span className="min-w-0">
                   <span className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{key.name || "API Key"}</span><span className="font-mono text-xs text-muted-foreground">{key.key_hint}</span>{!key.enabled && <Badge variant="neutral">已停用</Badge>}</span>
-                  <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>出口：{effectiveEgress(key, nodes)}</span><span>模型：{enabledModels}/{models.length}</span><span>识别：{formatTime(key.last_discovered_at)}</span></span>
+                  <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>出口：{effectiveEgress(key, nodes)}</span><span>成本倍率：{key.cost_multiplier || 1}</span><span>模型：{enabledModels}/{models.length}</span><span>识别：{formatTime(key.last_discovered_at)}</span></span>
                   {key.last_error && <span className="mt-1 block break-words text-xs text-destructive">{key.last_error}</span>}
                 </span>
               </button>

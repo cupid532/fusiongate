@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.50
+
+- Restore per-Key model discovery and model-management actions directly inside channel editing, while keeping the full collapsible model inventory in the Key manager.
+- Label Key cost multipliers explicitly and show them in Key summaries instead of presenting an unexplained numeric field.
+- Clarify that channel balance-category multipliers convert recorded costs into balance consumption after the selected Key's cost multiplier has been applied.
+
 ## V2.49
 
 - Treat migrated legacy credentials as ordinary `Key 1` cards that can be renamed or deleted, including when they are the final Key in a channel.

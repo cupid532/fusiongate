@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { Plus, Trash2 } from "lucide-react"
+import { RefreshCw, Settings2, Plus, Trash2 } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { IPPoolNode, Provider, ProviderGroup, ProviderKey } from "@/lib/types"
@@ -35,10 +35,12 @@ export function ProviderDialog({
   open,
   onOpenChange,
   provider,
+  onManageKeyModels,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   provider: Provider | null
+  onManageKeyModels?: (provider: Provider) => void
 }) {
   const qc = useQueryClient()
   const [newKeys, setNewKeys] = useState([{ name: "Key 1", api_key: "", egress_mode: "inherit", ip_pool_node_id: 0, cost_multiplier: 1 }])
@@ -175,21 +177,23 @@ export function ProviderDialog({
           </div>
           <div className="col-span-2 space-y-2 rounded-md border p-3">
             <div className="flex items-center justify-between gap-3">
-              <div><Label>上游 API Keys</Label><div className="mt-1 text-xs text-muted-foreground">同一渠道可一次添加多张 Key；保存后分别识别模型。</div></div>
+              <div><Label>上游 API Keys</Label><div className="mt-1 text-xs text-muted-foreground">同一渠道可添加多张 Key。成本倍率调整该 Key 请求的账本成本；保存后可逐 Key 识别模型。</div></div>
               <Button type="button" size="sm" variant="outline" onClick={() => setNewKeys((keys) => [...keys, { name: `Key ${existingKeys.length + keys.length + 1}`, api_key: "", egress_mode: "inherit", ip_pool_node_id: 0, cost_multiplier: 1 }])}><Plus />添加一行</Button>
             </div>
-            {provider && existingKeys.length > 0 && <div className="space-y-2">{existingKeys.map((key) => <div key={key.id} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_minmax(0,1fr)_8rem_auto]">
+            {provider && existingKeys.length > 0 && <div className="space-y-2">{existingKeys.map((key) => <div key={key.id} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_minmax(0,1fr)_8rem_auto_auto_auto]">
               <Input defaultValue={key.name || `Key ${key.id}`} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ name: e.target.value }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} />
               <select defaultValue={key.egress_mode === "node" ? `node:${key.ip_pool_node_id}` : key.egress_mode} onChange={(e) => { const [mode, node] = e.target.value.split(":"); api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ egress_mode: mode, ip_pool_node_id: mode === "node" ? Number(node) : null }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"><option value="inherit">继承渠道出口</option><option value="direct">直连</option>{nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>节点：{node.name}</option>)}</select>
-              <Input type="number" min="0.01" max="1000" step="0.01" defaultValue={key.cost_multiplier || 1} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ cost_multiplier: Number(e.target.value) }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} aria-label={`${key.name} 倍率`} />
-              <Button type="button" variant="ghost" size="icon" onClick={() => { if (confirm(`删除 ${key.name || key.key_hint}？`)) api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "DELETE" }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} aria-label={`删除 ${key.name || key.key_hint}`}><Trash2 /></Button>
+              <div className="flex min-w-0 items-center gap-1"><span className="shrink-0 text-xs text-muted-foreground">成本倍率</span><Input type="number" min="0.01" max="1000" step="0.01" defaultValue={key.cost_multiplier || 1} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ cost_multiplier: Number(e.target.value) }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} aria-label={`${key.name} 成本倍率`} /></div>
+              <Button type="button" variant="ghost" size="icon" title="识别此 Key 的模型" aria-label={`识别 ${key.name || key.key_hint} 的模型`} onClick={() => api(`/api/admin/providers/${provider.id}/keys/${key.id}/discover-models`, { method: "POST" }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))}><RefreshCw /></Button>
+              <Button type="button" variant="ghost" size="icon" title="管理此 Key 的模型" aria-label={`管理 ${key.name || key.key_hint} 的模型`} onClick={() => onManageKeyModels?.(provider)}><Settings2 /></Button>
+              <Button type="button" variant="ghost" size="icon" title="删除 Key" onClick={() => { if (confirm(`删除 ${key.name || key.key_hint}？`)) api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "DELETE" }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} aria-label={`删除 ${key.name || key.key_hint}`}><Trash2 /></Button>
             </div>)}</div>}
             <div className="space-y-2">
               {newKeys.map((key, index) => <div key={index} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_minmax(0,1fr)_9rem_7rem_auto]">
                 <Input value={key.name} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, name: e.target.value } : item))} placeholder={`Key ${index + 1} 名称`} />
                 <Input value={key.api_key} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, api_key: e.target.value } : item))} placeholder={provider ? "新增 Key（留空不添加）" : "sk-…"} className="font-mono text-xs" />
                 <select value={key.egress_mode === "node" ? `node:${key.ip_pool_node_id}` : key.egress_mode} onChange={(e) => { const [mode, node] = e.target.value.split(":"); setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, egress_mode: mode, ip_pool_node_id: mode === "node" ? Number(node) : 0 } : item)) }} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"><option value="inherit">继承出口</option><option value="direct">直连</option>{nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>{node.name}</option>)}</select>
-                <Input type="number" min="0.01" max="1000" step="0.01" value={key.cost_multiplier} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, cost_multiplier: Number(e.target.value) } : item))} placeholder="倍率" />
+                <div className="flex items-center gap-1"><span className="shrink-0 text-xs text-muted-foreground">成本倍率</span><Input type="number" min="0.01" max="1000" step="0.01" value={key.cost_multiplier} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, cost_multiplier: Number(e.target.value) } : item))} placeholder="1.00" /></div>
                 <Button type="button" variant="ghost" size="icon" disabled={newKeys.length === 1} onClick={() => setNewKeys((keys) => keys.filter((_, i) => i !== index))} aria-label={`删除 Key 输入行 ${index + 1}`}><Trash2 /></Button>
               </div>)}
             </div>

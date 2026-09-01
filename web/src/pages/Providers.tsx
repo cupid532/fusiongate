@@ -395,7 +395,7 @@ export function Providers() {
         </CardContent>
       </Card>
 
-      <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} />
+      <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} onManageKeyModels={(provider) => { setKeysProvider(provider); setKeysOpen(true) }} />
       {healthCheckProvider && (
         <HealthCheckDialog
           open={healthCheckOpen}
