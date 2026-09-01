@@ -118,6 +118,29 @@ func TestRequestLedgerFiltersByDetailedTimeStatusProviderAndQuery(t *testing.T) 
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid time status=%d body=%s", invalid.Code, invalid.Body.String())
 	}
+
+	if _, err := a.db.Exec(`UPDATE request_ledger SET provider_key_id=42,provider_key_name='backup',provider_key_hint='sk-test...safe' WHERE request_id='matching'`); err != nil {
+		t.Fatal(err)
+	}
+	byKey := httptest.NewRecorder()
+	a.requests(byKey, httptest.NewRequest(http.MethodGet, "/api/admin/requests?q=sk-test...safe", nil), adminCtx{})
+	if byKey.Code != http.StatusOK {
+		t.Fatalf("provider key query status=%d body=%s", byKey.Code, byKey.Body.String())
+	}
+	var attributed struct {
+		Items []struct {
+			RequestID       string `json:"request_id"`
+			ProviderKeyID   int64  `json:"provider_key_id"`
+			ProviderKeyName string `json:"provider_key_name"`
+			ProviderKeyHint string `json:"provider_key_hint"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(byKey.Body.Bytes(), &attributed); err != nil {
+		t.Fatal(err)
+	}
+	if len(attributed.Items) != 1 || attributed.Items[0].RequestID != "matching" || attributed.Items[0].ProviderKeyID != 42 || attributed.Items[0].ProviderKeyName != "backup" || attributed.Items[0].ProviderKeyHint != "sk-test...safe" {
+		t.Fatalf("provider key attribution=%+v", attributed.Items)
+	}
 }
 
 func TestGlobalRoutingStrategyAndTokenAccounting(t *testing.T) {

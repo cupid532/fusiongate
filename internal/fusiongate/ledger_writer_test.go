@@ -53,6 +53,41 @@ func TestLedgerWritesAreQueuedOffTheRequestPath(t *testing.T) {
 
 // The UPDATEs address a row by request_id, so they are only correct if the writer
 // applies queued statements in FIFO order behind the INSERT that created it.
+func TestStartLedgerSnapshotsProviderKeyMetadata(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	route := resolvedRoute{
+		Route:           Route{ID: 1, PublicName: "model", UpstreamModel: "upstream"},
+		Provider:        Provider{ID: 1, Name: "provider"},
+		ProviderKeyID:   42,
+		ProviderKeyName: "backup",
+		ProviderKeyHint: "sk-test...safe",
+		Credential:      "must-not-be-stored",
+	}
+	attemptID := a.startLedger(authKey{ID: 1}, route, "openai_chat", false, "127.0.0.1", "req_provider_key", "", 1, "")
+	a.flushLedgerWrites()
+
+	var keyID int64
+	var name, hint string
+	if err := a.db.QueryRow(`SELECT provider_key_id,provider_key_name,provider_key_hint FROM request_ledger WHERE request_id=?`, attemptID).Scan(&keyID, &name, &hint); err != nil {
+		t.Fatal(err)
+	}
+	if keyID != route.ProviderKeyID || name != route.ProviderKeyName || hint != route.ProviderKeyHint {
+		t.Fatalf("provider key snapshot = (%d, %q, %q)", keyID, name, hint)
+	}
+	var leaked int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE provider_key_name=? OR provider_key_hint=?`, route.Credential, route.Credential).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatal("provider credential was stored in safe ledger metadata")
+	}
+}
+
 func TestLedgerWriterPreservesOrderPerAttempt(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

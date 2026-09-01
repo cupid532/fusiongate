@@ -19,6 +19,13 @@ CREATE TABLE providers (
  credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 100,
  weight INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'unknown', notes TEXT NOT NULL DEFAULT '',
  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE provider_api_keys (
+ id INTEGER PRIMARY KEY, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+ credential BLOB NOT NULL, fingerprint TEXT NOT NULL, key_hint TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+ model TEXT NOT NULL DEFAULT '', egress_mode TEXT NOT NULL DEFAULT 'inherit', ip_pool_node_id INTEGER,
+ enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'untested',
+ last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT, last_test_latency_ms INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(provider_id,fingerprint));
 CREATE TABLE model_routes (
  id INTEGER PRIMARY KEY, public_name TEXT NOT NULL, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
  upstream_model TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT 'chat,stream', enabled INTEGER NOT NULL DEFAULT 1,
@@ -59,10 +66,11 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	}
 	defer a.Close()
 	for table, columns := range map[string][]string{
-		"providers":      {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "health_check_enabled", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived"},
-		"model_routes":   {"sort_order"},
-		"api_keys":       {"encrypted_key"},
-		"request_ledger": {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms", "usage_reported", "api_key_name", "api_key_prefix", "provider_name", "client_ip"},
+		"providers":         {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "health_check_enabled", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived"},
+		"provider_api_keys": {"health_check_enabled"},
+		"model_routes":      {"sort_order"},
+		"api_keys":          {"encrypted_key"},
+		"request_ledger":    {"gateway_request_id", "attempt", "retry_reason", "first_byte_ms", "usage_reported", "api_key_name", "api_key_prefix", "provider_name", "provider_key_id", "provider_key_name", "provider_key_hint", "client_ip"},
 	} {
 		rows, err := a.db.Query("PRAGMA table_info(" + table + ")")
 		if err != nil {
@@ -88,6 +96,17 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	var ipPoolTable string
 	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='ip_pool_nodes'`).Scan(&ipPoolTable); err != nil || ipPoolTable != "ip_pool_nodes" {
 		t.Fatalf("ip_pool_nodes table was not migrated: table=%q err=%v", ipPoolTable, err)
+	}
+	var keyHealthTable string
+	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='provider_api_key_model_health'`).Scan(&keyHealthTable); err != nil || keyHealthTable != "provider_api_key_model_health" {
+		t.Fatalf("provider_api_key_model_health table was not migrated: table=%q err=%v", keyHealthTable, err)
+	}
+	if _, err := a.db.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,created_at,updated_at) VALUES(1,X'00','migration-key','hint','legacy-key',?,?)`, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	var keyHealthDefault int
+	if err := a.db.QueryRow(`SELECT health_check_enabled FROM provider_api_keys WHERE fingerprint='migration-key'`).Scan(&keyHealthDefault); err != nil || keyHealthDefault != 1 {
+		t.Fatalf("legacy API key health check default=%d err=%v", keyHealthDefault, err)
 	}
 	var aliasTable string
 	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='model_aliases'`).Scan(&aliasTable); err != nil || aliasTable != "model_aliases" {

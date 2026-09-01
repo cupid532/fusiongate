@@ -598,14 +598,20 @@ func (a *App) migrate(ctx context.Context) error {
     credential BLOB NOT NULL, fingerprint TEXT NOT NULL, key_hint TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '', egress_mode TEXT NOT NULL DEFAULT 'inherit',
     ip_pool_node_id INTEGER REFERENCES ip_pool_nodes(id) ON DELETE RESTRICT,
-    enabled INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'untested', last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1, health_check_enabled INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'untested',
+    last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT,
     last_test_latency_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     UNIQUE(provider_id,fingerprint));
   CREATE TABLE IF NOT EXISTS provider_api_key_models (
     provider_key_id INTEGER NOT NULL REFERENCES provider_api_keys(id) ON DELETE CASCADE,
     model TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', capabilities TEXT NOT NULL DEFAULT 'chat,stream',
     discovered_at TEXT NOT NULL, PRIMARY KEY(provider_key_id,model));
+  CREATE TABLE IF NOT EXISTS provider_api_key_model_health (
+    provider_key_id INTEGER NOT NULL REFERENCES provider_api_keys(id) ON DELETE CASCADE,
+    model TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT '',
+    latency_ms INTEGER NOT NULL DEFAULT 0, first_byte_ms INTEGER NOT NULL DEFAULT 0,
+    last_checked_at TEXT NOT NULL, PRIMARY KEY(provider_key_id,model));
   CREATE TABLE IF NOT EXISTS model_routes (
     id INTEGER PRIMARY KEY, public_name TEXT NOT NULL, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     upstream_model TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT 'chat,stream', enabled INTEGER NOT NULL DEFAULT 1,
@@ -633,7 +639,8 @@ func (a *App) migrate(ctx context.Context) error {
     cost_micros INTEGER NOT NULL DEFAULT 0, cost_type TEXT NOT NULL DEFAULT 'unknown',
     gateway_request_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 1, retry_reason TEXT NOT NULL DEFAULT '',
     first_byte_ms INTEGER, usage_reported INTEGER NOT NULL DEFAULT 0, client_ip TEXT NOT NULL DEFAULT '',
-    api_key_name TEXT NOT NULL DEFAULT '', api_key_prefix TEXT NOT NULL DEFAULT '', provider_name TEXT NOT NULL DEFAULT '');
+    api_key_name TEXT NOT NULL DEFAULT '', api_key_prefix TEXT NOT NULL DEFAULT '', provider_name TEXT NOT NULL DEFAULT '',
+    provider_key_id INTEGER NOT NULL DEFAULT 0, provider_key_name TEXT NOT NULL DEFAULT '', provider_key_hint TEXT NOT NULL DEFAULT '');
   CREATE INDEX IF NOT EXISTS idx_ledger_created ON request_ledger(created_at DESC);
   CREATE TABLE IF NOT EXISTS provider_cost_cycles (
     provider_id INTEGER PRIMARY KEY,
@@ -708,6 +715,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "multi_key_initialized", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "archived", "INTEGER NOT NULL DEFAULT 0"},
+		{"provider_api_keys", "health_check_enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"provider_api_key_models", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
@@ -717,6 +725,9 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "api_key_name", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "api_key_prefix", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "provider_name", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "provider_key_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"request_ledger", "provider_key_name", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "provider_key_hint", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "reasoning_effort", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "client_ip", "TEXT NOT NULL DEFAULT ''"},
 		{"api_keys", "encrypted_key", "BLOB"},
@@ -785,6 +796,7 @@ CREATE INDEX IF NOT EXISTS idx_ip_pool_nodes_enabled ON ip_pool_nodes(enabled,id
 CREATE INDEX IF NOT EXISTS idx_provider_api_keys_selection ON provider_api_keys(provider_id,enabled,sort_order,id);
 CREATE INDEX IF NOT EXISTS idx_provider_api_keys_node ON provider_api_keys(ip_pool_node_id);
 CREATE INDEX IF NOT EXISTS idx_provider_api_key_models_lookup ON provider_api_key_models(provider_key_id,model);
+CREATE INDEX IF NOT EXISTS idx_provider_api_key_model_health_checked ON provider_api_key_model_health(provider_key_id,last_checked_at);
 DELETE FROM model_aliases WHERE NOT EXISTS(SELECT 1 FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.public_name=model_aliases.target_model AND p.passthrough_mode<>'transparent');
 CREATE TRIGGER IF NOT EXISTS trg_model_routes_alias_conflict_insert
 BEFORE INSERT ON model_routes

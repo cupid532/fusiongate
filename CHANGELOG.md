@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.45
+
+- Complete per-Key isolation for multi-Key upstream channels: each Key now has independent health-check participation, persistent Key-by-model health results, discovered model inventory, and effective IP-pool egress without affecting sibling credentials.
+- Attribute every upstream request attempt to the selected provider Key using its stored name and masked hint; request-ledger search and the console expose this safe attribution without persisting plaintext credentials.
+- Expand the Key management console with independent enablement and health controls, model discovery and testing actions, model-level health details, and effective egress visibility while preserving the provider health switch as the channel-wide master control.
+
 ## V2.44
 
 - Increase the CI race-suite timeout to accommodate slower hosted runners and prevent valid release builds from failing at the previous ten-minute limit.

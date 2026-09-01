@@ -320,7 +320,7 @@ func TestResolveMultiKeyProviderReleasesRouteRowsBeforeKeySelection(t *testing.T
 	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
 		t.Fatal(err)
 	}
-	insertProviderKeyForTest(t, a, providerID, "sk-selected", "selected", "upstream-model", providerKeyEgressInherit, nil, 1, 0)
+	keyID := insertProviderKeyForTest(t, a, providerID, "sk-selected", "selected", "upstream-model", providerKeyEgressInherit, nil, 1, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -328,7 +328,7 @@ func TestResolveMultiKeyProviderReleasesRouteRowsBeforeKeySelection(t *testing.T
 	if err != nil {
 		t.Fatalf("resolve multi-key route: %v", err)
 	}
-	if len(routes) != 1 || routes[0].Credential != "sk-selected" {
+	if len(routes) != 1 || routes[0].Credential != "sk-selected" || routes[0].ProviderKeyID != keyID || routes[0].ProviderKeyName != "selected" || routes[0].ProviderKeyHint != providerKeyHint("sk-selected") {
 		t.Fatalf("routes=%#v", routes)
 	}
 }
@@ -404,6 +404,50 @@ func TestProviderKeyAdminMasksSecretsRejectsDuplicateAndDeletesLast(t *testing.T
 	}
 	if _, err := a.selectProviderKey(context.Background(), providerID, "gpt-mini", nil, nil, true); err == nil {
 		t.Fatal("deleted last card fell back to hidden legacy credential")
+	}
+}
+
+func TestProviderKeyHealthControlCreateListAndPatch(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "key-health-api", "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	created := httptest.NewRecorder()
+	a.providerKeys(created, httptest.NewRequest(http.MethodPost, "/api/admin/providers/1/keys", strings.NewReader(`{"api_key":"sk-health-off","health_check_enabled":false}`)), providerID)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	var enabled int
+	if err := a.db.QueryRow(`SELECT health_check_enabled FROM provider_api_keys WHERE id=?`, result.ID).Scan(&enabled); err != nil || enabled != 0 {
+		t.Fatalf("created health_check_enabled=%d err=%v", enabled, err)
+	}
+	patch := httptest.NewRecorder()
+	a.providerKeyByID(patch, httptest.NewRequest(http.MethodPatch, "/api/admin/providers/1/keys/1", strings.NewReader(`{"health_check_enabled":true}`)), providerID, result.ID, "")
+	if patch.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", patch.Code, patch.Body.String())
+	}
+	list := httptest.NewRecorder()
+	a.providerKeys(list, httptest.NewRequest(http.MethodGet, "/api/admin/providers/1/keys", nil), providerID)
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+	var keys []ProviderAPIKey
+	if err := json.Unmarshal(list.Body.Bytes(), &keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || !keys[0].HealthCheckEnabled {
+		t.Fatalf("keys=%+v", keys)
 	}
 }
 

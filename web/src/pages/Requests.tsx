@@ -388,7 +388,14 @@ export function Requests() {
                         <div className="font-medium">{r.model}</div>
                         <div className="text-xs text-muted-foreground">{r.protocol}</div>
                       </td>
-                      <td className="px-4 py-3 text-xs">{r.provider_name || "—"}</td>
+                      <td className="px-4 py-3 text-xs">
+                        <div>{r.provider_name || "—"}</div>
+                        {(r.provider_key_name || r.provider_key_hint) && (
+                          <div className="mt-0.5 text-[11px] text-muted-foreground">
+                            {[r.provider_key_name, r.provider_key_hint].filter(Boolean).join(" · ")}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         {r.running && r.first_byte_ms == null ? (
                           <LiveClock startIso={r.created_at} phase="first" stale={!!r.stale} />

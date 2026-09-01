@@ -112,6 +112,26 @@ func TestManualHealthCheckExpandsSelectedKeysPerModel(t *testing.T) {
 	if len(targets) != 2 || targets[0].ProviderKeyID != first || targets[1].ProviderKeyID != second {
 		t.Fatalf("targets=%+v", targets)
 	}
+	allTargets, err := a.healthCheckJobs.loadModelTargets(context.Background(), providers, []int64{routeID}, nil, "selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allTargets) != 2 || allTargets[0].ProviderKeyID != first || allTargets[1].ProviderKeyID != second {
+		t.Fatalf("all targets=%+v", allTargets)
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET health_check_enabled=0 WHERE id=?`, second); err != nil {
+		t.Fatal(err)
+	}
+	filtered, err := a.healthCheckJobs.loadModelTargets(context.Background(), providers, []int64{routeID}, []int64{first}, "selected")
+	if err != nil || len(filtered) != 1 || filtered[0].ProviderKeyID != first {
+		t.Fatalf("filtered targets=%+v err=%v", filtered, err)
+	}
+	if _, err := a.healthCheckJobs.loadModelTargets(context.Background(), providers, []int64{routeID}, []int64{second}, "selected"); err == nil {
+		t.Fatal("health-disabled key unexpectedly expanded into a target")
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET health_check_enabled=1 WHERE id=?`, second); err != nil {
+		t.Fatal(err)
+	}
 	for i, target := range targets {
 		p, err := a.loadDiscoveryProvider(context.Background(), providerID)
 		if err != nil {
@@ -123,6 +143,72 @@ func TestManualHealthCheckExpandsSelectedKeysPerModel(t *testing.T) {
 		if want := []string{"key-one", "key-two"}[i]; p.Credential != want {
 			t.Fatalf("credential=%q want %q", p.Credential, want)
 		}
+	}
+}
+
+func TestManualKeyModelHealthPersistsWithoutChangingSibling(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer key-good" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": healthProbeAnswer(r)}}}})
+	}))
+	defer upstream.Close()
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "isolated-key-health", "openai_compatible", upstream.URL, "legacy", 1, 1, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	routeID := insertTestRoute(t, a, providerID, "isolated-model", "upstream-model", "chat,stream", 1)
+	goodID := insertProviderKeyForTest(t, a, providerID, "key-good", "good", "", "inherit", nil, 1, 0)
+	siblingID := insertProviderKeyForTest(t, a, providerID, "key-sibling", "sibling", "", "inherit", nil, 1, 1)
+	for _, keyID := range []int64{goodID, siblingID} {
+		if _, err := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,1)`, keyID, "upstream-model", "Shared", "chat,stream", now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET status='failed',last_error='sibling remains failed' WHERE id=?`, siblingID); err != nil {
+		t.Fatal(err)
+	}
+	job, err := a.healthCheckJobs.StartModels(context.Background(), []int64{providerID}, []int64{routeID}, []int64{goodID}, "selected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	job = waitForHealthCheckJob(t, a, job.ID)
+	if job.Status != "completed" || job.Healthy != 1 {
+		t.Fatalf("job=%+v", job)
+	}
+	var status, healthError, checkedAt string
+	var latency, firstByte int64
+	if err := a.db.QueryRow(`SELECT status,error,latency_ms,first_byte_ms,last_checked_at FROM provider_api_key_model_health WHERE provider_key_id=? AND model=?`, goodID, "upstream-model").Scan(&status, &healthError, &latency, &firstByte, &checkedAt); err != nil {
+		t.Fatal(err)
+	}
+	if status != "healthy" || healthError != "" || latency < 0 || firstByte < 0 || checkedAt == "" {
+		t.Fatalf("model health status=%q error=%q latency=%d first_byte=%d checked=%q", status, healthError, latency, firstByte, checkedAt)
+	}
+	var goodStatus, siblingStatus, siblingError string
+	if err := a.db.QueryRow(`SELECT status FROM provider_api_keys WHERE id=?`, goodID).Scan(&goodStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.QueryRow(`SELECT status,last_error FROM provider_api_keys WHERE id=?`, siblingID).Scan(&siblingStatus, &siblingError); err != nil {
+		t.Fatal(err)
+	}
+	if goodStatus != "healthy" || siblingStatus != "failed" || siblingError != "sibling remains failed" {
+		t.Fatalf("good=%q sibling=%q sibling_error=%q", goodStatus, siblingStatus, siblingError)
+	}
+	list := httptest.NewRecorder()
+	a.providerKeys(list, httptest.NewRequest(http.MethodGet, "/api/admin/providers/1/keys", nil), providerID)
+	var keys []ProviderAPIKey
+	if err := json.Unmarshal(list.Body.Bytes(), &keys); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || len(keys[0].Models) != 1 || keys[0].Models[0].HealthStatus != "healthy" || keys[0].Models[0].LastCheckedAt == "" {
+		t.Fatalf("listed keys=%+v", keys)
 	}
 }
 

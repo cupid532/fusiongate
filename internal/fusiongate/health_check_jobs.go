@@ -329,44 +329,52 @@ func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers 
 	if len(targets) > manualHealthCheckMaxItems {
 		return nil, fmt.Errorf("health check expands to more than %d models", manualHealthCheckMaxItems)
 	}
-	if len(providerKeyIDs) > 0 {
-		allowed := make(map[int64]bool, len(providerKeyIDs))
-		matched := make(map[int64]bool, len(providerKeyIDs))
-		for _, id := range providerKeyIDs {
-			if id < 1 {
-				return nil, errors.New("provider_key_ids must contain positive integers")
-			}
-			allowed[id] = true
+	allowed := make(map[int64]bool, len(providerKeyIDs))
+	matched := make(map[int64]bool, len(providerKeyIDs))
+	for _, id := range providerKeyIDs {
+		if id < 1 {
+			return nil, errors.New("provider_key_ids must contain positive integers")
 		}
-		expanded := make([]healthCheckTarget, 0)
-		for _, target := range targets {
-			rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint FROM provider_api_keys k WHERE k.provider_id=? AND k.enabled=1 AND (k.model<>'' AND lower(k.model)=lower(?) OR k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?))) ORDER BY k.sort_order,k.id`, target.ProviderID, target.UpstreamModel, target.UpstreamModel)
-			if err != nil {
+		allowed[id] = true
+	}
+	expanded := make([]healthCheckTarget, 0, len(targets))
+	for _, target := range targets {
+		var authKind string
+		if err := m.app.db.QueryRowContext(ctx, `SELECT auth_kind FROM providers WHERE id=?`, target.ProviderID).Scan(&authKind); err != nil {
+			return nil, err
+		}
+		if authKind != "api_key" {
+			expanded = append(expanded, target)
+			continue
+		}
+		rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint FROM provider_api_keys k WHERE k.provider_id=? AND k.enabled=1 AND k.health_check_enabled=1 AND (k.model<>'' AND lower(k.model)=lower(?) OR k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?)) OR k.model='' AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id)) ORDER BY k.sort_order,k.id`, target.ProviderID, target.UpstreamModel, target.UpstreamModel)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			item := target
+			if err := rows.Scan(&item.ProviderKeyID, &item.ProviderKeyName, &item.ProviderKeyHint); err != nil {
+				_ = rows.Close()
 				return nil, err
 			}
-			for rows.Next() {
-				item := target
-				if err := rows.Scan(&item.ProviderKeyID, &item.ProviderKeyName, &item.ProviderKeyHint); err != nil {
-					_ = rows.Close()
-					return nil, err
-				}
-				if allowed[item.ProviderKeyID] {
-					expanded = append(expanded, item)
-					matched[item.ProviderKeyID] = true
-				}
+			if len(allowed) == 0 || allowed[item.ProviderKeyID] {
+				expanded = append(expanded, item)
+				matched[item.ProviderKeyID] = true
 			}
-			_ = rows.Close()
 		}
-		if len(matched) != len(allowed) {
-			return nil, errors.New("one or more selected keys are disabled, missing, or do not support the selected models")
+		if err := rows.Close(); err != nil {
+			return nil, err
 		}
-		targets = expanded
-		if len(targets) == 0 {
-			return nil, errors.New("the selected keys do not support the selected models")
-		}
-		if len(targets) > manualHealthCheckMaxItems {
-			return nil, fmt.Errorf("health check expands to more than %d key/model combinations", manualHealthCheckMaxItems)
-		}
+	}
+	if len(allowed) > 0 && len(matched) != len(allowed) {
+		return nil, errors.New("one or more selected keys are disabled, missing, or do not support the selected models")
+	}
+	targets = expanded
+	if len(targets) == 0 {
+		return nil, errors.New("the selected providers have no enabled key/model combinations")
+	}
+	if len(targets) > manualHealthCheckMaxItems {
+		return nil, fmt.Errorf("health check expands to more than %d key/model combinations", manualHealthCheckMaxItems)
 	}
 	return targets, nil
 }
@@ -481,11 +489,9 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 		checker := NewHealthChecker(m.app, 15*time.Minute, 1)
 		result = checker.probeRoute(probeCtx, target)
 		if item.ProviderKeyID > 0 {
-			status, message := result.Status, result.Error
-			if status == "healthy" {
-				message = ""
+			if persistErr := m.app.persistProviderKeyModelHealth(probeCtx, item.ProviderID, item.ProviderKeyID, item.Model, result); persistErr != nil {
+				err = persistErr
 			}
-			_, _ = m.app.db.ExecContext(probeCtx, `UPDATE provider_api_keys SET status=?,last_error=?,last_tested_at=?,last_test_latency_ms=?,updated_at=? WHERE id=? AND provider_id=?`, status, message, now(), result.LatencyMS, now(), item.ProviderKeyID, item.ProviderID)
 		} else {
 			checker.updateRouteHealthStatus(item.RouteID, result)
 		}

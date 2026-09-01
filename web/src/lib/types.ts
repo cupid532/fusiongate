@@ -163,6 +163,9 @@ export interface RequestLedgerRow {
   attempt: number
   retry_reason: string
   provider_name: string
+  provider_key_id: number
+  provider_key_name: string
+  provider_key_hint: string
   client_ip: string
   created_at: string
   completed_at: string
@@ -381,15 +384,44 @@ export const ROUTING_STRATEGY_HELP: Record<RoutingStrategy, string> = {
   adaptive: "按权重、首字节延迟、连续失败和当前并发综合打分，把新请求发给当前得分最高的渠道；恢复冷却的渠道会被优先探测。",
 }
 
+export interface ProviderKeyModel {
+  model: string
+  display_name: string
+  capabilities: string
+  enabled: boolean
+  health_status?: string
+  health_error?: string
+  latency_ms: number
+  first_byte_ms: number
+  last_checked_at?: string
+}
+
 export interface ProviderKey {
   id: number
+  provider_id: number
   name: string
   key_hint: string
-  enabled: boolean
-  status: string
   model?: string
-  discovered_models: number
+  effective_model?: string
+  model_inherited: boolean
+  egress_mode: "inherit" | "direct" | "node"
+  ip_pool_node_id?: number
+  ip_pool_node_name?: string
+  effective_egress: "direct" | "node"
+  effective_node_id?: number
+  egress_inherited: boolean
+  enabled: boolean
+  health_check_enabled: boolean
+  sort_order: number
+  status: string
+  last_error?: string
+  last_tested_at?: string
   last_test_latency_ms: number
+  discovered_models: number
+  last_discovered_at?: string
+  models: ProviderKeyModel[]
+  created_at: string
+  updated_at: string
 }
 
 export interface CodexUsageWindow {

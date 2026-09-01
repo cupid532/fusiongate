@@ -46,13 +46,15 @@ type authKey struct {
 }
 
 type resolvedRoute struct {
-	Route          Route
-	Provider       Provider
-	CanonicalModel string
-	ProviderKeyID  int64
-	AttemptID      int64
-	Credential     string
-	AuthCredential *ProviderCredential
+	Route           Route
+	Provider        Provider
+	CanonicalModel  string
+	ProviderKeyID   int64
+	ProviderKeyName string
+	ProviderKeyHint string
+	AttemptID       int64
+	Credential      string
+	AuthCredential  *ProviderCredential
 }
 
 func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.HandlerFunc {
@@ -642,6 +644,8 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 			for _, providerKey := range selected.keys {
 				keyRoute := z
 				keyRoute.ProviderKeyID = providerKey.ID
+				keyRoute.ProviderKeyName = providerKey.Name
+				keyRoute.ProviderKeyHint = providerKey.Hint
 				keyRoute.Credential = providerKey.Credential
 				keyRoute.Provider.IPPoolNodeID = providerKey.IPPoolNodeID
 				out = append(out, keyRoute)
@@ -738,7 +742,7 @@ func requestReasoningEffort(body map[string]any) string {
 // SQLite before dispatching the upstream request.
 func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID, reasoningEffort string, attempt int, retryReason string) string {
 	attemptID := gatewayID + "_a" + strconv.Itoa(attempt)
-	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name, reasoningEffort)
+	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name,provider_key_id,provider_key_name,provider_key_hint,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name, z.ProviderKeyID, z.ProviderKeyName, z.ProviderKeyHint, reasoningEffort)
 	return attemptID
 }
 

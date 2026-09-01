@@ -327,6 +327,13 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 	}
 	var keyErr error
 	if target.ProviderKeyID > 0 {
+		var keyHealthEnabled int
+		if err := h.app.db.QueryRowContext(ctx, `SELECT health_check_enabled FROM provider_api_keys WHERE id=? AND provider_id=?`, target.ProviderKeyID, target.ProviderID).Scan(&keyHealthEnabled); err != nil {
+			return healthCheckResult{Status: "config_error", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "failed to load API key health settings"}
+		}
+		if !strBool(keyHealthEnabled) {
+			return healthCheckResult{Status: "disabled", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "health checks disabled for this API key"}
+		}
 		keyErr = h.app.applyProviderKeyByID(ctx, &p, target.ProviderKeyID, target.UpstreamModel)
 	} else {
 		keyErr = h.app.applyProviderKeyForModel(ctx, &p, target.UpstreamModel)
