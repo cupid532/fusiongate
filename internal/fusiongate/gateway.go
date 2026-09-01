@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -46,15 +47,16 @@ type authKey struct {
 }
 
 type resolvedRoute struct {
-	Route           Route
-	Provider        Provider
-	CanonicalModel  string
-	ProviderKeyID   int64
-	ProviderKeyName string
-	ProviderKeyHint string
-	AttemptID       int64
-	Credential      string
-	AuthCredential  *ProviderCredential
+	Route                     Route
+	Provider                  Provider
+	CanonicalModel            string
+	ProviderKeyID             int64
+	ProviderKeyName           string
+	ProviderKeyHint           string
+	ProviderKeyCostMultiplier float64
+	AttemptID                 int64
+	Credential                string
+	AuthCredential            *ProviderCredential
 }
 
 func (a *App) api(fn func(http.ResponseWriter, *http.Request, authKey)) http.HandlerFunc {
@@ -646,6 +648,7 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 				keyRoute.ProviderKeyID = providerKey.ID
 				keyRoute.ProviderKeyName = providerKey.Name
 				keyRoute.ProviderKeyHint = providerKey.Hint
+				keyRoute.ProviderKeyCostMultiplier = providerKey.CostMultiplier
 				keyRoute.Credential = providerKey.Credential
 				keyRoute.Provider.IPPoolNodeID = providerKey.IPPoolNodeID
 				out = append(out, keyRoute)
@@ -774,7 +777,12 @@ func (a *App) endLedger(attemptID string, providerID, apiKeyID int64, providerTy
 }
 
 func cost(z resolvedRoute, usage *Usage) {
+	multiplier := z.ProviderKeyCostMultiplier
+	if multiplier <= 0 {
+		multiplier = 1
+	}
 	if usage.CostMicros > 0 {
+		usage.CostMicros = int64(math.Round(float64(usage.CostMicros) * multiplier))
 		usage.CostType = "actual"
 		return
 	}
@@ -790,7 +798,7 @@ func cost(z resolvedRoute, usage *Usage) {
 		if cachedPrice <= 0 {
 			cachedPrice = inputPrice
 		}
-		usage.CostMicros = (uncached*inputPrice + usage.Cached*cachedPrice + usage.Output*outputPrice) / 1_000_000
+		usage.CostMicros = int64(math.Round(float64((uncached*inputPrice+usage.Cached*cachedPrice+usage.Output*outputPrice)/1_000_000) * multiplier))
 		usage.CostType = "estimated"
 	} else {
 		usage.CostType = "unknown"

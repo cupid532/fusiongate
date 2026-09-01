@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.49
+
+- Treat migrated legacy credentials as ordinary `Key 1` cards that can be renamed or deleted, including when they are the final Key in a channel.
+- Expose independent egress selection for every existing and newly added Key directly in channel settings, supporting inherited routing, direct connections, or a specific IP-pool node.
+- Add independent per-Key cost multipliers, apply them to estimated and upstream-reported request costs, and preserve them in provider backups.
+
 ## V2.48
 
 - Add collapsible per-Key model inventories to keep large model lists compact, with independent discovery, manual model addition, enablement, and health details for every upstream Key.

@@ -15,7 +15,6 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Badge } from "@/components/ui/badge"
 
 const providerTypes = [
   { value: "openai_compatible", label: "OpenAI 兼容" },
@@ -42,7 +41,7 @@ export function ProviderDialog({
   provider: Provider | null
 }) {
   const qc = useQueryClient()
-  const [newKeys, setNewKeys] = useState([{ name: "默认 Key", api_key: "" }])
+  const [newKeys, setNewKeys] = useState([{ name: "Key 1", api_key: "", egress_mode: "inherit", ip_pool_node_id: 0, cost_multiplier: 1 }])
   const [form, setForm] = useState({
     name: "",
     type: "openai_compatible",
@@ -73,7 +72,7 @@ export function ProviderDialog({
 
   useEffect(() => {
     if (open) {
-      setNewKeys([{ name: provider ? "" : "默认 Key", api_key: "" }])
+      setNewKeys([{ name: provider ? "" : "Key 1", api_key: "", egress_mode: "inherit", ip_pool_node_id: 0, cost_multiplier: 1 }])
       setForm({
         name: provider?.name ?? "",
         type: provider?.type ?? "openai_compatible",
@@ -104,7 +103,7 @@ export function ProviderDialog({
         ip_pool_node_id: form.ip_pool_node_id || null,
       }
       if (form.group_id) body.group_id = form.group_id
-      const pendingKeys = newKeys.map((key) => ({ name: key.name.trim(), api_key: key.api_key.trim() })).filter((key) => key.api_key)
+      const pendingKeys = newKeys.map((key) => ({ name: key.name.trim(), api_key: key.api_key.trim(), egress_mode: key.egress_mode, ip_pool_node_id: key.egress_mode === "node" ? key.ip_pool_node_id : undefined, cost_multiplier: key.cost_multiplier })).filter((key) => key.api_key)
       if (provider) {
         if (!form.group_id) body.clear_group = true
         await api(`/api/admin/providers/${provider.id}`, { method: "PATCH", body: JSON.stringify(body) })
@@ -114,7 +113,11 @@ export function ProviderDialog({
         return
       }
       const [primary, ...additional] = pendingKeys
-      const created = await api<{ id: number }>("/api/admin/providers", { method: "POST", body: JSON.stringify({ ...body, credential: primary.api_key, key_name: primary.name || "默认 Key", auto_discover: false }) })
+      const created = await api<{ id: number }>("/api/admin/providers", { method: "POST", body: JSON.stringify({ ...body, credential: primary.api_key, key_name: primary.name || "Key 1", auto_discover: false }) })
+      const createdKeys = await api<ProviderKey[]>(`/api/admin/providers/${created.id}/keys`)
+      if (createdKeys[0]) {
+        await api(`/api/admin/providers/${created.id}/keys/${createdKeys[0].id}`, { method: "PATCH", body: JSON.stringify({ name: primary.name || "Key 1", egress_mode: primary.egress_mode, ip_pool_node_id: primary.ip_pool_node_id, cost_multiplier: primary.cost_multiplier }) })
+      }
       for (const key of additional) {
         await api(`/api/admin/providers/${created.id}/keys`, { method: "POST", body: JSON.stringify(key) })
       }
@@ -173,13 +176,20 @@ export function ProviderDialog({
           <div className="col-span-2 space-y-2 rounded-md border p-3">
             <div className="flex items-center justify-between gap-3">
               <div><Label>上游 API Keys</Label><div className="mt-1 text-xs text-muted-foreground">同一渠道可一次添加多张 Key；保存后分别识别模型。</div></div>
-              <Button type="button" size="sm" variant="outline" onClick={() => setNewKeys((keys) => [...keys, { name: "", api_key: "" }])}><Plus />添加一行</Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => setNewKeys((keys) => [...keys, { name: `Key ${existingKeys.length + keys.length + 1}`, api_key: "", egress_mode: "inherit", ip_pool_node_id: 0, cost_multiplier: 1 }])}><Plus />添加一行</Button>
             </div>
-            {provider && existingKeys.length > 0 && <div className="flex flex-wrap gap-1.5">{existingKeys.map((key) => <Badge key={key.id} variant={key.enabled ? "success" : "neutral"}>{key.name || "API Key"} · {key.key_hint}</Badge>)}</div>}
+            {provider && existingKeys.length > 0 && <div className="space-y-2">{existingKeys.map((key) => <div key={key.id} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_minmax(0,1fr)_8rem_auto]">
+              <Input defaultValue={key.name || `Key ${key.id}`} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ name: e.target.value }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} />
+              <select defaultValue={key.egress_mode === "node" ? `node:${key.ip_pool_node_id}` : key.egress_mode} onChange={(e) => { const [mode, node] = e.target.value.split(":"); api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ egress_mode: mode, ip_pool_node_id: mode === "node" ? Number(node) : null }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"><option value="inherit">继承渠道出口</option><option value="direct">直连</option>{nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>节点：{node.name}</option>)}</select>
+              <Input type="number" min="0.01" max="1000" step="0.01" defaultValue={key.cost_multiplier || 1} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ cost_multiplier: Number(e.target.value) }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} aria-label={`${key.name} 倍率`} />
+              <Button type="button" variant="ghost" size="icon" onClick={() => { if (confirm(`删除 ${key.name || key.key_hint}？`)) api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "DELETE" }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} aria-label={`删除 ${key.name || key.key_hint}`}><Trash2 /></Button>
+            </div>)}</div>}
             <div className="space-y-2">
-              {newKeys.map((key, index) => <div key={index} className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)_auto]">
+              {newKeys.map((key, index) => <div key={index} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_minmax(0,1fr)_9rem_7rem_auto]">
                 <Input value={key.name} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, name: e.target.value } : item))} placeholder={`Key ${index + 1} 名称`} />
                 <Input value={key.api_key} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, api_key: e.target.value } : item))} placeholder={provider ? "新增 Key（留空不添加）" : "sk-…"} className="font-mono text-xs" />
+                <select value={key.egress_mode === "node" ? `node:${key.ip_pool_node_id}` : key.egress_mode} onChange={(e) => { const [mode, node] = e.target.value.split(":"); setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, egress_mode: mode, ip_pool_node_id: mode === "node" ? Number(node) : 0 } : item)) }} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"><option value="inherit">继承出口</option><option value="direct">直连</option>{nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>{node.name}</option>)}</select>
+                <Input type="number" min="0.01" max="1000" step="0.01" value={key.cost_multiplier} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, cost_multiplier: Number(e.target.value) } : item))} placeholder="倍率" />
                 <Button type="button" variant="ghost" size="icon" disabled={newKeys.length === 1} onClick={() => setNewKeys((keys) => keys.filter((_, i) => i !== index))} aria-label={`删除 Key 输入行 ${index + 1}`}><Trash2 /></Button>
               </div>)}
             </div>

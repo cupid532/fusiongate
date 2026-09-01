@@ -66,6 +66,7 @@ type providerBackupKey struct {
 	IPPoolNodeName     string                   `json:"ip_pool_node_name,omitempty"`
 	Enabled            bool                     `json:"enabled"`
 	HealthCheckEnabled *bool                    `json:"health_check_enabled,omitempty"`
+	CostMultiplier     float64                  `json:"cost_multiplier,omitempty"`
 	SortOrder          int                      `json:"sort_order"`
 	Models             []providerBackupKeyModel `json:"models,omitempty"`
 }
@@ -179,7 +180,7 @@ ORDER BY p.priority DESC,p.id`)
 	for _, item := range pending {
 		provider := item.Provider
 		keyRows, err := a.db.Query(`
-SELECT k.id,k.credential,k.name,k.model,k.egress_mode,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.sort_order
+SELECT k.id,k.credential,k.name,k.model,k.egress_mode,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.cost_multiplier,k.sort_order
 FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id
 WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 		if err != nil {
@@ -195,7 +196,7 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 		for keyRows.Next() {
 			var key pendingKey
 			var enabled, healthCheckEnabled int
-			if err := keyRows.Scan(&key.ID, &key.Credential, &key.Backup.Name, &key.Backup.Model, &key.Backup.EgressMode, &key.Backup.IPPoolNodeName, &enabled, &healthCheckEnabled, &key.Backup.SortOrder); err != nil {
+			if err := keyRows.Scan(&key.ID, &key.Credential, &key.Backup.Name, &key.Backup.Model, &key.Backup.EgressMode, &key.Backup.IPPoolNodeName, &enabled, &healthCheckEnabled, &key.Backup.CostMultiplier, &key.Backup.SortOrder); err != nil {
 				keyRows.Close()
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
@@ -564,10 +565,14 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 			if key.HealthCheckEnabled != nil {
 				healthCheckEnabled = *key.HealthCheckEnabled
 			}
+			costMultiplier := key.CostMultiplier
+			if costMultiplier <= 0 {
+				costMultiplier = 1
+			}
 			var keyID int64
 			findKeyErr := tx.QueryRow(`SELECT id FROM provider_api_keys WHERE provider_id=? AND fingerprint=?`, providerID, fingerprint).Scan(&keyID)
 			if errors.Is(findKeyErr, sql.ErrNoRows) {
-				res, insertErr := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,ip_pool_node_id,enabled,health_check_enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'untested',?,?)`, providerID, encrypted, fingerprint, providerKeyHint(key.APIKey), key.Name, key.Model, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), key.SortOrder, now(), now())
+				res, insertErr := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,ip_pool_node_id,enabled,health_check_enabled,cost_multiplier,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'untested',?,?)`, providerID, encrypted, fingerprint, providerKeyHint(key.APIKey), key.Name, key.Model, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), costMultiplier, key.SortOrder, now(), now())
 				if insertErr != nil {
 					fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
 					return
@@ -578,7 +583,7 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 				fail(w, http.StatusInternalServerError, "database_error", findKeyErr.Error())
 				return
 			} else {
-				if _, updateErr := tx.Exec(`UPDATE provider_api_keys SET credential=?,key_hint=?,name=?,model=?,egress_mode=?,ip_pool_node_id=?,enabled=?,health_check_enabled=?,sort_order=?,status='untested',last_error='',updated_at=? WHERE id=?`, encrypted, providerKeyHint(key.APIKey), key.Name, key.Model, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), key.SortOrder, now(), keyID); updateErr != nil {
+				if _, updateErr := tx.Exec(`UPDATE provider_api_keys SET credential=?,key_hint=?,name=?,model=?,egress_mode=?,ip_pool_node_id=?,enabled=?,health_check_enabled=?,cost_multiplier=?,sort_order=?,status='untested',last_error='',updated_at=? WHERE id=?`, encrypted, providerKeyHint(key.APIKey), key.Name, key.Model, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), costMultiplier, key.SortOrder, now(), keyID); updateErr != nil {
 					fail(w, http.StatusInternalServerError, "database_error", updateErr.Error())
 					return
 				}

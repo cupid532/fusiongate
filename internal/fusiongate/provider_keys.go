@@ -41,6 +41,7 @@ type ProviderAPIKey struct {
 	EgressInherited    bool               `json:"egress_inherited"`
 	Enabled            bool               `json:"enabled"`
 	HealthCheckEnabled bool               `json:"health_check_enabled"`
+	CostMultiplier     float64            `json:"cost_multiplier"`
 	SortOrder          int                `json:"sort_order"`
 	Status             string             `json:"status"`
 	LastError          string             `json:"last_error,omitempty"`
@@ -66,13 +67,14 @@ type ProviderKeyModel struct {
 }
 
 type selectedProviderKey struct {
-	ID            int64
-	Credential    string
-	Name          string
-	Hint          string
-	Model         string
-	IPPoolNodeID  *int64
-	CooldownUntil time.Time
+	ID             int64
+	Credential     string
+	Name           string
+	Hint           string
+	Model          string
+	IPPoolNodeID   *int64
+	CooldownUntil  time.Time
+	CostMultiplier float64
 }
 
 func validProviderKeyEgressMode(mode string) bool {
@@ -152,7 +154,7 @@ func (a *App) migrateProviderAPIKeys(ctx context.Context) error {
 			return err
 		}
 		if raw != "" {
-			_, err = tx.ExecContext(ctx, `INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,'','inherit',1,0,'untested',?,?) ON CONFLICT(provider_id,fingerprint) DO NOTHING`, item.id, item.credential, a.providerKeyFingerprint(raw), providerKeyHint(raw), "默认 Key", now(), now())
+			_, err = tx.ExecContext(ctx, `INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,'','inherit',1,0,'untested',?,?) ON CONFLICT(provider_id,fingerprint) DO NOTHING`, item.id, item.credential, a.providerKeyFingerprint(raw), providerKeyHint(raw), "Key 1", now(), now())
 			if err != nil {
 				tx.Rollback()
 				return err
@@ -165,6 +167,9 @@ func (a *App) migrateProviderAPIKeys(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
+	}
+	if _, err := a.db.ExecContext(ctx, `UPDATE provider_api_keys SET name='Key 1',updated_at=? WHERE name='默认 Key'`, now()); err != nil {
+		return err
 	}
 	return nil
 }
@@ -254,7 +259,7 @@ func (a *App) selectProviderKeysBatch(ctx context.Context, requests []providerKe
 		args = append(args, i, item.request.providerID, item.request.upstreamModel)
 	}
 	query.WriteString(`)
-SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(k.cooldown_until,'')
+SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(k.cooldown_until,''),k.cost_multiplier
 FROM candidates c
 JOIN providers p ON p.id=c.provider_id
 JOIN provider_api_keys k ON k.provider_id=c.provider_id AND k.enabled=1
@@ -274,7 +279,7 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 		var encrypted []byte
 		var keyNodeID sql.NullInt64
 		var egressMode, cooldownUntil string
-		if err := rows.Scan(&ordinal, &key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID, &cooldownUntil); err != nil {
+		if err := rows.Scan(&ordinal, &key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID, &cooldownUntil, &key.CostMultiplier); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -416,7 +421,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 	}
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT k.id,k.provider_id,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.sort_order,k.status,k.last_error,COALESCE(k.last_tested_at,''),k.last_test_latency_ms,(SELECT COUNT(*) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),COALESCE((SELECT MAX(discovered_at) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),''),k.created_at,k.updated_at FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, providerID)
+		rows, err := a.db.Query(`SELECT k.id,k.provider_id,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.cost_multiplier,k.sort_order,k.status,k.last_error,COALESCE(k.last_tested_at,''),k.last_test_latency_ms,(SELECT COUNT(*) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),COALESCE((SELECT MAX(discovered_at) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),''),k.created_at,k.updated_at FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, providerID)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -427,7 +432,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			var key ProviderAPIKey
 			var enabled, healthCheckEnabled int
 			var keyNodeID sql.NullInt64
-			if err := rows.Scan(&key.ID, &key.ProviderID, &key.Name, &key.KeyHint, &key.Model, &key.EgressMode, &keyNodeID, &key.IPPoolNodeName, &enabled, &healthCheckEnabled, &key.SortOrder, &key.Status, &key.LastError, &key.LastTestedAt, &key.LastTestLatencyMS, &key.DiscoveredModels, &key.LastDiscoveredAt, &key.CreatedAt, &key.UpdatedAt); err != nil {
+			if err := rows.Scan(&key.ID, &key.ProviderID, &key.Name, &key.KeyHint, &key.Model, &key.EgressMode, &keyNodeID, &key.IPPoolNodeName, &enabled, &healthCheckEnabled, &key.CostMultiplier, &key.SortOrder, &key.Status, &key.LastError, &key.LastTestedAt, &key.LastTestLatencyMS, &key.DiscoveredModels, &key.LastDiscoveredAt, &key.CreatedAt, &key.UpdatedAt); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -471,13 +476,14 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in struct {
-			APIKey             string `json:"api_key"`
-			Name               string `json:"name"`
-			Model              string `json:"model"`
-			EgressMode         string `json:"egress_mode"`
-			IPPoolNodeID       *int64 `json:"ip_pool_node_id"`
-			Enabled            *bool  `json:"enabled"`
-			HealthCheckEnabled *bool  `json:"health_check_enabled"`
+			APIKey             string  `json:"api_key"`
+			Name               string  `json:"name"`
+			Model              string  `json:"model"`
+			EgressMode         string  `json:"egress_mode"`
+			IPPoolNodeID       *int64  `json:"ip_pool_node_id"`
+			Enabled            *bool   `json:"enabled"`
+			HealthCheckEnabled *bool   `json:"health_check_enabled"`
+			CostMultiplier     float64 `json:"cost_multiplier"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -490,7 +496,10 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		if in.EgressMode == "" {
 			in.EgressMode = providerKeyEgressInherit
 		}
-		if in.APIKey == "" || !validProviderKeyEgressMode(in.EgressMode) {
+		if in.CostMultiplier == 0 {
+			in.CostMultiplier = 1
+		}
+		if in.APIKey == "" || !validProviderKeyEgressMode(in.EgressMode) || in.CostMultiplier <= 0 || in.CostMultiplier > 1000 {
 			fail(w, http.StatusBadRequest, "invalid_request", "API key and a valid egress mode are required")
 			return
 		}
@@ -530,7 +539,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		if in.HealthCheckEnabled != nil {
 			healthCheckEnabled = *in.HealthCheckEnabled
 		}
-		res, err := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,ip_pool_node_id,enabled,health_check_enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?, 'untested',?,?)`, providerID, encrypted, a.providerKeyFingerprint(in.APIKey), providerKeyHint(in.APIKey), in.Name, in.Model, in.EgressMode, nodeArg, boolInt(enabled), boolInt(healthCheckEnabled), nextOrder, now(), now())
+		res, err := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,ip_pool_node_id,enabled,health_check_enabled,cost_multiplier,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'untested',?,?)`, providerID, encrypted, a.providerKeyFingerprint(in.APIKey), providerKeyHint(in.APIKey), in.Name, in.Model, in.EgressMode, nodeArg, boolInt(enabled), boolInt(healthCheckEnabled), in.CostMultiplier, nextOrder, now(), now())
 		if err != nil {
 			lowerError := strings.ToLower(err.Error())
 			if strings.Contains(lowerError, "provider key limit reached") {
@@ -605,11 +614,16 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			IPPoolNodeID       *int64    `json:"ip_pool_node_id"`
 			Enabled            *bool     `json:"enabled"`
 			HealthCheckEnabled *bool     `json:"health_check_enabled"`
+			CostMultiplier     *float64  `json:"cost_multiplier"`
 			SortOrder          *int      `json:"sort_order"`
 			Models             *[]string `json:"models"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if in.CostMultiplier != nil && (*in.CostMultiplier <= 0 || *in.CostMultiplier > 1000) {
+			fail(w, http.StatusBadRequest, "invalid_request", "cost multiplier must be greater than 0 and at most 1000")
 			return
 		}
 		var encryptedArg, fingerprintArg, hintArg any
@@ -666,7 +680,7 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		if effectiveMode == providerKeyEgressNode && effectiveNode != nil && *effectiveNode > 0 {
 			nodeArg = *effectiveNode
 		}
-		res, err := a.db.Exec(`UPDATE provider_api_keys SET credential=COALESCE(?,credential),fingerprint=COALESCE(?,fingerprint),key_hint=COALESCE(?,key_hint),name=COALESCE(?,name),model=COALESCE(?,model),egress_mode=COALESCE(?,egress_mode),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,enabled=COALESCE(?,enabled),health_check_enabled=COALESCE(?,health_check_enabled),sort_order=COALESCE(?,sort_order),status=CASE WHEN ? THEN 'untested' ELSE status END,last_error=CASE WHEN ? THEN '' ELSE last_error END,updated_at=? WHERE id=? AND provider_id=?`, encryptedArg, fingerprintArg, hintArg, nameArg, modelArg, egressArg, in.EgressMode != nil || in.IPPoolNodeID != nil, nodeArg, maybeBool(in.Enabled), maybeBool(in.HealthCheckEnabled), in.SortOrder, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, now(), keyID, providerID)
+		res, err := a.db.Exec(`UPDATE provider_api_keys SET credential=COALESCE(?,credential),fingerprint=COALESCE(?,fingerprint),key_hint=COALESCE(?,key_hint),name=COALESCE(?,name),model=COALESCE(?,model),egress_mode=COALESCE(?,egress_mode),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,enabled=COALESCE(?,enabled),health_check_enabled=COALESCE(?,health_check_enabled),cost_multiplier=COALESCE(?,cost_multiplier),sort_order=COALESCE(?,sort_order),status=CASE WHEN ? THEN 'untested' ELSE status END,last_error=CASE WHEN ? THEN '' ELSE last_error END,updated_at=? WHERE id=? AND provider_id=?`, encryptedArg, fingerprintArg, hintArg, nameArg, modelArg, egressArg, in.EgressMode != nil || in.IPPoolNodeID != nil, nodeArg, maybeBool(in.Enabled), maybeBool(in.HealthCheckEnabled), in.CostMultiplier, in.SortOrder, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, now(), keyID, providerID)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				fail(w, http.StatusConflict, "duplicate_api_key", "this API key already exists in the provider")

@@ -412,6 +412,7 @@ export interface ProviderKey {
   egress_inherited: boolean
   enabled: boolean
   health_check_enabled: boolean
+  cost_multiplier: number
   sort_order: number
   status: string
   last_error?: string
