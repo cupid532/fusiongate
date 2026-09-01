@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.51
+
+- Remove the phantom undeletable Key row from channel editing: existing channels now render exactly their persisted Keys, and empty new-Key rows appear only after clicking Add Key.
+- Allow every unsaved Key row to be removed, including the only row, while still requiring at least one actual Key before creating a new API-key channel.
+
 ## V2.50
 
 - Restore per-Key model discovery and model-management actions directly inside channel editing, while keeping the full collapsible model inventory in the Key manager.
