@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.46
+
+- Preserve each provider Key model's enabled/disabled state across provider backup export and import; older backups without the field continue to restore models as enabled.
+- Enforce the 500-Key-per-provider ceiling atomically in SQLite, preventing concurrent create requests from exceeding the application limit.
+
 ## V2.45
 
 - Complete per-Key isolation for multi-Key upstream channels: each Key now has independent health-check participation, persistent Key-by-model health results, discovered model inventory, and effective IP-pool egress without affecting sibling credentials.

@@ -104,6 +104,10 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	if _, err := a.db.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,created_at,updated_at) VALUES(1,X'00','migration-key','hint','legacy-key',?,?)`, stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
+	var keyLimitTrigger string
+	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='trigger' AND name='trg_provider_api_keys_limit'`).Scan(&keyLimitTrigger); err != nil || keyLimitTrigger != "trg_provider_api_keys_limit" {
+		t.Fatalf("provider key limit trigger was not migrated: trigger=%q err=%v", keyLimitTrigger, err)
+	}
 	var keyHealthDefault int
 	if err := a.db.QueryRow(`SELECT health_check_enabled FROM provider_api_keys WHERE fingerprint='migration-key'`).Scan(&keyHealthDefault); err != nil || keyHealthDefault != 1 {
 		t.Fatalf("legacy API key health check default=%d err=%v", keyHealthDefault, err)

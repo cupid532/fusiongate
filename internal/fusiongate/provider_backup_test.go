@@ -21,7 +21,7 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondID := insertProviderKeyForTest(t, a, providerID, "sk-backup-secondary-654321", "备用 Key", "glm-test", providerKeyEgressDirect, nil, 1, 2)
-	if _, err := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at) VALUES(?,?,?,?,?)`, secondID, "glm-test", "GLM Test", "chat,stream,tools", now()); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,0)`, secondID, "glm-test", "GLM Test", "chat,stream,tools", now()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,cached_price_micros,output_price_micros,pricing_source,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, "glm-public", providerID, "glm-test", "chat,stream,tools", 1, 9, 3, 100, 20, 300, "manual", now(), now()); err != nil {
@@ -59,7 +59,7 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	if provider.Keys[0].APIKey != "sk-backup-primary-123456" || provider.Keys[1].APIKey != "sk-backup-secondary-654321" {
 		t.Fatalf("keys=%#v", provider.Keys)
 	}
-	if len(provider.Keys[1].Models) != 1 || provider.Keys[1].Models[0].Model != "glm-test" || provider.Routes[0].PublicName != "glm-public" {
+	if len(provider.Keys[1].Models) != 1 || provider.Keys[1].Models[0].Model != "glm-test" || provider.Keys[1].Models[0].Enabled == nil || *provider.Keys[1].Models[0].Enabled || provider.Routes[0].PublicName != "glm-public" {
 		t.Fatalf("inventory/routes=%#v %#v", provider.Keys[1].Models, provider.Routes)
 	}
 }
@@ -107,7 +107,7 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 			Name: "imported", Type: "openai_compatible", BaseURL: "https://import.example.com", Notes: "restored", Enabled: true,
 			Priority: 5, Weight: 90, PassthroughMode: "normalized", ClientPolicy: "any", RequestTimeoutMS: 90000, FailureThreshold: 4, CooldownSeconds: 60,
 			Keys: []providerBackupKey{
-				{Name: "主 Key", APIKey: "sk-import-primary-123456", EgressMode: providerKeyEgressInherit, Enabled: true, SortOrder: 0, Models: []providerBackupKeyModel{{Model: "deepseek-test", DisplayName: "DeepSeek Test", Capabilities: "chat,stream"}}},
+				{Name: "主 Key", APIKey: "sk-import-primary-123456", EgressMode: providerKeyEgressInherit, Enabled: true, SortOrder: 0, Models: []providerBackupKeyModel{{Model: "deepseek-test", DisplayName: "DeepSeek Test", Capabilities: "chat,stream", Enabled: boolPtr(false)}}},
 				{Name: "备用 Key", APIKey: "sk-import-secondary-654321", Model: "glm-test", EgressMode: providerKeyEgressDirect, Enabled: true, SortOrder: 1},
 			},
 			Routes: []providerBackupRoute{{PublicName: "deepseek-public", UpstreamModel: "deepseek-test", Capabilities: "chat,stream", Enabled: true, Priority: 10, InputPriceMicros: 100, OutputPriceMicros: 200, PricingSource: "manual"}},
@@ -162,6 +162,10 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 	}
 	if providerCount != 1 || keyCount != 2 || routeCount != 1 || inventoryCount != 1 || aliasCount != 1 {
 		t.Fatalf("counts provider=%d keys=%d routes=%d inventory=%d aliases=%d", providerCount, keyCount, routeCount, inventoryCount, aliasCount)
+	}
+	var restoredModelEnabled int
+	if err := a.db.QueryRow(`SELECT enabled FROM provider_api_key_models WHERE model='deepseek-test' AND provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, providerID).Scan(&restoredModelEnabled); err != nil || restoredModelEnabled != 0 {
+		t.Fatalf("restored model enabled=%d err=%v", restoredModelEnabled, err)
 	}
 	var healthCheckEnabled int
 	if err := a.db.QueryRow(`SELECT health_check_enabled FROM providers WHERE id=?`, providerID).Scan(&healthCheckEnabled); err != nil || healthCheckEnabled != 1 {

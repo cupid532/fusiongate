@@ -74,6 +74,7 @@ type providerBackupKeyModel struct {
 	Model        string `json:"model"`
 	DisplayName  string `json:"display_name,omitempty"`
 	Capabilities string `json:"capabilities,omitempty"`
+	Enabled      *bool  `json:"enabled,omitempty"`
 }
 
 type providerBackupRoute struct {
@@ -220,18 +221,21 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 				fail(w, http.StatusInternalServerError, "credential_error", "could not decrypt a provider API key")
 				return
 			}
-			modelRows, queryErr := a.db.Query(`SELECT model,display_name,capabilities FROM provider_api_key_models WHERE provider_key_id=? ORDER BY model`, pendingKey.ID)
+			modelRows, queryErr := a.db.Query(`SELECT model,display_name,capabilities,enabled FROM provider_api_key_models WHERE provider_key_id=? ORDER BY model`, pendingKey.ID)
 			if queryErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", queryErr.Error())
 				return
 			}
 			for modelRows.Next() {
 				var model providerBackupKeyModel
-				if err := modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities); err != nil {
+				var enabled int
+				if err := modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities, &enabled); err != nil {
 					modelRows.Close()
 					fail(w, http.StatusInternalServerError, "database_error", err.Error())
 					return
 				}
+				modelEnabled := strBool(enabled)
+				model.Enabled = &modelEnabled
 				key.Models = append(key.Models, model)
 			}
 			if err := modelRows.Err(); err != nil {
@@ -586,7 +590,11 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 					return
 				}
 				for _, model := range key.Models {
-					if _, insertErr := tx.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at) VALUES(?,?,?,?,?)`, keyID, model.Model, model.DisplayName, model.Capabilities, now()); insertErr != nil {
+					modelEnabled := true
+					if model.Enabled != nil {
+						modelEnabled = *model.Enabled
+					}
+					if _, insertErr := tx.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,?)`, keyID, model.Model, model.DisplayName, model.Capabilities, now(), boolInt(modelEnabled)); insertErr != nil {
 						fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
 						return
 					}

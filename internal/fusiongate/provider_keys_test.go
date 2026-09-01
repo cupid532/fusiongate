@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -803,5 +804,36 @@ func TestProviderKeyEditAndDeleteClearRuntimeCooldown(t *testing.T) {
 	a.routeMu.Unlock()
 	if cooling {
 		t.Fatal("deleted key leaked its runtime cooldown")
+	}
+}
+
+func TestProviderKeyDatabaseTriggerEnforcesLimit(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "key-limit", "openai_compatible", "https://example.test", "legacy", 1, 1, "normalized", "any", 0, 3, 30)
+	encrypted, err := a.encrypt("limit-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := a.db.Prepare(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,'','inherit',1,?,'untested',?,?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close()
+	for i := 0; i < providerKeySoftLimit; i++ {
+		raw := fmt.Sprintf("limit-key-%d", i)
+		if _, err := stmt.Exec(providerID, encrypted, a.providerKeyFingerprint(raw), providerKeyHint(raw), raw, i, now(), now()); err != nil {
+			t.Fatalf("insert key %d: %v", i, err)
+		}
+	}
+	if _, err := stmt.Exec(providerID, encrypted, a.providerKeyFingerprint("overflow"), providerKeyHint("overflow"), "overflow", providerKeySoftLimit, now(), now()); err == nil || !strings.Contains(strings.ToLower(err.Error()), "provider key limit reached") {
+		t.Fatalf("overflow insert error=%v", err)
+	}
+	var count int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM provider_api_keys WHERE provider_id=?`, providerID).Scan(&count); err != nil || count != providerKeySoftLimit {
+		t.Fatalf("key count=%d err=%v", count, err)
 	}
 }

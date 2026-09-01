@@ -525,7 +525,10 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		}
 		res, err := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,ip_pool_node_id,enabled,health_check_enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?, 'untested',?,?)`, providerID, encrypted, a.providerKeyFingerprint(in.APIKey), providerKeyHint(in.APIKey), in.Name, in.Model, in.EgressMode, nodeArg, boolInt(enabled), boolInt(healthCheckEnabled), nextOrder, now(), now())
 		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			lowerError := strings.ToLower(err.Error())
+			if strings.Contains(lowerError, "provider key limit reached") {
+				fail(w, http.StatusConflict, "key_limit_reached", fmt.Sprintf("a provider supports at most %d API key cards", providerKeySoftLimit))
+			} else if strings.Contains(lowerError, "unique") {
 				fail(w, http.StatusConflict, "duplicate_api_key", "this API key already exists in the provider")
 			} else {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())

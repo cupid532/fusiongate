@@ -926,6 +926,15 @@ CREATE INDEX IF NOT EXISTS idx_qd_items_job ON quality_detector_job_items(job_id
 	if err := a.migrateProviderAPIKeys(ctx); err != nil {
 		return err
 	}
+	if _, err := a.db.ExecContext(ctx, `
+CREATE TRIGGER IF NOT EXISTS trg_provider_api_keys_limit
+BEFORE INSERT ON provider_api_keys
+WHEN (SELECT COUNT(*) FROM provider_api_keys WHERE provider_id=NEW.provider_id) >= 500
+BEGIN
+  SELECT RAISE(ABORT, 'provider key limit reached');
+END;`); err != nil {
+		return err
+	}
 	_, err = a.db.ExecContext(ctx, `PRAGMA user_version=1`)
 	return err
 }
