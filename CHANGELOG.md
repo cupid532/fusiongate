@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.48
+
+- Add collapsible per-Key model inventories to keep large model lists compact, with independent discovery, manual model addition, enablement, and health details for every upstream Key.
+- Let API-key channels add multiple named Keys directly during channel creation or editing, while showing existing masked Keys in the same form.
+- Route channel model management into the Key-aware workflow so model discovery and selection no longer merge credentials with different capabilities.
+
 ## V2.47
 
 - Isolate every attributable upstream failure to the selected Provider Key, including Key-specific IP-pool transport errors, timeouts, and 5xx responses, so one broken Key or egress node cannot open the whole channel circuit.

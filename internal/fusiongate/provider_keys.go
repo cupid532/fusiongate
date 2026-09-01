@@ -700,6 +700,12 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 					selected[normalized] = true
 				}
 			}
+			for model := range selected {
+				if _, insertErr := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,enabled,discovered_at) VALUES(?,?,?,'chat,stream',1,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET enabled=1`, keyID, model, model, now()); insertErr != nil {
+					fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
+					return
+				}
+			}
 			modelRows, queryErr := a.db.Query(`SELECT model FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
 			if queryErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", queryErr.Error())

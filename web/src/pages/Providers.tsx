@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, ScanSearch, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
@@ -12,7 +12,6 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { ProviderDialog } from "@/components/ProviderDialog"
-import { ModelPicker } from "@/components/ModelPicker"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 import { BalanceDialog } from "@/components/BalanceDialog"
 import { ProviderKeysDialog } from "@/components/ProviderKeysDialog"
@@ -51,8 +50,6 @@ export function Providers() {
   const [q, setQ] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
-  const [modelPickerOpen, setModelPickerOpen] = useState(false)
-  const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
   const [healthCheckOpen, setHealthCheckOpen] = useState(false)
   const [healthCheckProvider, setHealthCheckProvider] = useState<Provider | null>(null)
   const [balanceOpen, setBalanceOpen] = useState(false)
@@ -332,17 +329,6 @@ export function Providers() {
                             variant="ghost"
                             size="icon"
                             onClick={() => {
-                              setModelPickerProvider(p)
-                              setModelPickerOpen(true)
-                            }}
-                            aria-label={`识别 ${p.name} 模型`}
-                          >
-                            <ScanSearch className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
                               setHealthCheckProvider(p)
                               setHealthCheckOpen(true)
                             }}
@@ -410,14 +396,6 @@ export function Providers() {
       </Card>
 
       <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} />
-      {modelPickerProvider && (
-        <ModelPicker
-          open={modelPickerOpen}
-          onOpenChange={setModelPickerOpen}
-          providerId={modelPickerProvider.id}
-          providerName={modelPickerProvider.name}
-        />
-      )}
       {healthCheckProvider && (
         <HealthCheckDialog
           open={healthCheckOpen}

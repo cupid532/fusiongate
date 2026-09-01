@@ -540,6 +540,25 @@ func TestProviderKeyFailoverTriesSecondKeyAfterAuthFailure(t *testing.T) {
 	}
 }
 
+func TestProviderKeyPatchAddsManualModelsToIndependentInventory(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "manual-key-models", "openai_compatible", "https://example.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	keyID := insertProviderKeyForTest(t, a, providerID, "sk-manual-models", "manual", "", providerKeyEgressDirect, nil, 1, 0)
+	recorder := httptest.NewRecorder()
+	a.providerKeyByID(recorder, httptest.NewRequest(http.MethodPatch, "/api/admin/providers/1/keys/1", strings.NewReader(`{"models":["Model-New","existing"]}`)), providerID, keyID, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var enabled int
+	if err := a.db.QueryRow(`SELECT enabled FROM provider_api_key_models WHERE provider_key_id=? AND model='model-new'`, keyID).Scan(&enabled); err != nil || enabled != 1 {
+		t.Fatalf("manual model enabled=%d err=%v", enabled, err)
+	}
+}
+
 func TestProviderAPIKeyForeignKeyRejectsMissingNode(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

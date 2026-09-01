@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react"
+import { Plus, Trash2 } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-import type { IPPoolNode, Provider, ProviderGroup } from "@/lib/types"
+import type { IPPoolNode, Provider, ProviderGroup, ProviderKey } from "@/lib/types"
 import {
   Dialog,
   DialogContent,
@@ -14,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { Badge } from "@/components/ui/badge"
 
 const providerTypes = [
   { value: "openai_compatible", label: "OpenAI 兼容" },
@@ -40,6 +42,7 @@ export function ProviderDialog({
   provider: Provider | null
 }) {
   const qc = useQueryClient()
+  const [newKeys, setNewKeys] = useState([{ name: "默认 Key", api_key: "" }])
   const [form, setForm] = useState({
     name: "",
     type: "openai_compatible",
@@ -58,6 +61,11 @@ export function ProviderDialog({
     queryKey: ["ippool"],
     queryFn: () => api<IPPoolNode[]>("/api/admin/ip-pool"),
   })
+  const { data: existingKeys = [] } = useQuery({
+    queryKey: ["provider-keys", provider?.id],
+    queryFn: () => api<ProviderKey[]>(`/api/admin/providers/${provider!.id}/keys`),
+    enabled: open && !!provider,
+  })
   const { data: groups = [] } = useQuery({
     queryKey: ["provider-groups"],
     queryFn: () => api<ProviderGroup[]>("/api/admin/provider-groups"),
@@ -65,6 +73,7 @@ export function ProviderDialog({
 
   useEffect(() => {
     if (open) {
+      setNewKeys([{ name: provider ? "" : "默认 Key", api_key: "" }])
       setForm({
         name: provider?.name ?? "",
         type: provider?.type ?? "openai_compatible",
@@ -95,15 +104,25 @@ export function ProviderDialog({
         ip_pool_node_id: form.ip_pool_node_id || null,
       }
       if (form.group_id) body.group_id = form.group_id
-      if (form.credential) body.credential = form.credential
+      const pendingKeys = newKeys.map((key) => ({ name: key.name.trim(), api_key: key.api_key.trim() })).filter((key) => key.api_key)
       if (provider) {
         if (!form.group_id) body.clear_group = true
-        return api(`/api/admin/providers/${provider.id}`, { method: "PATCH", body: JSON.stringify(body) })
+        await api(`/api/admin/providers/${provider.id}`, { method: "PATCH", body: JSON.stringify(body) })
+        for (const key of pendingKeys) {
+          await api(`/api/admin/providers/${provider.id}/keys`, { method: "POST", body: JSON.stringify(key) })
+        }
+        return
       }
-      return api("/api/admin/providers", { method: "POST", body: JSON.stringify(body) })
+      const [primary, ...additional] = pendingKeys
+      const created = await api<{ id: number }>("/api/admin/providers", { method: "POST", body: JSON.stringify({ ...body, credential: primary.api_key, key_name: primary.name || "默认 Key", auto_discover: false }) })
+      for (const key of additional) {
+        await api(`/api/admin/providers/${created.id}/keys`, { method: "POST", body: JSON.stringify(key) })
+      }
+      return created
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["providers"] })
+      qc.invalidateQueries({ queryKey: ["provider-keys"] })
       onOpenChange(false)
     },
   })
@@ -151,9 +170,19 @@ export function ProviderDialog({
             <Label>API 地址</Label>
             <Input value={form.baseURL} onChange={(e) => set("baseURL", e.target.value)} placeholder="https://api.example.com" className="font-mono text-xs" />
           </div>
-          <div className="col-span-2 flex flex-col gap-1.5">
-            <Label>API Key{provider ? "（留空保持不变）" : ""}</Label>
-            <Input value={form.credential} onChange={(e) => set("credential", e.target.value)} placeholder="sk-…" className="font-mono text-xs" />
+          <div className="col-span-2 space-y-2 rounded-md border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div><Label>上游 API Keys</Label><div className="mt-1 text-xs text-muted-foreground">同一渠道可一次添加多张 Key；保存后分别识别模型。</div></div>
+              <Button type="button" size="sm" variant="outline" onClick={() => setNewKeys((keys) => [...keys, { name: "", api_key: "" }])}><Plus />添加一行</Button>
+            </div>
+            {provider && existingKeys.length > 0 && <div className="flex flex-wrap gap-1.5">{existingKeys.map((key) => <Badge key={key.id} variant={key.enabled ? "success" : "neutral"}>{key.name || "API Key"} · {key.key_hint}</Badge>)}</div>}
+            <div className="space-y-2">
+              {newKeys.map((key, index) => <div key={index} className="grid gap-2 sm:grid-cols-[9rem_minmax(0,1fr)_auto]">
+                <Input value={key.name} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, name: e.target.value } : item))} placeholder={`Key ${index + 1} 名称`} />
+                <Input value={key.api_key} onChange={(e) => setNewKeys((keys) => keys.map((item, i) => i === index ? { ...item, api_key: e.target.value } : item))} placeholder={provider ? "新增 Key（留空不添加）" : "sk-…"} className="font-mono text-xs" />
+                <Button type="button" variant="ghost" size="icon" disabled={newKeys.length === 1} onClick={() => setNewKeys((keys) => keys.filter((_, i) => i !== index))} aria-label={`删除 Key 输入行 ${index + 1}`}><Trash2 /></Button>
+              </div>)}
+            </div>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>优先级（数字越大越优先）</Label>
@@ -229,7 +258,7 @@ export function ProviderDialog({
           </Button>
           <Button
             onClick={() => save.mutate()}
-            disabled={!form.name.trim() || !form.baseURL.trim() || (!provider && !form.credential.trim()) || save.isPending}
+            disabled={!form.name.trim() || !form.baseURL.trim() || (!provider && !newKeys.some((key) => key.api_key.trim())) || save.isPending}
           >
             {save.isPending ? "保存中…" : "保存渠道"}
           </Button>
