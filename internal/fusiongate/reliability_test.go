@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -607,6 +608,55 @@ func TestRateLimitWithoutRetryAfterImmediatelyOpensProviderCircuit(t *testing.T)
 	}
 	if enabled != 1 || status != "rate_limited" || lastError != "upstream_rate_limited" {
 		t.Fatalf("provider enabled=%d status=%q last_error=%q", enabled, status, lastError)
+	}
+}
+
+func TestProviderKeyTransportFailureIsIsolatedAndCooldownPersists(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "key-transport-isolation", "openai_compatible", "https://example.test", "legacy", 1, 1, "normalized", "any", 0, 1, 45)
+	if _, err := a.db.Exec(`DELETE FROM provider_api_keys WHERE provider_id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, providerID); err != nil {
+		t.Fatal(err)
+	}
+	failedID := insertProviderKeyForTest(t, a, providerID, "sk-broken-node", "broken", "model", "direct", nil, 1, 0)
+	healthyID := insertProviderKeyForTest(t, a, providerID, "sk-healthy-node", "healthy", "model", "direct", nil, 1, 1)
+	insertTestRoute(t, a, providerID, "model", "model", "chat", 1)
+	z := resolvedRoute{Route: Route{ID: 1, ProviderID: providerID, PublicName: "model", UpstreamModel: "model"}, Provider: Provider{ID: providerID, FailureThreshold: 1, CooldownSeconds: 45}, ProviderKeyID: failedID}
+	a.completeRoute(z, attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_network_error", Err: errors.New("key egress unavailable")}, time.Millisecond)
+	a.routeMu.Lock()
+	state := a.stateForLocked(z.Provider)
+	providerFailures, providerOpen := state.ConsecutiveFailures, state.CircuitOpenUntil
+	a.routeMu.Unlock()
+	if providerFailures != 0 || !providerOpen.IsZero() {
+		t.Fatalf("key failure polluted provider state: failures=%d open=%v", providerFailures, providerOpen)
+	}
+	var cooldown string
+	if err := a.db.QueryRow(`SELECT COALESCE(cooldown_until,'') FROM provider_api_keys WHERE id=?`, failedID).Scan(&cooldown); err != nil || parseTime(cooldown) == nil {
+		t.Fatalf("persisted cooldown=%q err=%v", cooldown, err)
+	}
+	a.routeMu.Lock()
+	delete(a.providerKeyCooldowns, failedID)
+	a.routeMu.Unlock()
+	routes, err := a.resolve(context.Background(), "model", "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("routes=%+v", routes)
+	}
+	available := routeAvailability{}
+	a.routeMu.Lock()
+	failedSelectable := a.routeSelectableLocked(routes[0], a.stateForLocked(routes[0].Provider), time.Now(), &available)
+	healthySelectable := a.routeSelectableLocked(routes[1], a.stateForLocked(routes[1].Provider), time.Now(), &available)
+	a.routeMu.Unlock()
+	if routes[0].ProviderKeyID != failedID || failedSelectable || routes[1].ProviderKeyID != healthyID || !healthySelectable {
+		t.Fatalf("failed selectable=%v healthy selectable=%v routes=%+v", failedSelectable, healthySelectable, routes)
 	}
 }
 

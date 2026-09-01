@@ -66,12 +66,13 @@ type ProviderKeyModel struct {
 }
 
 type selectedProviderKey struct {
-	ID           int64
-	Credential   string
-	Name         string
-	Hint         string
-	Model        string
-	IPPoolNodeID *int64
+	ID            int64
+	Credential    string
+	Name          string
+	Hint          string
+	Model         string
+	IPPoolNodeID  *int64
+	CooldownUntil time.Time
 }
 
 func validProviderKeyEgressMode(mode string) bool {
@@ -253,7 +254,7 @@ func (a *App) selectProviderKeysBatch(ctx context.Context, requests []providerKe
 		args = append(args, i, item.request.providerID, item.request.upstreamModel)
 	}
 	query.WriteString(`)
-SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id
+SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(k.cooldown_until,'')
 FROM candidates c
 JOIN providers p ON p.id=c.provider_id
 JOIN provider_api_keys k ON k.provider_id=c.provider_id AND k.enabled=1
@@ -272,8 +273,8 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 		var key selectedProviderKey
 		var encrypted []byte
 		var keyNodeID sql.NullInt64
-		var egressMode string
-		if err := rows.Scan(&ordinal, &key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID); err != nil {
+		var egressMode, cooldownUntil string
+		if err := rows.Scan(&ordinal, &key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID, &cooldownUntil); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -298,6 +299,12 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 			providerNode = sql.NullInt64{Int64: *item.request.providerNodeID, Valid: true}
 		}
 		key.IPPoolNodeID, _ = effectiveProviderKeyNode(egressMode, keyNodeID, providerNode)
+		if parsed := parseTime(cooldownUntil); parsed != nil && parsed.After(time.Now()) {
+			key.CooldownUntil = *parsed
+			a.routeMu.Lock()
+			a.providerKeyCooldowns[key.ID] = *parsed
+			a.routeMu.Unlock()
+		}
 		result := selected[item.key]
 		result.err = nil
 		result.keys = append(result.keys, key)

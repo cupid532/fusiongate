@@ -445,22 +445,31 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		state.Inflight--
 	}
 	state.HalfOpenProbe = false
-	keyFailure := z.ProviderKeyID > 0 && (result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden || result.Status == http.StatusTooManyRequests)
+	keyFailure := z.ProviderKeyID > 0 && isProviderFailure(result)
 	if keyFailure {
-		cooldown := 5 * time.Minute
+		cooldown := time.Duration(z.Provider.CooldownSeconds) * time.Second
+		if cooldown <= 0 {
+			cooldown = 30 * time.Second
+		}
+		if result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden || result.Status == http.StatusTooManyRequests {
+			if cooldown < 5*time.Minute {
+				cooldown = 5 * time.Minute
+			}
+		}
 		if result.RetryAfter > cooldown {
 			cooldown = result.RetryAfter
 		}
-		// Upstreams occasionally answer 429 with an absurd Retry-After (hours or
-		// days). The key cooldown only lives in memory and is invisible in the
-		// console, so an uncapped value can silently bench a healthy provider for
-		// the rest of the day. Cap it like the provider-level circuit breaker.
 		if cooldown > 10*time.Minute {
 			cooldown = 10 * time.Minute
 		}
-		a.providerKeyCooldowns[z.ProviderKeyID] = time.Now().Add(cooldown)
+		openUntil := time.Now().Add(cooldown)
+		a.providerKeyCooldowns[z.ProviderKeyID] = openUntil
 		a.routeMu.Unlock()
-		_, err := a.db.Exec(`UPDATE provider_api_keys SET status=?,last_error=?,updated_at=? WHERE id=?`, providerStatus(result), result.Reason, now(), z.ProviderKeyID)
+		message := result.Reason
+		if message == "" && result.Err != nil {
+			message = result.Err.Error()
+		}
+		_, err := a.db.Exec(`UPDATE provider_api_keys SET status=?,last_error=?,cooldown_until=?,updated_at=? WHERE id=?`, providerStatus(result), sanitizeError(message), openUntil.UTC().Format(time.RFC3339Nano), now(), z.ProviderKeyID)
 		if err != nil {
 			a.log.Error("provider key health update", "provider_key_id", z.ProviderKeyID, "error", err)
 		}
@@ -468,6 +477,7 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	}
 	if z.ProviderKeyID > 0 && !isProviderFailure(result) {
 		delete(a.providerKeyCooldowns, z.ProviderKeyID)
+		_, _ = a.db.Exec(`UPDATE provider_api_keys SET status='healthy',last_error='',cooldown_until=NULL,updated_at=? WHERE id=?`, now(), z.ProviderKeyID)
 	}
 	if isNeutralResult(result) {
 		a.routeMu.Unlock()
@@ -650,11 +660,12 @@ func (a *App) resetProviderRuntime(id int64) {
 }
 
 // resetProviderKeyRuntime makes an edited, re-enabled, successfully tested, or
-// deleted key immediately forget any stale 401/403/429 cooldown.
+// deleted key immediately forget any stale attributable-failure cooldown.
 func (a *App) resetProviderKeyRuntime(id int64) {
 	a.routeMu.Lock()
 	delete(a.providerKeyCooldowns, id)
 	a.routeMu.Unlock()
+	_, _ = a.db.Exec(`UPDATE provider_api_keys SET cooldown_until=NULL WHERE id=?`, id)
 }
 
 func (a *App) resetProviderKeysRuntime(ids []int64) {
@@ -663,6 +674,9 @@ func (a *App) resetProviderKeysRuntime(ids []int64) {
 		delete(a.providerKeyCooldowns, id)
 	}
 	a.routeMu.Unlock()
+	for _, id := range ids {
+		_, _ = a.db.Exec(`UPDATE provider_api_keys SET cooldown_until=NULL WHERE id=?`, id)
+	}
 }
 
 func (a *App) providerKeyIDs(providerID int64) []int64 {

@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.47
+
+- Isolate every attributable upstream failure to the selected Provider Key, including Key-specific IP-pool transport errors, timeouts, and 5xx responses, so one broken Key or egress node cannot open the whole channel circuit.
+- Persist Provider Key cooldown deadlines and restore them after process restarts; successful requests and operator edits clear the durable cooldown together with in-memory state.
+
 ## V2.46
 
 - Preserve each provider Key model's enabled/disabled state across provider backup export and import; older backups without the field continue to restore models as enabled.

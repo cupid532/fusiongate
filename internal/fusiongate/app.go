@@ -600,7 +600,7 @@ func (a *App) migrate(ctx context.Context) error {
     ip_pool_node_id INTEGER REFERENCES ip_pool_nodes(id) ON DELETE RESTRICT,
     enabled INTEGER NOT NULL DEFAULT 1, health_check_enabled INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'untested',
-    last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT,
+    last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT, cooldown_until TEXT,
     last_test_latency_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     UNIQUE(provider_id,fingerprint));
   CREATE TABLE IF NOT EXISTS provider_api_key_models (
@@ -716,6 +716,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "archived", "INTEGER NOT NULL DEFAULT 0"},
 		{"provider_api_keys", "health_check_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"provider_api_keys", "cooldown_until", "TEXT"},
 		{"provider_api_key_models", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
