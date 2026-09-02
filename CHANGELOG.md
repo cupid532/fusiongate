@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.55
+
+- Keep per-Key Select all and Select none actions while removing the health-based bulk selection shortcut.
+- Add an independent “已选视图” toggle for every Key, showing only currently selected models without changing their selection state, with a one-click return to the full candidate list.
+
 ## V2.54
 
 - Correct legacy auto-selection by clearing previously generated per-Key model selections once, so existing OpenRouter and other catalog inventories require explicit administrator choices.

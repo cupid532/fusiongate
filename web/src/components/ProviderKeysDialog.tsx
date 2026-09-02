@@ -45,6 +45,7 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
   const [newKey, setNewKey] = useState("")
   const [newName, setNewName] = useState("")
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
+  const [selectedView, setSelectedView] = useState<Set<number>>(new Set())
   const [modelDrafts, setModelDrafts] = useState<Record<number, string>>({})
   const [actionError, setActionError] = useState("")
 
@@ -74,7 +75,6 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
   const setModels = (key: ProviderKey, models: string[]) => patch.mutate({ keyId: key.id, body: { models } })
   const selectAllModels = (key: ProviderKey) => setModels(key, (key.models ?? []).map((model) => model.model))
   const clearAllModels = (key: ProviderKey) => setModels(key, [])
-  const selectHealthyModels = (key: ProviderKey) => setModels(key, (key.models ?? []).filter((model) => model.health_status === "healthy").map((model) => model.model))
   const toggleModel = (key: ProviderKey, model: string, enabled: boolean) => {
     const selected = new Set((key.models ?? []).filter((item) => item.enabled).map((item) => item.model))
     if (enabled) selected.add(model); else selected.delete(model)
@@ -116,6 +116,8 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
           const isExpanded = expanded.has(key.id)
           const enabledModels = models.filter((model) => model.enabled).length
           const healthyModels = models.filter((model) => model.health_status === "healthy").length
+          const selectedOnly = selectedView.has(key.id)
+          const visibleModels = selectedOnly ? models.filter((model) => model.enabled) : models
           return <section key={key.id} className="rounded-md border">
             <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-start">
               <button type="button" className="flex min-w-0 flex-1 gap-2 text-left" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has(key.id)) next.delete(key.id); else next.add(key.id); return next })} aria-expanded={isExpanded}>
@@ -140,14 +142,14 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <Button type="button" size="sm" variant="outline" disabled={patch.isPending || models.length === 0} onClick={() => selectAllModels(key)}>全选</Button>
                 <Button type="button" size="sm" variant="outline" disabled={patch.isPending || enabledModels === 0} onClick={() => clearAllModels(key)}>全不选</Button>
-                <Button type="button" size="sm" variant="outline" disabled={patch.isPending || healthyModels === 0} onClick={() => selectHealthyModels(key)}>仅选验证正常（{healthyModels}）</Button>
+                <Button type="button" size="sm" variant={selectedOnly ? "default" : "outline"} disabled={models.length === 0} onClick={() => setSelectedView((current) => { const next = new Set(current); if (next.has(key.id)) next.delete(key.id); else next.add(key.id); return next })}>{selectedOnly ? "查看全部模型" : `已选视图（${enabledModels}）`}</Button>
               </div>
               <div className="mb-3 flex flex-col gap-2 sm:flex-row">
                 <Input value={modelDrafts[key.id] || ""} onChange={(e) => setModelDrafts((current) => ({ ...current, [key.id]: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") addModel(key) }} placeholder="为此 Key 手工添加模型名" className="font-mono text-xs" />
                 <Button variant="outline" onClick={() => addModel(key)} disabled={!modelDrafts[key.id]?.trim() || patch.isPending}><Plus />添加模型</Button>
               </div>
-              {models.length === 0 ? <div className="text-xs text-muted-foreground">尚无模型。点击上方识别按钮，或手工添加此 Key 支持的模型。</div> : <div className="max-h-72 space-y-1 overflow-y-auto pr-1">
-                {models.map((model) => <label key={model.model} className="grid cursor-pointer gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-muted/50 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] sm:items-center sm:gap-3">
+              {models.length === 0 ? <div className="text-xs text-muted-foreground">尚无模型。点击上方识别按钮，或手工添加此 Key 支持的模型。</div> : visibleModels.length === 0 ? <div className="text-xs text-muted-foreground">当前没有已选模型。点击“查看全部模型”返回候选列表。</div> : <div className="max-h-72 space-y-1 overflow-y-auto pr-1">
+                {visibleModels.map((model) => <label key={model.model} className="grid cursor-pointer gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-muted/50 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] sm:items-center sm:gap-3">
                   <input type="checkbox" checked={model.enabled} disabled={patch.isPending} onChange={(e) => toggleModel(key, model.model, e.target.checked)} aria-label={`${key.name || key.key_hint} 模型 ${model.model}`} />
                   <span className="min-w-0"><span className="block truncate font-mono text-foreground" title={model.model}>{model.display_name || model.model}</span>{model.display_name && model.display_name !== model.model && <span className="block truncate font-mono text-[11px] text-muted-foreground">{model.model}</span>}{model.health_error && <span className="block break-words text-[11px] text-destructive">{model.health_error}</span>}</span>
                   <span className="text-muted-foreground">{model.last_checked_at ? `${model.latency_ms} ms · ${formatTime(model.last_checked_at)}` : "尚未检活"}</span>
