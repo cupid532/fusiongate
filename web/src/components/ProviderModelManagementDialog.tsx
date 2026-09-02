@@ -8,6 +8,16 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
+import { SegmentedTabs } from "@/components/ui/segmented-tabs"
+
+/**
+ * Which slice of a Key's discovered inventory the list shows.
+ *
+ * "全选" / "全不选" next to it are *actions*; this is a *view filter*. They are
+ * deliberately kept in separate rows — a filter sitting among the bulk-select
+ * buttons reads like "select the already-selected ones".
+ */
+type ModelFilter = "all" | "selected"
 
 function statusBadge(status?: string) {
   if (status === "healthy") return <Badge variant="success">正常</Badge>
@@ -43,6 +53,7 @@ export function ProviderModelManagementDialog({ open, onOpenChange, providerId, 
   const qc = useQueryClient()
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null)
   const [search, setSearch] = useState("")
+  const [modelFilter, setModelFilter] = useState<ModelFilter>("all")
   const [error, setError] = useState("")
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
 
@@ -51,6 +62,7 @@ export function ProviderModelManagementDialog({ open, onOpenChange, providerId, 
   useEffect(() => {
     if (!open) return
     setSearch("")
+    setModelFilter("all")
     setError("")
     setSelectedKeyId(null)
     setDrafts({})
@@ -69,11 +81,17 @@ export function ProviderModelManagementDialog({ open, onOpenChange, providerId, 
 
   const selectedKey = keys.find((key) => key.id === selectedKeyId) ?? null
   const draft = selectedKey ? drafts[selectedKey.id] ?? draftFor(selectedKey) : null
+  // The search box and the 已选模型 filter compose: searching inside the
+  // selected-only view stays scoped to the selection. `draft.models` is a fresh
+  // Set on every draft change, so it is a sound dependency here.
   const models = useMemo(() => {
-    const items = selectedKey?.models ?? []
+    let items = selectedKey?.models ?? []
+    if (modelFilter === "selected" && draft) {
+      items = items.filter((model) => draft.models.has(model.model))
+    }
     const keyword = search.trim().toLowerCase()
     return keyword ? items.filter((model) => `${model.model} ${model.display_name}`.toLowerCase().includes(keyword)) : items
-  }, [selectedKey, search])
+  }, [selectedKey, search, modelFilter, draft])
   const dirty = selectedKey && draft ? !sameDraft(draft, draftFor(selectedKey)) : false
   const updateDraft = (key: ProviderKey, fn: (draft: Draft) => Draft) => setDrafts((current) => ({ ...current, [key.id]: fn(current[key.id] ?? draftFor(key)) }))
 
@@ -98,6 +116,9 @@ export function ProviderModelManagementDialog({ open, onOpenChange, providerId, 
   }
   const allModels = selectedKey?.models ?? []
   const enabledCount = draft?.models.size ?? 0
+  // Counted against the discovered inventory rather than draft.models.size, so
+  // the tab badge always equals the number of rows 已选模型 actually shows.
+  const selectedInInventory = draft ? allModels.filter((model) => draft.models.has(model.model)).length : 0
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="flex max-h-[90vh] max-w-5xl flex-col overflow-hidden">
@@ -107,8 +128,33 @@ export function ProviderModelManagementDialog({ open, onOpenChange, providerId, 
         <aside className="min-h-0 space-y-1 overflow-y-auto rounded-md border p-2"><div className="px-2 pb-2 text-xs font-medium text-muted-foreground">API Keys（{keys.length}）</div>{keys.map((key) => { const value = drafts[key.id] ?? draftFor(key); return <button key={key.id} type="button" onClick={() => setSelectedKeyId(key.id)} className={`flex w-full items-start justify-between gap-2 rounded-md px-2 py-2 text-left text-sm ${selectedKeyId === key.id ? "bg-primary/10 text-primary" : "hover:bg-muted/50"}`}><span className="min-w-0"><span className="block truncate font-medium">{keyLabel(key)}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{key.key_hint}</span><span className="block text-[11px] text-muted-foreground">{value.policy === "allowlist" ? "仅清单" : "兼容模式"}{value.policy === "allowlist" && value.models.size === 0 ? " · 未承担模型" : ""}</span></span><span className="shrink-0 text-xs text-muted-foreground">{value.models.size}</span></button> })}</aside>
         <section className="min-h-0 overflow-y-auto rounded-md border">{selectedKey && draft && <>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b p-3"><div><div className="text-sm font-medium">{keyLabel(selectedKey)}</div><div className="font-mono text-xs text-muted-foreground">{selectedKey.key_hint} · Key 已启用 {enabledCount}/{allModels.length} · 公共路由 {selectedKey.routable_models ?? allModels.filter((model) => model.route_status === "routed").length}</div>{draft.policy === "fallback" ? <div className="mt-1 text-xs text-amber-600">兼容模式：已发现库存按 Key 开关生效；无库存时才使用渠道默认模型。</div> : draft.models.size === 0 ? <div className="mt-1 text-xs text-destructive">allowlist 为空：此 Key 当前不承担任何模型。</div> : <div className="mt-1 text-xs text-muted-foreground">仅清单中的模型可路由。</div>}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => discover.mutate(selectedKey.id)} disabled={discover.isPending}><RefreshCw className={discover.isPending ? "animate-spin" : ""} />{discover.isPending ? "识别中…" : "识别模型"}</Button><Button size="sm" variant="outline" onClick={() => setModels(selectedKey, allModels.map((model) => model.model))} disabled={save.isPending || allModels.length === 0}><Check />全选</Button><Button size="sm" variant="outline" onClick={() => setModels(selectedKey, [])} disabled={save.isPending}><Check />全不选</Button><Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || !dirty}><Save />{save.isPending ? "保存中…" : "保存全部 Key"}</Button></div></div>
-          <div className="border-b p-3"><div className="relative"><Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索模型" className="pl-8 font-mono text-xs" /></div></div>
-          {models.length === 0 ? <div className="p-8 text-center text-sm text-muted-foreground">{allModels.length === 0 ? "尚无模型，请先识别该 Key 的模型。" : "没有匹配的模型。"}</div> : <div className="divide-y">{models.map((model) => <div key={model.model} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30"><Switch checked={draft.models.has(model.model)} disabled={save.isPending} onCheckedChange={(enabled) => toggleModel(selectedKey, model, enabled)} aria-label={`${keyLabel(selectedKey)} 模型 ${model.model}`} /><div className="min-w-0 flex-1"><div className="truncate font-mono text-sm" title={model.model}>{model.display_name || model.model}</div>{model.display_name && model.display_name !== model.model && <div className="truncate font-mono text-[11px] text-muted-foreground">{model.model}</div>}{model.health_error && <div className="break-words text-xs text-destructive">{model.health_error}</div>}{model.route_status === "routed" ? <div className="truncate text-xs text-emerald-600">公共路由：{model.public_names?.join(", ")}</div> : <div className="text-xs text-muted-foreground">尚未接入公共路由</div>}</div><div className="hidden shrink-0 text-right text-xs text-muted-foreground sm:block">{model.last_checked_at ? `${model.latency_ms} ms` : "尚未检活"}</div>{statusBadge(model.health_status)}<Button variant="ghost" size="icon" className="h-8 w-8" title="删除此模型" aria-label={`删除模型 ${model.model}`} disabled={save.isPending} onClick={() => updateDraft(selectedKey, (value) => { const models = new Set(value.models); models.delete(model.model); const removed = new Set(value.removed); removed.add(model.model); return { ...value, models, removed } })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></div>)}</div>}
+          <div className="flex flex-col gap-2 border-b p-3 sm:flex-row sm:items-center">
+            <SegmentedTabs<ModelFilter>
+              className="shrink-0"
+              value={modelFilter}
+              onChange={setModelFilter}
+              tabs={[
+                { value: "all", label: "全部模型", count: allModels.length },
+                { value: "selected", label: "已选模型", count: selectedInInventory },
+              ]}
+            />
+            <div className="relative min-w-0 flex-1">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={modelFilter === "selected" ? "在已选模型中搜索" : "搜索模型"} className="pl-8 font-mono text-xs" />
+            </div>
+          </div>
+          {models.length === 0 ? <div className="p-8 text-center text-sm text-muted-foreground">
+            {allModels.length === 0
+              ? "尚无模型，请先识别该 Key 的模型。"
+              : modelFilter === "selected" && selectedInInventory === 0
+                // Distinguish "you have selected nothing" from "your search
+                // matched nothing" — otherwise an empty selection reads as a
+                // broken filter.
+                ? <>该 Key 还没有选择任何模型。<button type="button" onClick={() => setModelFilter("all")} className="ml-1 underline hover:text-foreground">查看全部模型</button></>
+                : modelFilter === "selected"
+                  ? <>已选模型中没有匹配「{search.trim()}」的结果。</>
+                  : "没有匹配的模型。"}
+          </div> : <div className="divide-y">{models.map((model) => <div key={model.model} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30"><Switch checked={draft.models.has(model.model)} disabled={save.isPending} onCheckedChange={(enabled) => toggleModel(selectedKey, model, enabled)} aria-label={`${keyLabel(selectedKey)} 模型 ${model.model}`} /><div className="min-w-0 flex-1"><div className="truncate font-mono text-sm" title={model.model}>{model.display_name || model.model}</div>{model.display_name && model.display_name !== model.model && <div className="truncate font-mono text-[11px] text-muted-foreground">{model.model}</div>}{model.health_error && <div className="break-words text-xs text-destructive">{model.health_error}</div>}{model.route_status === "routed" ? <div className="truncate text-xs text-emerald-600">公共路由：{model.public_names?.join(", ")}</div> : <div className="text-xs text-muted-foreground">尚未接入公共路由</div>}</div><div className="hidden shrink-0 text-right text-xs text-muted-foreground sm:block">{model.last_checked_at ? `${model.latency_ms} ms` : "尚未检活"}</div>{statusBadge(model.health_status)}<Button variant="ghost" size="icon" className="h-8 w-8" title="删除此模型" aria-label={`删除模型 ${model.model}`} disabled={save.isPending} onClick={() => updateDraft(selectedKey, (value) => { const models = new Set(value.models); models.delete(model.model); const removed = new Set(value.removed); removed.add(model.model); return { ...value, models, removed } })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></div>)}</div>}
         </>}</section>
       </div>}
       <DialogFooter><Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button></DialogFooter>

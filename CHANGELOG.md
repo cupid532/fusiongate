@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.68
+
+- Add a 全部模型 / 已选模型 filter to the per-Key model management dialog, each showing a live count, so a Key's current selection can be reviewed on its own instead of being hunted for among every discovered model. The filter composes with the search box, and an empty selection is distinguished from an empty search result.
+
 ## V2.67
 
 - Surface expired sessions instead of failing silently: any 401/403 now returns the console to the login screen with an explanation, rather than leaving a fully drawn UI whose every request failed behind it.
