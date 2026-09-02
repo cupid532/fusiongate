@@ -757,6 +757,19 @@ func (a *App) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	var manualSelectionMigration string
+	if err := a.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key='provider_key_manual_model_selection_v1'`).Scan(&manualSelectionMigration); errors.Is(err, sql.ErrNoRows) {
+		// Earlier multi-Key releases automatically selected every discovered model.
+		// Clear that generated state once so all providers start from explicit choices.
+		if _, err := a.db.ExecContext(ctx, `UPDATE provider_api_key_models SET enabled=0`); err != nil {
+			return err
+		}
+		if _, err := a.db.ExecContext(ctx, `INSERT INTO settings(key,value) VALUES('provider_key_manual_model_selection_v1','done')`); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	}
 	if !hadSortOrder {
 		if _, err := a.db.ExecContext(ctx, `UPDATE model_routes SET sort_order=id`); err != nil {
 			return err

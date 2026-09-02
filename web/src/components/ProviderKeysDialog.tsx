@@ -72,6 +72,9 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
   })
 
   const setModels = (key: ProviderKey, models: string[]) => patch.mutate({ keyId: key.id, body: { models } })
+  const selectAllModels = (key: ProviderKey) => setModels(key, (key.models ?? []).map((model) => model.model))
+  const clearAllModels = (key: ProviderKey) => setModels(key, [])
+  const selectHealthyModels = (key: ProviderKey) => setModels(key, (key.models ?? []).filter((model) => model.health_status === "healthy").map((model) => model.model))
   const toggleModel = (key: ProviderKey, model: string, enabled: boolean) => {
     const selected = new Set((key.models ?? []).filter((item) => item.enabled).map((item) => item.model))
     if (enabled) selected.add(model); else selected.delete(model)
@@ -112,13 +115,14 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
           const models = key.models ?? []
           const isExpanded = expanded.has(key.id)
           const enabledModels = models.filter((model) => model.enabled).length
+          const healthyModels = models.filter((model) => model.health_status === "healthy").length
           return <section key={key.id} className="rounded-md border">
             <div className="flex flex-col gap-3 p-3 sm:flex-row sm:items-start">
               <button type="button" className="flex min-w-0 flex-1 gap-2 text-left" onClick={() => setExpanded((current) => { const next = new Set(current); if (next.has(key.id)) next.delete(key.id); else next.add(key.id); return next })} aria-expanded={isExpanded}>
                 {isExpanded ? <ChevronDown className="mt-0.5 h-4 w-4 shrink-0" /> : <ChevronRight className="mt-0.5 h-4 w-4 shrink-0" />}
                 <span className="min-w-0">
                   <span className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{key.name || "API Key"}</span><span className="font-mono text-xs text-muted-foreground">{key.key_hint}</span>{!key.enabled && <Badge variant="neutral">已停用</Badge>}</span>
-                  <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>出口：{effectiveEgress(key, nodes)}</span><span>成本倍率：{key.cost_multiplier || 1}</span><span>模型：{enabledModels}/{models.length}</span><span>识别：{formatTime(key.last_discovered_at)}</span></span>
+                  <span className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground"><span>出口：{effectiveEgress(key, nodes)}</span><span>成本倍率：{key.cost_multiplier || 1}</span><span>候选：{models.length}</span><span>已选：{enabledModels}</span><span>验证正常：{healthyModels}</span><span>识别：{formatTime(key.last_discovered_at)}</span></span>
                   {key.last_error && <span className="mt-1 block break-words text-xs text-destructive">{key.last_error}</span>}
                 </span>
               </button>
@@ -133,6 +137,11 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
             </div>
 
             {isExpanded && <div className="border-t bg-muted/15 px-3 py-3">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline" disabled={patch.isPending || models.length === 0} onClick={() => selectAllModels(key)}>全选</Button>
+                <Button type="button" size="sm" variant="outline" disabled={patch.isPending || enabledModels === 0} onClick={() => clearAllModels(key)}>全不选</Button>
+                <Button type="button" size="sm" variant="outline" disabled={patch.isPending || healthyModels === 0} onClick={() => selectHealthyModels(key)}>仅选验证正常（{healthyModels}）</Button>
+              </div>
               <div className="mb-3 flex flex-col gap-2 sm:flex-row">
                 <Input value={modelDrafts[key.id] || ""} onChange={(e) => setModelDrafts((current) => ({ ...current, [key.id]: e.target.value }))} onKeyDown={(e) => { if (e.key === "Enter") addModel(key) }} placeholder="为此 Key 手工添加模型名" className="font-mono text-xs" />
                 <Button variant="outline" onClick={() => addModel(key)} disabled={!modelDrafts[key.id]?.trim() || patch.isPending}><Plus />添加模型</Button>

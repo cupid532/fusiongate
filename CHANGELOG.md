@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.54
+
+- Correct legacy auto-selection by clearing previously generated per-Key model selections once, so existing OpenRouter and other catalog inventories require explicit administrator choices.
+- Distinguish candidate, selected, and health-verified model counts in every Key summary.
+- Add per-Key bulk actions for Select all, Select none, and Select only health-verified models.
+
 ## V2.53
 
 - Make per-Key discovery results a manual selection inventory: newly discovered models are visible but disabled by default, so only explicitly checked models participate in routing.
