@@ -125,9 +125,9 @@ export function CodexCard({ provider }: { provider: Provider }) {
                 rather than leaving the window rows to be interpreted blind. */}
             <span>
               {windows.length >= 2
-                ? `${windows.map((w) => w.shortLabel).join(" + ")}双限制`
+                ? `${windows.map((w) => w.shortLabel).join(" + ")} 双限制`
                 : windows.length === 1
-                  ? `${windows[0].shortLabel}窗口`
+                  ? windows[0].label
                   : "配额窗口未知"}
             </span>
           </p>

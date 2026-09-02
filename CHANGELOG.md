@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.72
+
+- Tidy the Codex plan subtitle: a single-window account now reads its full label ("每月限制") instead of the clipped "月窗口", and the two-window form spaces correctly as "5 小时 + 周 双限制".
+
 ## V2.71
 
 - Name the Codex rate-limit windows in the auth-file card by their actual period, derived from `limit_window_seconds`: Plus and Team now read "5 小时限制" and "每周限制" instead of the meaningless "主窗口" / "次窗口", and a Free account reads "每月限制".
