@@ -347,23 +347,41 @@ func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers 
 			expanded = append(expanded, target)
 			continue
 		}
-		rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint FROM provider_api_keys k WHERE k.provider_id=? AND k.enabled=1 AND k.health_check_enabled=1 AND (k.model<>'' AND lower(k.model)=lower(?) OR k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?)) OR k.model='' AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id)) ORDER BY k.sort_order,k.id`, target.ProviderID, target.UpstreamModel, target.UpstreamModel)
+		rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint,k.model,k.model_policy,k.model_allowlist,p.default_model FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.provider_id=? AND k.enabled=1 AND k.health_check_enabled=1 ORDER BY k.sort_order,k.id`, target.ProviderID)
 		if err != nil {
 			return nil, err
 		}
+		type keyCandidate struct {
+			id                                                 int64
+			name, hint, model, policy, allowlist, defaultModel string
+		}
+		candidates := make([]keyCandidate, 0)
 		for rows.Next() {
-			item := target
-			if err := rows.Scan(&item.ProviderKeyID, &item.ProviderKeyName, &item.ProviderKeyHint); err != nil {
-				_ = rows.Close()
+			var c keyCandidate
+			if err := rows.Scan(&c.id, &c.name, &c.hint, &c.model, &c.policy, &c.allowlist, &c.defaultModel); err != nil {
+				rows.Close()
 				return nil, err
 			}
-			if len(allowed) == 0 || allowed[item.ProviderKeyID] {
-				expanded = append(expanded, item)
-				matched[item.ProviderKeyID] = true
-			}
+			candidates = append(candidates, c)
 		}
 		if err := rows.Close(); err != nil {
 			return nil, err
+		}
+		for _, c := range candidates {
+			if len(allowed) > 0 && !allowed[c.id] {
+				continue
+			}
+			inventory, exclusions, err := m.app.providerKeyModelSets(ctx, c.id)
+			if err != nil {
+				return nil, err
+			}
+			if !providerKeySupportsModel(c.policy, c.allowlist, c.model, c.defaultModel, target.UpstreamModel, inventory, exclusions) {
+				continue
+			}
+			item := target
+			item.ProviderKeyID, item.ProviderKeyName, item.ProviderKeyHint = c.id, c.name, c.hint
+			expanded = append(expanded, item)
+			matched[c.id] = true
 		}
 	}
 	if len(allowed) > 0 && len(matched) != len(allowed) {

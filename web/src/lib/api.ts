@@ -38,3 +38,20 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   }
   return data as T
 }
+
+
+export const providerKeysApi = {
+  list: (providerId: number) => api<import("@/lib/types").ProviderKey[]>(`/api/admin/providers/${providerId}/keys`),
+  create: (providerId: number, body: Record<string, unknown>) => api(`/api/admin/providers/${providerId}/keys`, { method: "POST", body: JSON.stringify(body) }),
+  patch: (providerId: number, keyId: number, body: Record<string, unknown>) => api(`/api/admin/providers/${providerId}/keys/${keyId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  remove: (providerId: number, keyId: number) => api(`/api/admin/providers/${providerId}/keys/${keyId}`, { method: "DELETE" }),
+  test: (providerId: number, keyId: number) => api(`/api/admin/providers/${providerId}/keys/${keyId}/test`, { method: "POST" }),
+  discover: (providerId: number, keyId: number) => api(`/api/admin/providers/${providerId}/keys/${keyId}/discover-models`, { method: "POST" }),
+}
+
+export const providerModelsApi = {
+  listKeys: providerKeysApi.list,
+  patchKey: providerKeysApi.patch,
+  discover: providerKeysApi.discover,
+  saveManagement: (providerId: number, keys: Array<Record<string, unknown>>) => api<{ keys: Array<{ key_id: number; status: string; error?: string }> }>(`/api/admin/providers/${providerId}/model-management`, { method: "PATCH", body: JSON.stringify({ keys }) }),
+}

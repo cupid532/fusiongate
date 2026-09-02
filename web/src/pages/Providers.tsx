@@ -15,6 +15,7 @@ import { ProviderDialog } from "@/components/ProviderDialog"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 import { BalanceDialog } from "@/components/BalanceDialog"
 import { ProviderKeysDialog } from "@/components/ProviderKeysDialog"
+import { ProviderModelManagementDialog } from "@/components/ProviderModelManagementDialog"
 import { ExportImportDialog } from "@/components/ExportImportDialog"
 import { GroupManager } from "@/components/GroupManager"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
@@ -56,6 +57,7 @@ export function Providers() {
   const [balanceProvider, setBalanceProvider] = useState<Provider | null>(null)
   const [keysOpen, setKeysOpen] = useState(false)
   const [keysProvider, setKeysProvider] = useState<Provider | null>(null)
+  const [modelsProvider, setModelsProvider] = useState<{ id: number; name: string } | null>(null)
   const [backupOpen, setBackupOpen] = useState(false)
   const [groupOpen, setGroupOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -314,26 +316,13 @@ export function Providers() {
                       <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setEditing(p)
-                              setDialogOpen(true)
-                            }}
-                            aria-label={`编辑 ${p.name}`}
-                          >
+                          <Button variant="ghost" size="icon" onClick={() => { setEditing(p); setDialogOpen(true) }} aria-label={`编辑 ${p.name}`} title="编辑渠道">
                             <Settings2 className="h-4 w-4" />
                           </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setHealthCheckProvider(p)
-                              setHealthCheckOpen(true)
-                            }}
-                            aria-label={`检活 ${p.name}`}
-                          >
+                          <Button variant="ghost" size="icon" onClick={() => setModelsProvider(p)} aria-label={`模型管理 ${p.name}`} title="模型管理">
+                            <ListChecks className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => { setHealthCheckProvider(p); setHealthCheckOpen(true) }} aria-label={`检活 ${p.name}`} title="模型检活">
                             <HeartPulse className="h-4 w-4" />
                           </Button>
                           <Button
@@ -395,7 +384,7 @@ export function Providers() {
         </CardContent>
       </Card>
 
-      <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} onManageKeyModels={(provider) => { setKeysProvider(provider); setKeysOpen(true) }} />
+      <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} onCreated={(provider) => setModelsProvider(provider)} />
       {healthCheckProvider && (
         <HealthCheckDialog
           open={healthCheckOpen}
@@ -418,8 +407,10 @@ export function Providers() {
           onOpenChange={setKeysOpen}
           providerId={keysProvider.id}
           providerName={keysProvider.name}
+          onManageModels={() => { setKeysOpen(false); setModelsProvider(keysProvider) }}
         />
       )}
+      {modelsProvider && <ProviderModelManagementDialog open={!!modelsProvider} onOpenChange={(value) => { if (!value) setModelsProvider(null) }} providerId={modelsProvider.id} providerName={modelsProvider.name} />}
       <ExportImportDialog open={backupOpen} onOpenChange={setBackupOpen} />
       <GroupManager open={groupOpen} onOpenChange={setGroupOpen} />
     </motion.div>

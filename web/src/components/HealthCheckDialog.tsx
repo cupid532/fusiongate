@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
-import { api } from "@/lib/api"
-import type { ProviderKey, Route } from "@/lib/types"
+import { api, providerKeysApi } from "@/lib/api"
+import type { Route } from "@/lib/types"
 import {
   Dialog,
   DialogContent,
@@ -14,11 +14,14 @@ import { Badge } from "@/components/ui/badge"
 
 type HealthItem = {
   provider_name: string
-  public_name?: string
-  model?: string
+  provider_key_name?: string
   provider_key_hint?: string
+  public_name?: string
+  upstream_model?: string
+  model?: string
   status: string
   latency_ms: number
+  first_byte_ms?: number
   model_count: number
   error?: string
 }
@@ -32,6 +35,7 @@ type HealthJob = {
   failed: number
   skipped: number
   results: HealthItem[]
+  can_cancel?: boolean
 }
 
 export function HealthCheckDialog({
@@ -47,7 +51,7 @@ export function HealthCheckDialog({
 }) {
   const [job, setJob] = useState<HealthJob | null>(null)
   const [error, setError] = useState("")
-  const [selectedModels, setSelectedModels] = useState<Set<number>>(new Set())
+  const [selectedModels, setSelectedModels] = useState<Set<string>>(new Set())
   const [selectedKeys, setSelectedKeys] = useState<Set<number>>(new Set())
   const [starting, setStarting] = useState(false)
 
@@ -58,17 +62,20 @@ export function HealthCheckDialog({
   })
   const { data: keys = [] } = useQuery({
     queryKey: ["provider-keys", providerId],
-    queryFn: () => api<ProviderKey[]>(`/api/admin/providers/${providerId}/keys`),
+    queryFn: () => providerKeysApi.list(providerId),
     enabled: open,
   })
 
-  const models = useMemo(
-    () =>
-      routes
-        .filter((r) => r.provider_id === providerId && r.enabled && r.provider_enabled && (r.capabilities ?? "").includes("chat"))
-        .map((r) => ({ id: r.id, name: r.public_name, upstream: r.upstream_model })),
-    [routes, providerId]
-  )
+  const models = useMemo(() => {
+    const combinations: Array<{ id: string; routeId: number; keyId: number; name: string; upstream: string; key: string }> = []
+    for (const route of routes.filter((item) => item.provider_id === providerId && item.enabled && item.provider_enabled && (item.capabilities ?? "").includes("chat"))) {
+      for (const key of keys.filter((item) => item.enabled && item.health_check_enabled)) {
+        const supported = (key.models ?? []).some((model) => model.enabled && model.model.toLowerCase() === route.upstream_model.toLowerCase())
+        if (supported) combinations.push({ id: `${key.id}:${route.id}`, routeId: route.id, keyId: key.id, name: route.public_name, upstream: route.upstream_model, key: key.name || key.key_hint })
+      }
+    }
+    return combinations
+  }, [keys, providerId, routes])
 
   useEffect(() => {
     if (open) {
@@ -87,7 +94,7 @@ export function HealthCheckDialog({
       try {
         const cur = await api<HealthJob>(`/api/admin/health-checks/${id}`)
         setJob(cur)
-        if (cur.status === "running" || cur.status === "queued") {
+        if (cur.status === "running" || cur.status === "queued" || cur.status === "cancelling") {
           timer = setTimeout(poll, 1500)
         }
       } catch {
@@ -105,7 +112,7 @@ export function HealthCheckDialog({
     try {
       const body: Record<string, unknown> = { provider_ids: [providerId], model_scope: scope }
       if (scope === "selected") {
-        body.route_ids = [...selectedModels]
+        body.route_ids = [...new Set([...selectedModels].map((id) => models.find((model) => model.id === id)?.routeId).filter((id): id is number => id != null))]
         if (selectedKeys.size > 0) body.provider_key_ids = [...selectedKeys]
       }
       const j = await api<HealthJob>("/api/admin/health-checks", { method: "POST", body: JSON.stringify(body) })
@@ -204,13 +211,9 @@ export function HealthCheckDialog({
         {job && (
           <>
             <div className="flex items-center gap-3">
-              {job.status === "running" || job.status === "queued" ? (
-                <Badge variant="warning">
-                  检测中 {job.completed}/{job.total}
-                </Badge>
-              ) : (
-                <Badge variant="success">完成</Badge>
-              )}
+              {job.status === "running" || job.status === "queued" || job.status === "cancelling" ? (
+                <Badge variant="warning">{job.status === "cancelling" ? "取消中" : "检测中"} {job.completed}/{job.total}</Badge>
+              ) : job.status === "cancelled" ? <Badge variant="neutral">已取消</Badge> : <Badge variant={job.failed > 0 ? "danger" : "success"}>{job.failed > 0 ? "部分失败" : "完成"}</Badge>}
               <span className="text-xs text-muted-foreground">
                 健康 {job.healthy} · 失败 {job.failed} · 跳过 {job.skipped}
               </span>
@@ -220,10 +223,11 @@ export function HealthCheckDialog({
                 <div key={i} className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-muted/40">
                   <span className="flex-1">
                     <span className="block text-sm font-medium">{r.public_name || r.model || r.provider_name}</span>
-                    {r.provider_key_hint && <span className="block text-xs text-muted-foreground">Key：{r.provider_key_hint}</span>}
-                    {r.error && <span className="block text-xs text-destructive">{r.error}</span>}
+                    <span className="block text-xs text-muted-foreground">Key：{r.provider_key_name || r.provider_key_hint || "默认"} · upstream：{r.upstream_model || r.model || "未指定"}</span>
+                    <span className="block text-xs text-muted-foreground">public：{r.public_name || "未指定"}</span>
+                    {r.error && <span className="block break-words text-xs text-destructive">{r.error}</span>}
                   </span>
-                  <span className="text-xs text-muted-foreground">{r.latency_ms} ms · {r.model_count} 模型</span>
+                  <span className="text-right text-xs text-muted-foreground">{r.latency_ms} ms{r.first_byte_ms ? ` · 首字节 ${r.first_byte_ms} ms` : ""} · {r.model_count} 模型</span>
                   {r.status === "healthy" ? (
                     <Badge variant="success">健康</Badge>
                   ) : r.status === "unhealthy" ? (
@@ -235,6 +239,7 @@ export function HealthCheckDialog({
               ))}
             </div>
             <div className="flex justify-end gap-2">
+              {(job.status === "running" || job.status === "queued" || job.status === "cancelling") && job.status !== "cancelling" && <Button variant="destructive" onClick={() => { void api(`/api/admin/health-checks/${job.id}`, { method: "DELETE" }).then((next) => setJob(next as HealthJob)).catch((reason) => setError(reason instanceof Error ? reason.message : "取消检活失败")) }}>取消检活</Button>}
               <Button
                 variant="outline"
                 onClick={() => {

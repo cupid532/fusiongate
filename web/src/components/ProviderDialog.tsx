@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { RefreshCw, Settings2, Plus, Trash2 } from "lucide-react"
+import { Plus, Trash2 } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { IPPoolNode, Provider, ProviderGroup, ProviderKey } from "@/lib/types"
@@ -35,12 +35,12 @@ export function ProviderDialog({
   open,
   onOpenChange,
   provider,
-  onManageKeyModels,
+  onCreated,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   provider: Provider | null
-  onManageKeyModels?: (provider: Provider) => void
+  onCreated?: (provider: { id: number; name: string }) => void
 }) {
   const qc = useQueryClient()
   const [newKeys, setNewKeys] = useState<Array<{ name: string; api_key: string; egress_mode: string; ip_pool_node_id: number; cost_multiplier: number }>>([])
@@ -125,9 +125,10 @@ export function ProviderDialog({
       }
       return created
     },
-    onSuccess: () => {
+    onSuccess: (created) => {
       qc.invalidateQueries({ queryKey: ["providers"] })
       qc.invalidateQueries({ queryKey: ["provider-keys"] })
+      if (!provider && created) onCreated?.({ id: created.id, name: form.name.trim() })
       onOpenChange(false)
     },
   })
@@ -184,8 +185,6 @@ export function ProviderDialog({
               <Input defaultValue={key.name || `Key ${key.id}`} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ name: e.target.value }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} />
               <select defaultValue={key.egress_mode === "node" ? `node:${key.ip_pool_node_id}` : key.egress_mode} onChange={(e) => { const [mode, node] = e.target.value.split(":"); api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ egress_mode: mode, ip_pool_node_id: mode === "node" ? Number(node) : null }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"><option value="inherit">继承渠道出口</option><option value="direct">直连</option>{nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>节点：{node.name}</option>)}</select>
               <div className="flex min-w-0 items-center gap-1"><span className="shrink-0 text-xs text-muted-foreground">成本倍率</span><Input type="number" min="0.01" max="1000" step="0.01" defaultValue={key.cost_multiplier || 1} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ cost_multiplier: Number(e.target.value) }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} aria-label={`${key.name} 成本倍率`} /></div>
-              <Button type="button" size="sm" variant="outline" title="识别此 Key 的模型" aria-label={`识别 ${key.name || key.key_hint} 的模型`} onClick={() => api(`/api/admin/providers/${provider.id}/keys/${key.id}/discover-models`, { method: "POST" }).then(() => { qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }); onManageKeyModels?.(provider) })}><RefreshCw />识别模型</Button>
-              <Button type="button" size="sm" variant="outline" title="管理此 Key 的模型" aria-label={`管理 ${key.name || key.key_hint} 的模型`} onClick={() => onManageKeyModels?.(provider)}><Settings2 />管理模型</Button>
               <Button type="button" variant="ghost" size="icon" title="删除 Key" onClick={() => { if (confirm(`删除 ${key.name || key.key_hint}？`)) api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "DELETE" }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} aria-label={`删除 ${key.name || key.key_hint}`}><Trash2 /></Button>
             </div>)}</div>}
             <div className="space-y-2">

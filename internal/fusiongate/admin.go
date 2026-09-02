@@ -784,6 +784,26 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		a.providerBalanceHandler(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "model-management" {
+		if r.Method != http.MethodPatch {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH required")
+			return
+		}
+		var in struct {
+			Keys []providerModelManagementItem `json:"keys"`
+		}
+		if err := readJSON(r, &in); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		statuses, err := a.saveProviderModelManagement(r.Context(), id, in.Keys)
+		if err != nil {
+			fail(w, http.StatusBadRequest, "model_management_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"keys": statuses})
+		return
+	}
 	if len(parts) == 2 && parts[1] == "keys" {
 		a.providerKeys(w, r, id)
 		return

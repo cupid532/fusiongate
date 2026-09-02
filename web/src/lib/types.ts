@@ -403,6 +403,8 @@ export interface ProviderKey {
   key_hint: string
   model?: string
   effective_model?: string
+  model_policy: "fallback" | "allowlist"
+  model_allowlist?: string
   model_inherited: boolean
   egress_mode: "inherit" | "direct" | "node"
   ip_pool_node_id?: number
@@ -423,6 +425,38 @@ export interface ProviderKey {
   models: ProviderKeyModel[]
   created_at: string
   updated_at: string
+}
+
+export interface HealthCheckResult {
+  provider_id?: number
+  provider_name: string
+  provider_key_id?: number
+  provider_key_name?: string
+  provider_key_hint?: string
+  route_id?: number
+  public_name?: string
+  upstream_model?: string
+  model?: string
+  status: string
+  latency_ms: number
+  first_byte_ms?: number
+  model_count: number
+  error?: string
+  started_at?: string
+  finished_at?: string
+}
+
+export interface HealthCheckJob {
+  id: string
+  mode?: string
+  status: string
+  total: number
+  completed: number
+  healthy: number
+  failed: number
+  skipped: number
+  can_cancel?: boolean
+  results: HealthCheckResult[]
 }
 
 export interface CodexUsageWindow {

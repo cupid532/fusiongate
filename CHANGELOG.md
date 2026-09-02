@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.56
+
+- Separate public model routing from per-Key model management with explicit fallback and allowlist policies, including strict empty allowlists.
+- Add transactional channel-level model-management saves and shared Key-model matching for gateway routing and health-check target expansion.
+- Add a Key-aware model management dialog with per-Key discovery, draft changes, bulk save, model health details, and clear compatibility-mode warnings.
+
 ## V2.55
 
 - Keep per-Key Select all and Select none actions while removing the health-based bulk selection shortcut.

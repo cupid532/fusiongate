@@ -601,7 +601,7 @@ func (a *App) migrate(ctx context.Context) error {
     enabled INTEGER NOT NULL DEFAULT 1, health_check_enabled INTEGER NOT NULL DEFAULT 1, cost_multiplier REAL NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'untested',
     last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT, cooldown_until TEXT,
-    last_test_latency_ms INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    last_test_latency_ms INTEGER NOT NULL DEFAULT 0, model_policy TEXT NOT NULL DEFAULT 'fallback', model_allowlist TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     UNIQUE(provider_id,fingerprint));
   CREATE TABLE IF NOT EXISTS provider_api_key_models (
     provider_key_id INTEGER NOT NULL REFERENCES provider_api_keys(id) ON DELETE CASCADE,
@@ -721,6 +721,8 @@ func (a *App) migrate(ctx context.Context) error {
 		{"provider_api_keys", "health_check_enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"provider_api_keys", "cooldown_until", "TEXT"},
 		{"provider_api_keys", "cost_multiplier", "REAL NOT NULL DEFAULT 1"},
+		{"provider_api_keys", "model_policy", "TEXT NOT NULL DEFAULT 'fallback'"},
+		{"provider_api_keys", "model_allowlist", "TEXT NOT NULL DEFAULT ''"},
 		{"provider_api_key_models", "enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},

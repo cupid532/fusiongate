@@ -41,6 +41,8 @@ type ProviderAPIKey struct {
 	EgressInherited    bool               `json:"egress_inherited"`
 	Enabled            bool               `json:"enabled"`
 	HealthCheckEnabled bool               `json:"health_check_enabled"`
+	ModelPolicy        string             `json:"model_policy"`
+	ModelAllowlist     string             `json:"model_allowlist,omitempty"`
 	CostMultiplier     float64            `json:"cost_multiplier"`
 	SortOrder          int                `json:"sort_order"`
 	Status             string             `json:"status"`
@@ -83,6 +85,94 @@ func validProviderKeyEgressMode(mode string) bool {
 
 func normalizeProviderKeyModel(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
+}
+
+func validProviderKeyModelPolicy(policy string) bool {
+	return policy == "fallback" || policy == "allowlist"
+}
+
+func normalizeProviderKeyAllowlist(value string) string {
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	for _, model := range strings.Split(value, ",") {
+		model = normalizeProviderKeyModel(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	return strings.Join(models, ",")
+}
+
+// providerKeySupportsModel is shared by routing, explicit key application, and health checks.
+func providerKeySupportsModel(policy, allowlist, fixedModel, defaultModel, requested string, inventory, exclusions map[string]bool) bool {
+	requested = normalizeProviderKeyModel(requested)
+	policy = strings.ToLower(strings.TrimSpace(policy))
+	if policy == "" {
+		policy = "fallback"
+	}
+	if requested == "" || !validProviderKeyModelPolicy(policy) || (policy == "allowlist" && normalizeProviderKeyAllowlist(allowlist) == "") {
+		return false
+	}
+	if exclusions[requested] {
+		return false
+	}
+	if fixedModel != "" {
+		return normalizeProviderKeyModel(fixedModel) == requested
+	}
+	if policy == "allowlist" {
+		for _, model := range strings.Split(normalizeProviderKeyAllowlist(allowlist), ",") {
+			if model == requested {
+				return true
+			}
+		}
+		return false
+	}
+	if len(inventory) > 0 {
+		return inventory[requested]
+	}
+	return defaultModel == "" || normalizeProviderKeyModel(defaultModel) == requested
+}
+
+func (a *App) providerKeyModelSets(ctx context.Context, keyID int64) (map[string]bool, map[string]bool, error) {
+	inventory := make(map[string]bool)
+	exclusions := make(map[string]bool)
+	rows, err := a.reader().QueryContext(ctx, `SELECT model,enabled FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var model string
+		var enabled int
+		if err := rows.Scan(&model, &enabled); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		inventory[normalizeProviderKeyModel(model)] = strBool(enabled)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	rows, err = a.reader().QueryContext(ctx, `SELECT model FROM provider_api_key_model_exclusions WHERE provider_key_id=?`, keyID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var model string
+		if err := rows.Scan(&model); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		exclusions[normalizeProviderKeyModel(model)] = true
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	return inventory, exclusions, nil
 }
 
 func providerKeyHint(raw string) string {
@@ -259,61 +349,35 @@ func (a *App) selectProviderKeysBatch(ctx context.Context, requests []providerKe
 		args = append(args, i, item.request.providerID, item.request.upstreamModel)
 	}
 	query.WriteString(`)
-SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(k.cooldown_until,''),k.cost_multiplier
+SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.model_policy,k.model_allowlist,k.egress_mode,k.ip_pool_node_id,COALESCE(k.cooldown_until,''),k.cost_multiplier,p.default_model
 FROM candidates c
 JOIN providers p ON p.id=c.provider_id
 JOIN provider_api_keys k ON k.provider_id=c.provider_id AND k.enabled=1
-WHERE
-  (k.model<>'' AND lower(k.model)=lower(c.upstream_model))
-  OR (k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(c.upstream_model)))
-  OR (k.model='' AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id) AND (p.default_model='' OR lower(p.default_model)=lower(c.upstream_model)))
 ORDER BY c.ordinal,k.sort_order,k.id`)
 
 	rows, err := a.reader().QueryContext(ctx, query.String(), args...)
 	if err != nil {
 		return nil, err
 	}
+	type candidate struct {
+		ordinal                                                    int
+		key                                                        selectedProviderKey
+		encrypted                                                  []byte
+		keyNodeID                                                  sql.NullInt64
+		egressMode, cooldownUntil, policy, allowlist, defaultModel string
+	}
+	candidates := make([]candidate, 0)
 	for rows.Next() {
-		var ordinal int
-		var key selectedProviderKey
-		var encrypted []byte
-		var keyNodeID sql.NullInt64
-		var egressMode, cooldownUntil string
-		if err := rows.Scan(&ordinal, &key.ID, &encrypted, &key.Name, &key.Hint, &key.Model, &egressMode, &keyNodeID, &cooldownUntil, &key.CostMultiplier); err != nil {
+		var c candidate
+		if err := rows.Scan(&c.ordinal, &c.key.ID, &c.encrypted, &c.key.Name, &c.key.Hint, &c.key.Model, &c.policy, &c.allowlist, &c.egressMode, &c.keyNodeID, &c.cooldownUntil, &c.key.CostMultiplier, &c.defaultModel); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if ordinal < 0 || ordinal >= len(initialized) {
+		if c.ordinal < 0 || c.ordinal >= len(initialized) {
 			rows.Close()
 			return nil, errors.New("provider key batch returned an invalid candidate")
 		}
-		item := initialized[ordinal]
-		raw, err := a.decrypt(encrypted)
-		if err != nil {
-			a.log.Error("provider key credential decrypt", "provider_id", item.request.providerID, "provider_key_id", key.ID, "error", sanitizeError(err.Error()))
-			result := selected[item.key]
-			if len(result.keys) == 0 && errors.Is(result.err, errNoProviderKeySupportsModel) {
-				result.err = err
-			}
-			selected[item.key] = result
-			continue
-		}
-		key.Credential = raw
-		var providerNode sql.NullInt64
-		if item.request.providerNodeID != nil {
-			providerNode = sql.NullInt64{Int64: *item.request.providerNodeID, Valid: true}
-		}
-		key.IPPoolNodeID, _ = effectiveProviderKeyNode(egressMode, keyNodeID, providerNode)
-		if parsed := parseTime(cooldownUntil); parsed != nil && parsed.After(time.Now()) {
-			key.CooldownUntil = *parsed
-			a.routeMu.Lock()
-			a.providerKeyCooldowns[key.ID] = *parsed
-			a.routeMu.Unlock()
-		}
-		result := selected[item.key]
-		result.err = nil
-		result.keys = append(result.keys, key)
-		selected[item.key] = result
+		candidates = append(candidates, c)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -321,6 +385,42 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
+	}
+	for _, c := range candidates {
+		item := initialized[c.ordinal]
+		inventory, exclusions, setErr := a.providerKeyModelSets(ctx, c.key.ID)
+		if setErr != nil {
+			return nil, setErr
+		}
+		if !providerKeySupportsModel(c.policy, c.allowlist, c.key.Model, c.defaultModel, item.request.upstreamModel, inventory, exclusions) {
+			continue
+		}
+		raw, err := a.decrypt(c.encrypted)
+		if err != nil {
+			a.log.Error("provider key credential decrypt", "provider_id", item.request.providerID, "provider_key_id", c.key.ID, "error", sanitizeError(err.Error()))
+			result := selected[item.key]
+			if len(result.keys) == 0 && errors.Is(result.err, errNoProviderKeySupportsModel) {
+				result.err = err
+			}
+			selected[item.key] = result
+			continue
+		}
+		c.key.Credential = raw
+		var providerNode sql.NullInt64
+		if item.request.providerNodeID != nil {
+			providerNode = sql.NullInt64{Int64: *item.request.providerNodeID, Valid: true}
+		}
+		c.key.IPPoolNodeID, _ = effectiveProviderKeyNode(c.egressMode, c.keyNodeID, providerNode)
+		if parsed := parseTime(c.cooldownUntil); parsed != nil && parsed.After(time.Now()) {
+			c.key.CooldownUntil = *parsed
+			a.routeMu.Lock()
+			a.providerKeyCooldowns[c.key.ID] = *parsed
+			a.routeMu.Unlock()
+		}
+		result := selected[item.key]
+		result.err = nil
+		result.keys = append(result.keys, c.key)
+		selected[item.key] = result
 	}
 	return selected, nil
 }
@@ -360,12 +460,20 @@ func (a *App) applyProviderKeyByID(ctx context.Context, p *discoveryProvider, ke
 	var encrypted []byte
 	var mode string
 	var keyNode, providerNode sql.NullInt64
-	err := a.db.QueryRowContext(ctx, `SELECT k.credential,k.egress_mode,k.ip_pool_node_id,p.ip_pool_node_id FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.id=? AND k.provider_id=? AND k.enabled=1 AND k.health_check_enabled=1 AND (k.model<>'' AND lower(k.model)=lower(?) OR k.model='' AND EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=k.id AND km.enabled=1 AND lower(km.model)=lower(?)))`, keyID, p.ID, upstreamModel, upstreamModel).Scan(&encrypted, &mode, &keyNode, &providerNode)
+	var policy, allowlist, fixedModel, defaultModel string
+	err := a.db.QueryRowContext(ctx, `SELECT k.credential,k.egress_mode,k.ip_pool_node_id,p.ip_pool_node_id,k.model,k.model_policy,k.model_allowlist,p.default_model FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.id=? AND k.provider_id=? AND k.enabled=1 AND k.health_check_enabled=1`, keyID, p.ID).Scan(&encrypted, &mode, &keyNode, &providerNode, &fixedModel, &policy, &allowlist, &defaultModel)
 	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("selected API key does not support this model")
 	}
 	if err != nil {
 		return err
+	}
+	inventory, exclusions, err := a.providerKeyModelSets(ctx, keyID)
+	if err != nil {
+		return err
+	}
+	if !providerKeySupportsModel(policy, allowlist, fixedModel, defaultModel, upstreamModel, inventory, exclusions) {
+		return errors.New("selected API key does not support this model")
 	}
 	raw, err := a.decrypt(encrypted)
 	if err != nil {
@@ -421,7 +529,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 	}
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.db.Query(`SELECT k.id,k.provider_id,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.cost_multiplier,k.sort_order,k.status,k.last_error,COALESCE(k.last_tested_at,''),k.last_test_latency_ms,(SELECT COUNT(*) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),COALESCE((SELECT MAX(discovered_at) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),''),k.created_at,k.updated_at FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, providerID)
+		rows, err := a.db.Query(`SELECT k.id,k.provider_id,k.name,k.key_hint,k.model,k.egress_mode,k.ip_pool_node_id,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.model_policy,k.model_allowlist,k.cost_multiplier,k.sort_order,k.status,k.last_error,COALESCE(k.last_tested_at,''),k.last_test_latency_ms,(SELECT COUNT(*) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),COALESCE((SELECT MAX(discovered_at) FROM provider_api_key_models km WHERE km.provider_key_id=k.id),''),k.created_at,k.updated_at FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, providerID)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -431,13 +539,15 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		for rows.Next() {
 			var key ProviderAPIKey
 			var enabled, healthCheckEnabled int
+			var policy, allowlist string
 			var keyNodeID sql.NullInt64
-			if err := rows.Scan(&key.ID, &key.ProviderID, &key.Name, &key.KeyHint, &key.Model, &key.EgressMode, &keyNodeID, &key.IPPoolNodeName, &enabled, &healthCheckEnabled, &key.CostMultiplier, &key.SortOrder, &key.Status, &key.LastError, &key.LastTestedAt, &key.LastTestLatencyMS, &key.DiscoveredModels, &key.LastDiscoveredAt, &key.CreatedAt, &key.UpdatedAt); err != nil {
+			if err := rows.Scan(&key.ID, &key.ProviderID, &key.Name, &key.KeyHint, &key.Model, &key.EgressMode, &keyNodeID, &key.IPPoolNodeName, &enabled, &healthCheckEnabled, &policy, &allowlist, &key.CostMultiplier, &key.SortOrder, &key.Status, &key.LastError, &key.LastTestedAt, &key.LastTestLatencyMS, &key.DiscoveredModels, &key.LastDiscoveredAt, &key.CreatedAt, &key.UpdatedAt); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
 			key.Enabled = strBool(enabled)
 			key.HealthCheckEnabled = strBool(healthCheckEnabled)
+			key.ModelPolicy, key.ModelAllowlist = policy, allowlist
 			if keyNodeID.Valid {
 				value := keyNodeID.Int64
 				key.IPPoolNodeID = &value
@@ -483,6 +593,8 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			IPPoolNodeID       *int64  `json:"ip_pool_node_id"`
 			Enabled            *bool   `json:"enabled"`
 			HealthCheckEnabled *bool   `json:"health_check_enabled"`
+			ModelPolicy        string  `json:"model_policy"`
+			ModelAllowlist     string  `json:"model_allowlist"`
 			CostMultiplier     float64 `json:"cost_multiplier"`
 		}
 		if err := readJSON(r, &in); err != nil {
@@ -492,6 +604,11 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		in.APIKey = strings.TrimSpace(in.APIKey)
 		in.Name = strings.TrimSpace(in.Name)
 		in.Model = normalizeProviderKeyModel(in.Model)
+		in.ModelPolicy = strings.ToLower(strings.TrimSpace(in.ModelPolicy))
+		if in.ModelPolicy == "" {
+			in.ModelPolicy = "fallback"
+		}
+		in.ModelAllowlist = normalizeProviderKeyAllowlist(in.ModelAllowlist)
 		in.EgressMode = strings.ToLower(strings.TrimSpace(in.EgressMode))
 		if in.EgressMode == "" {
 			in.EgressMode = providerKeyEgressInherit
@@ -499,7 +616,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		if in.CostMultiplier == 0 {
 			in.CostMultiplier = 1
 		}
-		if in.APIKey == "" || !validProviderKeyEgressMode(in.EgressMode) || in.CostMultiplier <= 0 || in.CostMultiplier > 1000 {
+		if in.APIKey == "" || !validProviderKeyModelPolicy(in.ModelPolicy) || !validProviderKeyEgressMode(in.EgressMode) || in.CostMultiplier <= 0 || in.CostMultiplier > 1000 {
 			fail(w, http.StatusBadRequest, "invalid_request", "API key and a valid egress mode are required")
 			return
 		}
@@ -568,6 +685,127 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 	}
 }
 
+type providerModelManagementItem struct {
+	KeyID          int64    `json:"key_id"`
+	ModelPolicy    string   `json:"model_policy"`
+	ModelAllowlist string   `json:"model_allowlist"`
+	Models         []string `json:"models"`
+	ExcludeModels  []string `json:"exclude_models"`
+}
+
+type providerModelManagementStatus struct {
+	KeyID  int64  `json:"key_id"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+func (a *App) saveProviderModelManagement(ctx context.Context, providerID int64, items []providerModelManagementItem) ([]providerModelManagementStatus, error) {
+	if len(items) == 0 || len(items) > providerKeySoftLimit {
+		return nil, errors.New("keys are required")
+	}
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	statuses := make([]providerModelManagementStatus, 0, len(items))
+	seen := make(map[int64]bool, len(items))
+	for _, item := range items {
+		st := providerModelManagementStatus{KeyID: item.KeyID, Status: "error"}
+		if item.KeyID < 1 || seen[item.KeyID] {
+			st.Error = "duplicate or invalid key_id"
+			statuses = append(statuses, st)
+			return statuses, errors.New(st.Error)
+		}
+		seen[item.KeyID] = true
+		policy := strings.ToLower(strings.TrimSpace(item.ModelPolicy))
+		if policy == "" {
+			policy = "fallback"
+		}
+		if !validProviderKeyModelPolicy(policy) {
+			st.Error = "invalid model policy"
+			statuses = append(statuses, st)
+			return statuses, errors.New(st.Error)
+		}
+		allowlist := normalizeProviderKeyAllowlist(item.ModelAllowlist)
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_api_keys WHERE id=? AND provider_id=?`, item.KeyID, providerID).Scan(&exists); err != nil {
+			return statuses, err
+		}
+		if exists != 1 {
+			st.Error = "key not found"
+			statuses = append(statuses, st)
+			return statuses, errors.New(st.Error)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE provider_api_keys SET model_policy=?,model_allowlist=?,updated_at=? WHERE id=? AND provider_id=?`, policy, allowlist, now(), item.KeyID, providerID); err != nil {
+			return statuses, err
+		}
+		selected := map[string]bool{}
+		for _, m := range item.Models {
+			m = normalizeProviderKeyModel(m)
+			if m != "" {
+				selected[m] = true
+			}
+		}
+		for _, m := range item.ExcludeModels {
+			m = normalizeProviderKeyModel(m)
+			if m == "" {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM provider_api_key_models WHERE provider_key_id=? AND lower(model)=?`, item.KeyID, m); err != nil {
+				return statuses, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_model_exclusions(provider_key_id,model,created_at) VALUES(?,?,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET created_at=excluded.created_at`, item.KeyID, m, now()); err != nil {
+				return statuses, err
+			}
+		}
+		if item.Models != nil {
+			rows, e := tx.QueryContext(ctx, `SELECT model FROM provider_api_key_models WHERE provider_key_id=?`, item.KeyID)
+			if e != nil {
+				return statuses, e
+			}
+			var inventory []string
+			for rows.Next() {
+				var m string
+				if e = rows.Scan(&m); e != nil {
+					rows.Close()
+					return statuses, e
+				}
+				inventory = append(inventory, m)
+			}
+			if e = rows.Close(); e != nil {
+				return statuses, e
+			}
+			for _, m := range inventory {
+				enabled := selected[normalizeProviderKeyModel(m)]
+				if _, e = tx.ExecContext(ctx, `UPDATE provider_api_key_models SET enabled=? WHERE provider_key_id=? AND model=?`, boolInt(enabled), item.KeyID, m); e != nil {
+					return statuses, e
+				}
+				if enabled {
+					if _, e = tx.ExecContext(ctx, `DELETE FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=?`, item.KeyID, normalizeProviderKeyModel(m)); e != nil {
+						return statuses, e
+					}
+				}
+			}
+		}
+		var e error
+		for m := range selected {
+			if _, e = tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,enabled,discovered_at) VALUES(?,?,?,'chat,stream',1,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET enabled=1`, item.KeyID, m, m, now()); e != nil {
+				return statuses, e
+			}
+			if _, e = tx.ExecContext(ctx, `DELETE FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=?`, item.KeyID, m); e != nil {
+				return statuses, e
+			}
+		}
+		st.Status = "saved"
+		statuses = append(statuses, st)
+	}
+	if err := tx.Commit(); err != nil {
+		return statuses, err
+	}
+	return statuses, nil
+}
+
 func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID, keyID int64, action string) {
 	if action == "reveal" {
 		if r.Method != http.MethodPost {
@@ -614,6 +852,8 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			IPPoolNodeID       *int64    `json:"ip_pool_node_id"`
 			Enabled            *bool     `json:"enabled"`
 			HealthCheckEnabled *bool     `json:"health_check_enabled"`
+			ModelPolicy        *string   `json:"model_policy"`
+			ModelAllowlist     *string   `json:"model_allowlist"`
 			CostMultiplier     *float64  `json:"cost_multiplier"`
 			SortOrder          *int      `json:"sort_order"`
 			Models             *[]string `json:"models"`
@@ -643,6 +883,18 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		}
 		if in.Model != nil {
 			modelArg = normalizeProviderKeyModel(*in.Model)
+		}
+		var policyArg, allowlistArg any
+		if in.ModelPolicy != nil {
+			policy := strings.ToLower(strings.TrimSpace(*in.ModelPolicy))
+			if !validProviderKeyModelPolicy(policy) {
+				fail(w, http.StatusBadRequest, "invalid_request", "invalid model policy")
+				return
+			}
+			policyArg = policy
+		}
+		if in.ModelAllowlist != nil {
+			allowlistArg = normalizeProviderKeyAllowlist(*in.ModelAllowlist)
 		}
 		if in.EgressMode != nil {
 			mode := strings.ToLower(strings.TrimSpace(*in.EgressMode))
@@ -681,7 +933,7 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		if effectiveMode == providerKeyEgressNode && effectiveNode != nil && *effectiveNode > 0 {
 			nodeArg = *effectiveNode
 		}
-		res, err := a.db.Exec(`UPDATE provider_api_keys SET credential=COALESCE(?,credential),fingerprint=COALESCE(?,fingerprint),key_hint=COALESCE(?,key_hint),name=COALESCE(?,name),model=COALESCE(?,model),egress_mode=COALESCE(?,egress_mode),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,enabled=COALESCE(?,enabled),health_check_enabled=COALESCE(?,health_check_enabled),cost_multiplier=COALESCE(?,cost_multiplier),sort_order=COALESCE(?,sort_order),status=CASE WHEN ? THEN 'untested' ELSE status END,last_error=CASE WHEN ? THEN '' ELSE last_error END,updated_at=? WHERE id=? AND provider_id=?`, encryptedArg, fingerprintArg, hintArg, nameArg, modelArg, egressArg, in.EgressMode != nil || in.IPPoolNodeID != nil, nodeArg, maybeBool(in.Enabled), maybeBool(in.HealthCheckEnabled), in.CostMultiplier, in.SortOrder, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, now(), keyID, providerID)
+		res, err := a.db.Exec(`UPDATE provider_api_keys SET credential=COALESCE(?,credential),fingerprint=COALESCE(?,fingerprint),key_hint=COALESCE(?,key_hint),name=COALESCE(?,name),model=COALESCE(?,model),model_policy=COALESCE(?,model_policy),model_allowlist=COALESCE(?,model_allowlist),egress_mode=COALESCE(?,egress_mode),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,enabled=COALESCE(?,enabled),health_check_enabled=COALESCE(?,health_check_enabled),cost_multiplier=COALESCE(?,cost_multiplier),sort_order=COALESCE(?,sort_order),status=CASE WHEN ? THEN 'untested' ELSE status END,last_error=CASE WHEN ? THEN '' ELSE last_error END,updated_at=? WHERE id=? AND provider_id=?`, encryptedArg, fingerprintArg, hintArg, nameArg, modelArg, egressArg, policyArg, allowlistArg, in.EgressMode != nil || in.IPPoolNodeID != nil, nodeArg, maybeBool(in.Enabled), maybeBool(in.HealthCheckEnabled), in.CostMultiplier, in.SortOrder, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, now(), keyID, providerID)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				fail(w, http.StatusConflict, "duplicate_api_key", "this API key already exists in the provider")
