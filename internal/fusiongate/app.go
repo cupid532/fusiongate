@@ -612,6 +612,9 @@ func (a *App) migrate(ctx context.Context) error {
     model TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', error TEXT NOT NULL DEFAULT '',
     latency_ms INTEGER NOT NULL DEFAULT 0, first_byte_ms INTEGER NOT NULL DEFAULT 0,
     last_checked_at TEXT NOT NULL, PRIMARY KEY(provider_key_id,model));
+  CREATE TABLE IF NOT EXISTS provider_api_key_model_exclusions (
+    provider_key_id INTEGER NOT NULL REFERENCES provider_api_keys(id) ON DELETE CASCADE,
+    model TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(provider_key_id,model));
   CREATE TABLE IF NOT EXISTS model_routes (
     id INTEGER PRIMARY KEY, public_name TEXT NOT NULL, provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
     upstream_model TEXT NOT NULL, capabilities TEXT NOT NULL DEFAULT 'chat,stream', enabled INTEGER NOT NULL DEFAULT 1,

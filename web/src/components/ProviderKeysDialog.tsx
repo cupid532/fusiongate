@@ -45,7 +45,8 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
   const [newKey, setNewKey] = useState("")
   const [newName, setNewName] = useState("")
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
-  const [modelDrafts, setModelDrafts] = useState<Record<number, string>>( {})
+  const [modelDrafts, setModelDrafts] = useState<Record<number, string>>({})
+  const [actionError, setActionError] = useState("")
 
   const { data: keys = [], isLoading } = useQuery({
     queryKey: ["provider-keys", providerId],
@@ -66,7 +67,8 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
   })
   const action = useMutation({
     mutationFn: async ({ keyId, name }: { keyId: number; name: "test" | "discover-models" }) => api(`/api/admin/providers/${providerId}/keys/${keyId}/${name}`, { method: "POST" }),
-    onSuccess: (_data, variables) => { setExpanded((current) => new Set(current).add(variables.keyId)); refreshKeys() },
+    onSuccess: (_data, variables) => { setActionError(""); setExpanded((current) => new Set(current).add(variables.keyId)); refreshKeys() },
+    onError: (error) => setActionError(error instanceof Error ? error.message : "识别模型失败"),
   })
 
   const setModels = (key: ProviderKey, models: string[]) => patch.mutate({ keyId: key.id, body: { models } })
@@ -94,8 +96,10 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
     <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
       <DialogHeader>
         <DialogTitle>Key 与模型管理 · {providerName}</DialogTitle>
-        <DialogDescription>每张 Key 独立识别、选择模型和检活；模型列表默认收起。</DialogDescription>
+        <DialogDescription>先点击“识别模型”获取此 Key 可用模型；识别结果默认全部不启用，请手动勾选需要路由的模型。手工添加的模型默认启用，也可取消勾选或删除。</DialogDescription>
       </DialogHeader>
+
+      {actionError && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{actionError}</div>}
 
       <div className="grid gap-2 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
         <div className="flex min-w-0 flex-col gap-1.5"><Label>新 API Key</Label><Input value={newKey} onChange={(e) => setNewKey(e.target.value)} placeholder="sk-…" className="font-mono text-xs" /></div>
@@ -122,7 +126,7 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
                 {statusBadge(key.status)}
                 <label className="flex items-center gap-1.5 text-xs text-muted-foreground">启用<Switch checked={key.enabled} disabled={patch.isPending} onCheckedChange={(enabled) => patch.mutate({ keyId: key.id, body: { enabled } })} aria-label={`${key.name || key.key_hint} 启用`} /></label>
                 <label className="flex items-center gap-1.5 text-xs text-muted-foreground">检活<Switch checked={key.health_check_enabled} disabled={patch.isPending} onCheckedChange={(health_check_enabled) => patch.mutate({ keyId: key.id, body: { health_check_enabled } })} aria-label={`${key.name || key.key_hint} 检活`} /></label>
-                <Button variant="ghost" size="icon" title="为此 Key 识别模型" aria-label={`识别 ${key.name || key.key_hint} 的模型`} disabled={action.isPending} onClick={() => action.mutate({ keyId: key.id, name: "discover-models" })}><RefreshCw /></Button>
+                <Button variant="outline" size="sm" title="为此 Key 识别模型" aria-label={`识别 ${key.name || key.key_hint} 的模型`} disabled={action.isPending} onClick={() => action.mutate({ keyId: key.id, name: "discover-models" })}><RefreshCw />识别模型</Button>
                 <Button variant="ghost" size="icon" title="测试此 Key" aria-label={`测试 ${key.name || key.key_hint}`} disabled={action.isPending} onClick={() => action.mutate({ keyId: key.id, name: "test" })}><Activity /></Button>
                 <Button variant="ghost" size="icon" title="删除 Key" aria-label={`删除 ${key.name || key.key_hint}`} disabled={remove.isPending} onClick={() => { if (confirm("删除这个 Key？")) remove.mutate(key.id) }}><Trash2 className="text-destructive" /></Button>
               </div>

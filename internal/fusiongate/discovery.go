@@ -279,10 +279,16 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 		if id == "" || model.Capabilities == "unsupported" || seen[id] {
 			continue
 		}
+		var excluded int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, id).Scan(&excluded); err == nil && excluded > 0 {
+			continue
+		}
 		seen[id] = true
 		enabled, existed := previous[strings.ToLower(id)]
 		if !existed {
-			enabled = 1
+			// Discovery only builds the selectable inventory. The administrator
+			// must explicitly enable models for this Key.
+			enabled = 0
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,?)`, keyID, id, model.DisplayName, model.Capabilities, stamp, enabled); err != nil {
 			return err

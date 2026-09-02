@@ -718,12 +718,14 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 				return
 			}
 			_, _ = a.db.Exec(`DELETE FROM provider_api_key_model_health WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, model)
+			_, _ = a.db.Exec(`INSERT INTO provider_api_key_model_exclusions(provider_key_id,model,created_at) VALUES(?,?,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET created_at=excluded.created_at`, keyID, model, now())
 		}
 		if in.Models != nil {
 			selected := map[string]bool{}
 			for _, model := range *in.Models {
 				if normalized := normalizeProviderKeyModel(model); normalized != "" {
 					selected[normalized] = true
+					_, _ = a.db.Exec(`DELETE FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, normalized)
 				}
 			}
 			for model := range selected {

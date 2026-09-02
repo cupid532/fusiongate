@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.53
+
+- Make per-Key discovery results a manual selection inventory: newly discovered models are visible but disabled by default, so only explicitly checked models participate in routing.
+- Make discovery and model-management actions visibly labeled in channel editing, and show discovery errors inside the Key model manager instead of only exposing an icon.
+
 ## V2.52
 
 - Complete per-Key model inventory controls: discovery no longer silently removes manually added or previously retained models, and every inventory row now has an explicit Delete model action.

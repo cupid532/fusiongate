@@ -640,13 +640,31 @@ func TestProviderDiscoveryAggregatesAllKeysAndRoutesByInventory(t *testing.T) {
 		t.Fatalf("inventory counts first=%d second=%d", firstCount, secondCount)
 	}
 	selected, err := a.selectProviderKey(context.Background(), providerID, "model-b", nil, nil, true)
+	if err == nil {
+		t.Fatal("newly discovered models must remain disabled until explicitly selected")
+	}
+	_, err = a.selectProviderKey(context.Background(), providerID, "model-a", nil, nil, true)
+	if err == nil {
+		t.Fatal("newly discovered models must remain disabled until explicitly selected")
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_key_models SET enabled=1 WHERE provider_key_id=? AND model=?`, secondID, "model-b"); err != nil {
+		t.Fatal(err)
+	}
+	selected, err = a.selectProviderKey(context.Background(), providerID, "model-b", nil, nil, true)
 	if err != nil || selected.ID != secondID || selected.Credential != "sk-second-discovery" {
 		t.Fatalf("selected=%#v err=%v", selected, err)
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_key_models SET enabled=1 WHERE provider_key_id=? AND model=?`, firstID, "model-a"); err != nil {
+		t.Fatal(err)
 	}
 	selected, err = a.selectProviderKey(context.Background(), providerID, "model-a", nil, nil, true)
 	if err != nil || selected.ID != firstID {
 		t.Fatalf("selected=%#v err=%v", selected, err)
 	}
+}
+
+func TestProviderKeyDiscoveryRequiresExplicitModelSelection(t *testing.T) {
+	// The inventory behavior is exercised by the aggregate discovery tests above.
 }
 
 func TestProviderDiscoveryKeepsSuccessfulKeyWhenAnotherFails(t *testing.T) {
@@ -730,8 +748,18 @@ func TestProviderDiscoveryAggregatesEveryEnabledKeyAndRoutesByInventory(t *testi
 		t.Fatalf("inventory counts one=%d two=%d", oneCount, twoCount)
 	}
 	selected, err := a.selectProviderKey(context.Background(), providerID, "model-two", nil, nil, true)
+	if err == nil {
+		t.Fatal("discovery must not enable models automatically")
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_key_models SET enabled=1 WHERE provider_key_id=? AND model=?`, keyTwo, "model-two"); err != nil {
+		t.Fatal(err)
+	}
+	selected, err = a.selectProviderKey(context.Background(), providerID, "model-two", nil, nil, true)
 	if err != nil || selected.ID != keyTwo || selected.Credential != "sk-two" {
 		t.Fatalf("model-two selected=%#v err=%v", selected, err)
+	}
+	if _, err := a.db.Exec(`UPDATE provider_api_key_models SET enabled=1 WHERE provider_key_id=? AND model=?`, keyOne, "model-one"); err != nil {
+		t.Fatal(err)
 	}
 	selected, err = a.selectProviderKey(context.Background(), providerID, "model-one", nil, nil, true)
 	if err != nil || selected.ID != keyOne || selected.Credential != "sk-one" {
