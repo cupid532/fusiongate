@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.73
+
+- Align the Codex auth cards in a grid row. The grid stretched each card's wrapper to a common height but the card inside kept its natural height, so a Free account (one window row) stopped about 60px short of a Team account (two window rows) and their 参与调用 footers sat at different heights. Cards now fill the row height with the footer anchored to the bottom.
+- Add a 思考强度 column to the request ledger, showing the upstream's own identifiers — minimal / low / medium / high / xhigh / max — untranslated, since those are the exact values used in API requests and provider docs. Higher-cost efforts are tinted; rows with no reported effort show a muted dash rather than fabricated data.
+
 ## V2.72
 
 - Tidy the Codex plan subtitle: a single-window account now reads its full label ("每月限制") instead of the clipped "月窗口", and the two-window form spaces correctly as "5 小时 + 周 双限制".

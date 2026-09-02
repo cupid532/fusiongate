@@ -110,7 +110,11 @@ export function CodexCard({ provider }: { provider: Provider }) {
   const plan = planLabel(quota)
 
   return (
-    <Card className="overflow-hidden">
+    // h-full + flex column so cards in the same grid row end at the same
+    // bottom edge. A Free account has one window row and a Team account has
+    // two, so without this the shorter card stopped ~60px above its neighbour
+    // and the footers sat at different heights.
+    <Card className="flex h-full flex-col overflow-hidden">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center justify-between text-base">
           <span className="flex min-w-0 items-center gap-2"><span className="truncate">{provider.name}</span><InlinePriorityEditor value={provider.priority} disabled={updatePriority.isPending} onSave={async (priority) => { await updatePriority.mutateAsync(priority) }} /></span>
@@ -134,7 +138,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
         )}
       </CardHeader>
 
-      <CardContent className="space-y-3">
+      <CardContent className="flex flex-1 flex-col space-y-3">
         {!provider.enabled && (
           <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
             已关闭模型调用，配额与重置时间仍会更新。
@@ -305,7 +309,9 @@ export function CodexCard({ provider }: { provider: Provider }) {
           <div className="rounded-md bg-primary/10 px-3 py-2 text-xs text-primary">{notice}</div>
         )}
 
-        <div className="flex items-center justify-between border-t pt-3">
+        {/* mt-auto anchors the footer to the bottom of the (now equal-height)
+            card, so the 参与调用 switch and 刷新 line up across cards. */}
+        <div className="mt-auto flex items-center justify-between border-t pt-3">
           <label className="flex items-center gap-2 text-sm font-medium">
             <Switch
               checked={provider.enabled}

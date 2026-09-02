@@ -43,6 +43,38 @@ function clockPad(n: number) {
   return String(n).padStart(2, "0")
 }
 
+// Reasoning effort is shown with the upstream's own identifiers — minimal,
+// low, medium, high, xhigh, max — deliberately untranslated. These are the
+// exact strings you pass in an API request and read in provider docs, so a
+// Chinese rendering ("极高"?) would be a second vocabulary to map back.
+// Only the colour is interpretive: higher effort costs more, so it gets more
+// visual weight.
+const EFFORT_TONE: Record<string, string> = {
+  none: "text-muted-foreground",
+  minimal: "text-muted-foreground",
+  low: "text-muted-foreground",
+  medium: "text-foreground",
+  high: "text-amber-500",
+  xhigh: "text-destructive",
+  max: "text-destructive",
+}
+
+function ReasoningEffort({ value }: { value?: string }) {
+  const effort = (value ?? "").trim()
+  // Most rows carry no effort at all (non-reasoning models, or an upstream
+  // that does not report it) — 15k of ~18.6k rows on this deployment. A dash
+  // keeps the column quiet rather than filling it with "—" styled as data.
+  if (!effort) return <span className="text-muted-foreground/40">—</span>
+  return (
+    <span
+      className={cn("font-mono text-[11px] font-medium", EFFORT_TONE[effort.toLowerCase()] ?? "text-foreground")}
+      title={`reasoning effort: ${effort}`}
+    >
+      {effort}
+    </span>
+  )
+}
+
 // LiveClock renders a self-ticking elapsed timer for a running ledger row.
 // Both timestamps are absolute millisecond values; subtracting creation
 // time keeps the badge focused on elapsed duration rather than a Unix timestamp.
@@ -413,6 +445,7 @@ export function Requests() {
                     <th className="px-4 py-3 font-medium">模型</th>
                     <th className="px-4 py-3 font-medium">渠道</th>
                     <th className="px-4 py-3 font-medium">状态</th>
+                    <th className="px-4 py-3 font-medium">思考强度</th>
                     <th className="px-4 py-3 font-medium">首字节</th>
                     <th className="px-4 py-3 font-medium">Token</th>
                     <th className="px-4 py-3 font-medium">费用</th>
@@ -445,6 +478,7 @@ export function Requests() {
                           <Badge variant="danger">失败</Badge>
                         )}
                       </td>
+                      <td className="px-4 py-3"><ReasoningEffort value={r.reasoning_effort} /></td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{duration(r.first_byte_ms)}</td>
                       <td className="px-4 py-3 text-xs">
                           {(() => {
