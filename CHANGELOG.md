@@ -1,5 +1,13 @@
 # Changelog
 
+## V2.71
+
+- Name the Codex rate-limit windows in the auth-file card by their actual period, derived from `limit_window_seconds`: Plus and Team now read "5 小时限制" and "每周限制" instead of the meaningless "主窗口" / "次窗口", and a Free account reads "每月限制".
+- Headline the window that is actually closest to its limit. The remaining-quota figure previously came from `remaining_quota`, which the backend derives from the primary window alone — on Plus and Team that is the 5-hour window, so a nearly-exhausted weekly allowance was hidden behind a full bar moments after the 5-hour window rolled over. The tighter of the two windows is now shown and labelled, and marked 「当前瓶颈」 in the per-window list.
+- Give every window its own live reset countdown and elapsed-window percentage; previously only the primary window had one, leaving the weekly window — the one worth planning around — with no timer at all.
+- Warn explicitly when the binding window is at or above 90% used, naming the window and when it resets.
+- Show the plan as a readable badge (Free / Plus / Team / Pro …) with the limit shape it implies, rather than the bare lowercase identifier from the API.
+
 ## V2.70
 
 - Reduce the sidebar footer to the version number. The gateway-health badge added in V2.67 read the providers list and, with 100+ channels configured, sat permanently on messages like "86 个渠道不稳定" — accurate but alarming and not actionable from the sidebar. Per-channel status stays on the 上游渠道 page, where every row already carries its own badge.

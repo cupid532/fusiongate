@@ -1,10 +1,18 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { RefreshCw, Ticket, Zap, Clock } from "lucide-react"
+import { RefreshCw, Ticket, Zap, Clock, AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import type { CodexAccountQuota, Provider } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
+import {
+  bindingWindow,
+  formatResetDuration,
+  namedWindows,
+  planLabel,
+  usageBarTone,
+  usageTone,
+} from "@/lib/codex-windows"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -15,16 +23,6 @@ import { useConfirm } from "@/components/ui/confirm"
 function formatDate(iso?: string) {
   if (!iso) return "—"
   return new Date(iso).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds <= 0) return "即将重置"
-  const d = Math.floor(seconds / 86400)
-  const h = Math.floor((seconds % 86400) / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  if (d > 0) return `${d} 天 ${h} 小时`
-  if (h > 0) return `${h} 小时 ${m} 分钟`
-  return `${m} 分钟`
 }
 
 export function CodexCard({ provider }: { provider: Provider }) {
@@ -44,18 +42,22 @@ export function CodexCard({ provider }: { provider: Provider }) {
     queryFn: () => api<CodexAccountQuota>(`/api/admin/auth/quota/${provider.id}`),
   })
 
-  // 重置倒计时（基于 primary 窗口的 reset_after_seconds）
-  const [remaining, setRemaining] = useState(0)
+  const windows = useMemo(() => namedWindows(quota), [quota])
+  const binding = useMemo(() => bindingWindow(quota), [quota])
+
+  // One ticking clock drives every window's countdown. The previous version
+  // only tracked `primary`, so on Plus and Team the weekly window had no
+  // countdown at all — and the weekly window is the one you plan around.
+  const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
-    const resetAfter = quota?.primary?.reset_after_seconds
-    if (!resetAfter) {
-      setRemaining(0)
-      return
-    }
-    setRemaining(resetAfter)
-    const timer = setInterval(() => setRemaining((s) => Math.max(0, s - 1)), 1000)
+    setElapsed(0)
+    if (windows.every((w) => !w.window.reset_after_seconds)) return
+    const timer = setInterval(() => setElapsed((s) => s + 1), 1000)
     return () => clearInterval(timer)
-  }, [quota?.primary?.reset_after_seconds])
+  }, [windows])
+
+  const countdownFor = (seconds?: number) =>
+    seconds == null ? null : Math.max(0, seconds - elapsed)
 
   const toggle = useMutation({
     mutationFn: async (enabled: boolean) =>
@@ -105,10 +107,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
     redeem.mutate(creditId)
   }
 
-  const quotaRemaining = quota?.remaining_quota ?? 0
-  const quotaUsed = quota?.used_quota ?? 0
-  const windowTotal = quota?.primary?.limit_window_seconds ?? remaining
-  const resetRatio = windowTotal > 0 ? remaining / windowTotal : 0
+  const plan = planLabel(quota)
 
   return (
     <Card className="overflow-hidden">
@@ -119,7 +118,20 @@ export function CodexCard({ provider }: { provider: Provider }) {
             {!provider.enabled ? "已关闭" : quota?.allowed === false ? "不可用" : quota?.limit_reached ? "已达限" : "可用"}
           </Badge>
         </CardTitle>
-        {quota?.plan_type && <p className="text-xs text-muted-foreground">{quota.subscription_plan || quota.plan_type}</p>}
+        {plan && (
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Badge variant="neutral">{plan}</Badge>
+            {/* Which limits apply is a property of the plan, so say so here
+                rather than leaving the window rows to be interpreted blind. */}
+            <span>
+              {windows.length >= 2
+                ? `${windows.map((w) => w.shortLabel).join(" + ")}双限制`
+                : windows.length === 1
+                  ? `${windows[0].shortLabel}窗口`
+                  : "配额窗口未知"}
+            </span>
+          </p>
+        )}
       </CardHeader>
 
       <CardContent className="space-y-3">
@@ -133,68 +145,101 @@ export function CodexCard({ provider }: { provider: Provider }) {
           <div className="py-4 text-center text-sm text-muted-foreground">加载配额中…</div>
         ) : quota ? (
           <>
-            {/* 剩余额度进度条 */}
-            <div>
-              <div className="mb-1 flex items-end justify-between">
-                <span className="text-xs text-muted-foreground">剩余额度</span>
-                <span className="text-2xl font-bold tracking-tight">{quotaRemaining.toFixed(1)}%</span>
-              </div>
-              <div className="h-2 overflow-hidden rounded-full bg-muted">
-                <motion.div
-                  className={cn("h-2 rounded-full", quotaRemaining < 10 ? "bg-destructive" : quotaRemaining < 30 ? "bg-amber-500" : "bg-primary")}
-                  initial={{ width: 0 }}
-                  animate={{ width: `${quotaRemaining}%` }}
-                  transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-                />
-              </div>
-              <div className="mt-1 text-[11px] text-muted-foreground">已用 {quotaUsed.toFixed(1)}% · 总额度 100%</div>
-            </div>
-
-            {/* 重置倒计时能量条 */}
-            {quota.primary?.reset_after_seconds != null && quota.primary.reset_after_seconds > 0 && (
+            {/*
+              Headline: the window that is actually closest to cutting you off.
+              This used to read `remaining_quota`, which the backend derives
+              from the primary window alone — on Plus and Team that is the
+              5-hour window, so a nearly-exhausted weekly allowance was
+              invisible behind a full bar.
+            */}
+            {binding ? (
               <div>
-                <div className="mb-1 flex items-end justify-between">
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Clock className="h-3.5 w-3.5" />
-                    距下次重置
+                <div className="mb-1 flex items-end justify-between gap-2">
+                  <span className="min-w-0 text-xs text-muted-foreground">
+                    剩余额度
+                    <span className="ml-1 text-foreground/70">· 受限于{binding.label}</span>
                   </span>
-                  <span className="text-sm font-semibold">{formatDuration(remaining)}</span>
+                  <span className={cn("shrink-0 text-2xl font-bold tracking-tight tabular-nums", usageTone(binding.window.used_percent))}>
+                    {(100 - binding.window.used_percent).toFixed(1)}%
+                  </span>
                 </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+                <div className="h-2 overflow-hidden rounded-full bg-muted">
                   <motion.div
-                    className="h-1.5 rounded-full bg-blue-500"
-                    animate={{ width: `${Math.max(0, Math.min(100, resetRatio * 100))}%` }}
-                    transition={{ duration: 1, ease: "linear" }}
+                    className={cn("h-2 rounded-full", usageBarTone(binding.window.used_percent))}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.max(0, 100 - binding.window.used_percent)}%` }}
+                    transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
                   />
                 </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">
+                  已用 {binding.window.used_percent.toFixed(1)}%
+                  {windows.length >= 2 && " · 两个窗口中更紧的那个"}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                上游未返回配额窗口信息。
               </div>
             )}
 
-            {/* 使用窗口 */}
-            {(quota.primary || quota.secondary) && (
-              <div className="grid grid-cols-2 gap-2">
-                {quota.primary && (
-                  <div className="rounded-lg border p-2">
-                    <div className="text-[10px] text-muted-foreground">主窗口</div>
-                    <div className="text-sm font-semibold">{quota.primary.used_percent.toFixed(1)}% 已用</div>
-                    {quota.primary.reset_at && <div className="text-[10px] text-muted-foreground">重置 {formatDate(quota.primary.reset_at)}</div>}
-                  </div>
-                )}
-                {quota.secondary && (
-                  <div className="rounded-lg border p-2">
-                    <div className="text-[10px] text-muted-foreground">次窗口</div>
-                    <div className="text-sm font-semibold">{quota.secondary.used_percent.toFixed(1)}% 已用</div>
-                    {quota.secondary.reset_at && <div className="text-[10px] text-muted-foreground">重置 {formatDate(quota.secondary.reset_at)}</div>}
-                  </div>
-                )}
+            {/* Every window the account has, shortest period first, each with
+                its own live countdown. */}
+            {windows.length > 0 && (
+              <div className="space-y-2">
+                {windows.map((w) => {
+                  const left = countdownFor(w.window.reset_after_seconds)
+                  const total = w.window.limit_window_seconds ?? 0
+                  const elapsedRatio = total > 0 && left != null ? 1 - left / total : 0
+                  return (
+                    <div key={w.slot} className="rounded-lg border p-2.5">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium">
+                          {w.label}
+                          {binding?.slot === w.slot && windows.length >= 2 && (
+                            <Badge variant={w.window.used_percent >= 90 ? "danger" : "warning"}>当前瓶颈</Badge>
+                          )}
+                        </span>
+                        <span className={cn("shrink-0 text-sm font-semibold tabular-nums", usageTone(w.window.used_percent))}>
+                          {w.window.used_percent.toFixed(1)}% 已用
+                        </span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                        <motion.div
+                          className={cn("h-1.5 rounded-full", usageBarTone(w.window.used_percent))}
+                          initial={{ width: 0 }}
+                          animate={{ width: `${Math.min(100, w.window.used_percent)}%` }}
+                          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+                        />
+                      </div>
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                        {left != null ? (
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {formatResetDuration(left)}后重置
+                            {total > 0 && <span className="opacity-60">（窗口已过 {Math.round(elapsedRatio * 100)}%）</span>}
+                          </span>
+                        ) : (
+                          <span />
+                        )}
+                        {w.window.reset_at && <span>{formatDate(w.window.reset_at)}</span>}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
 
-            {/* 下次重置 */}
-            {quota.next_reset_date && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <RefreshCw className="h-3.5 w-3.5" />
-                下次重置：{formatDate(quota.next_reset_date)}
+            {/* Only Plus/Team-style accounts carry two windows; make the
+                consequence of that explicit when one of them is nearly spent. */}
+            {binding && binding.window.used_percent >= 90 && (
+              <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  {binding.label}已用 {binding.window.used_percent.toFixed(1)}%
+                  {countdownFor(binding.window.reset_after_seconds) != null &&
+                    `，${formatResetDuration(countdownFor(binding.window.reset_after_seconds)!)}后才会重置`}
+                  。达限后该认证会被跳过。
+                </span>
               </div>
             )}
 
