@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.70
+
+- Reduce the sidebar footer to the version number. The gateway-health badge added in V2.67 read the providers list and, with 100+ channels configured, sat permanently on messages like "86 个渠道不稳定" — accurate but alarming and not actionable from the sidebar. Per-channel status stays on the 上游渠道 page, where every row already carries its own badge.
+
 ## V2.69
 
 - Fix the dialog close button rendering at the bottom-left instead of the top-right in dialogs that override the content layout to a flex column (the per-Key model management dialog). V2.67 positioned it with the grid-only `justify-self-end`, which is inert in a flex column, so the zero-height wrapper fell to the end of the column. It is now first in DOM order and aligned with flex, staying pinned top-right in both layouts while still not scrolling away in tall dialogs.
