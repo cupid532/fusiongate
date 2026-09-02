@@ -737,54 +737,94 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		return nil, err
 	}
 	var lastErr error
-	for i, endpoint := range urls {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil {
-			return nil, err
-		}
-		setDiscoveryAuth(req, p)
-		resp, err := a.doProviderRequest(req, p.IPPoolNodeID)
-		if err != nil {
-			lastErr = fmt.Errorf("model discovery request failed: %s", safeDiscoveryError(err, p.Credential))
-			continue
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxModelDiscoveryBody+1))
-		_ = resp.Body.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("read model list: %w", readErr)
-		}
-		if len(body) > maxModelDiscoveryBody {
-			return nil, errors.New("upstream model list is too large")
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = &discoveryHTTPError{Status: resp.StatusCode}
-			if p.AuthCredential != nil && isDiscoveryAuthenticationError(lastErr) {
+	for endpointIndex, endpoint := range urls {
+		allModels := make([]discoveredModel, 0)
+		seenModels := make(map[string]bool)
+		seenTokens := make(map[string]bool)
+		nextToken := ""
+		for page := 0; page < 100; page++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			pageURL, err := url.Parse(endpoint)
+			if err != nil {
+				return nil, err
+			}
+			if nextToken != "" {
+				q := pageURL.Query()
+				if p.Type == "gemini" {
+					q.Set("pageToken", nextToken)
+				} else {
+					q.Set("page_token", nextToken)
+				}
+				pageURL.RawQuery = q.Encode()
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL.String(), nil)
+			if err != nil {
+				return nil, err
+			}
+			setDiscoveryAuth(req, p)
+			resp, err := a.doProviderRequest(req, p.IPPoolNodeID)
+			if err != nil {
+				lastErr = fmt.Errorf("model discovery request failed: %s", safeDiscoveryError(err, p.Credential))
+				if page == 0 && endpointIndex+1 < len(urls) {
+					break
+				}
 				return nil, lastErr
 			}
-			if i+1 < len(urls) {
-				continue
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxModelDiscoveryBody+1))
+			_ = resp.Body.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("read model list: %w", readErr)
 			}
-			break
-		}
-		models, _, err := parseDiscoveryModels(body, p.Type)
-		if err != nil {
-			lastErr = err
-			if i+1 < len(urls) {
-				continue
+			if len(body) > maxModelDiscoveryBody {
+				return nil, errors.New("upstream model list is too large")
 			}
-			return nil, err
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				lastErr = &discoveryHTTPError{Status: resp.StatusCode}
+				if p.AuthCredential != nil && isDiscoveryAuthenticationError(lastErr) {
+					return nil, lastErr
+				}
+				if page == 0 && endpointIndex+1 < len(urls) {
+					break
+				}
+				return nil, lastErr
+			}
+			models, token, parseErr := parseDiscoveryModels(body, p.Type)
+			if parseErr != nil {
+				lastErr = parseErr
+				if page == 0 && endpointIndex+1 < len(urls) {
+					break
+				}
+				return nil, parseErr
+			}
+			for _, model := range models {
+				if !seenModels[model.ID] {
+					seenModels[model.ID] = true
+					allModels = append(allModels, model)
+				}
+				if len(allModels) > maxModelImportSelection {
+					return nil, errors.New("upstream returned too many models")
+				}
+			}
+			if token == "" {
+				break
+			}
+			if seenTokens[token] {
+				return nil, errors.New("upstream returned a repeated model page token")
+			}
+			seenTokens[token] = true
+			nextToken = token
 		}
-		if len(models) == 0 {
+		if len(allModels) == 0 {
 			lastErr = errors.New("upstream returned no models")
-			if i+1 < len(urls) {
-				continue
-			}
-			break
+			continue
 		}
+		sort.Slice(allModels, func(i, j int) bool { return allModels[i].ID < allModels[j].ID })
 		if p.Type == "codex_oauth" {
-			models = addCodexImageModel(models)
+			allModels = addCodexImageModel(allModels)
 		}
-		return models, nil
+		return allModels, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("no model discovery endpoint is available")

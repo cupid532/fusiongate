@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.57
+
+- Fetch all paginated discovery results with deduplication, loop protection, cancellation, and bounded model counts.
+- Make long per-Key model lists independently scrollable in the model-management dialog.
+- Distinguish discovered, Key-enabled, publicly routed, and currently routable models so existing MoAPI routes are visible without misrepresenting Key selections.
+
 ## V2.56
 
 - Separate public model routing from per-Key model management with explicit fallback and allowlist policies, including strict empty allowlists.

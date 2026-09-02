@@ -394,6 +394,8 @@ export interface ProviderKeyModel {
   latency_ms: number
   first_byte_ms: number
   last_checked_at?: string
+  public_names?: string[]
+  route_status?: string
 }
 
 export interface ProviderKey {
@@ -421,6 +423,8 @@ export interface ProviderKey {
   last_tested_at?: string
   last_test_latency_ms: number
   discovered_models: number
+  enabled_models: number
+  routable_models: number
   last_discovered_at?: string
   models: ProviderKeyModel[]
   created_at: string

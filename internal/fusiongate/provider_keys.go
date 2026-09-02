@@ -50,6 +50,8 @@ type ProviderAPIKey struct {
 	LastTestedAt       string             `json:"last_tested_at,omitempty"`
 	LastTestLatencyMS  int64              `json:"last_test_latency_ms"`
 	DiscoveredModels   int                `json:"discovered_models"`
+	EnabledModels      int                `json:"enabled_models"`
+	RoutableModels     int                `json:"routable_models"`
 	LastDiscoveredAt   string             `json:"last_discovered_at,omitempty"`
 	Models             []ProviderKeyModel `json:"models"`
 	CreatedAt          string             `json:"created_at"`
@@ -57,15 +59,17 @@ type ProviderAPIKey struct {
 }
 
 type ProviderKeyModel struct {
-	Model         string `json:"model"`
-	DisplayName   string `json:"display_name"`
-	Capabilities  string `json:"capabilities"`
-	Enabled       bool   `json:"enabled"`
-	HealthStatus  string `json:"health_status,omitempty"`
-	HealthError   string `json:"health_error,omitempty"`
-	LatencyMS     int64  `json:"latency_ms"`
-	FirstByteMS   int64  `json:"first_byte_ms"`
-	LastCheckedAt string `json:"last_checked_at,omitempty"`
+	Model         string   `json:"model"`
+	DisplayName   string   `json:"display_name"`
+	Capabilities  string   `json:"capabilities"`
+	Enabled       bool     `json:"enabled"`
+	HealthStatus  string   `json:"health_status,omitempty"`
+	HealthError   string   `json:"health_error,omitempty"`
+	LatencyMS     int64    `json:"latency_ms"`
+	FirstByteMS   int64    `json:"first_byte_ms"`
+	LastCheckedAt string   `json:"last_checked_at,omitempty"`
+	PublicNames   []string `json:"public_names,omitempty"`
+	RouteStatus   string   `json:"route_status,omitempty"`
 }
 
 type selectedProviderKey struct {
@@ -578,6 +582,27 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 				var modelEnabled int
 				if modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities, &modelEnabled, &model.HealthStatus, &model.HealthError, &model.LatencyMS, &model.FirstByteMS, &model.LastCheckedAt) == nil {
 					model.Enabled = strBool(modelEnabled)
+					if model.Enabled {
+						out[i].EnabledModels++
+					}
+					routeRows, routeErr := a.reader().Query(`SELECT public_name FROM model_routes WHERE provider_id=? AND enabled=1 AND (lower(upstream_model)=lower(?) OR lower(public_name)=lower(?)) ORDER BY public_name`, out[i].ProviderID, model.Model, model.Model)
+					if routeErr == nil {
+						for routeRows.Next() {
+							var publicName string
+							if routeRows.Scan(&publicName) == nil {
+								model.PublicNames = append(model.PublicNames, publicName)
+							}
+						}
+						_ = routeRows.Close()
+					}
+					if len(model.PublicNames) > 0 {
+						model.RouteStatus = "routed"
+						if model.Enabled && out[i].Enabled {
+							out[i].RoutableModels++
+						}
+					} else {
+						model.RouteStatus = "unrouted"
+					}
 					out[i].Models = append(out[i].Models, model)
 				}
 			}
