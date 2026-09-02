@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.74
+
+- Space the Codex window label after 受限于 and in the over-limit warning. The hourly labels begin with a digit, so "受限于5 小时限制" ran together as one token.
+
 ## V2.73
 
 - Align the Codex auth cards in a grid row. The grid stretched each card's wrapper to a common height but the card inside kept its natural height, so a Free account (one window row) stopped about 60px short of a Team account (two window rows) and their 参与调用 footers sat at different heights. Cards now fill the row height with the footer anchored to the bottom.

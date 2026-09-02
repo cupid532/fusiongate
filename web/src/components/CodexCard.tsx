@@ -161,7 +161,10 @@ export function CodexCard({ provider }: { provider: Provider }) {
                 <div className="mb-1 flex items-end justify-between gap-2">
                   <span className="min-w-0 text-xs text-muted-foreground">
                     剩余额度
-                    <span className="ml-1 text-foreground/70">· 受限于{binding.label}</span>
+                    {/* Space before the label: the labels start with a digit
+                        for the hourly windows, and "受限于5 小时限制" reads as
+                        one run-on token without it. */}
+                    <span className="ml-1 text-foreground/70">· 受限于 {binding.label}</span>
                   </span>
                   <span className={cn("shrink-0 text-2xl font-bold tracking-tight tabular-nums", usageTone(binding.window.used_percent))}>
                     {(100 - binding.window.used_percent).toFixed(1)}%
@@ -239,7 +242,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
               <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
-                  {binding.label}已用 {binding.window.used_percent.toFixed(1)}%
+                  {binding.label} 已用 {binding.window.used_percent.toFixed(1)}%
                   {countdownFor(binding.window.reset_after_seconds) != null &&
                     `，${formatResetDuration(countdownFor(binding.window.reset_after_seconds)!)}后才会重置`}
                   。达限后该认证会被跳过。
