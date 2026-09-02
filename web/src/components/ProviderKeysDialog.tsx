@@ -75,6 +75,11 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
     if (enabled) selected.add(model); else selected.delete(model)
     setModels(key, [...selected])
   }
+  const removeModel = (key: ProviderKey, model: string) => {
+    if (!confirm(`从 ${key.name || key.key_hint} 删除模型 ${model}？`)) return
+    patch.mutate({ keyId: key.id, body: { remove_models: [model] } })
+  }
+
   const addModel = (key: ProviderKey) => {
     const model = (modelDrafts[key.id] || "").trim()
     if (!model) return
@@ -129,11 +134,12 @@ export function ProviderKeysDialog({ open, onOpenChange, providerId, providerNam
                 <Button variant="outline" onClick={() => addModel(key)} disabled={!modelDrafts[key.id]?.trim() || patch.isPending}><Plus />添加模型</Button>
               </div>
               {models.length === 0 ? <div className="text-xs text-muted-foreground">尚无模型。点击上方识别按钮，或手工添加此 Key 支持的模型。</div> : <div className="max-h-72 space-y-1 overflow-y-auto pr-1">
-                {models.map((model) => <label key={model.model} className="grid cursor-pointer gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-muted/50 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto] sm:items-center sm:gap-3">
+                {models.map((model) => <label key={model.model} className="grid cursor-pointer gap-1 rounded-md px-2 py-1.5 text-xs hover:bg-muted/50 sm:grid-cols-[auto_minmax(0,1fr)_auto_auto_auto] sm:items-center sm:gap-3">
                   <input type="checkbox" checked={model.enabled} disabled={patch.isPending} onChange={(e) => toggleModel(key, model.model, e.target.checked)} aria-label={`${key.name || key.key_hint} 模型 ${model.model}`} />
                   <span className="min-w-0"><span className="block truncate font-mono text-foreground" title={model.model}>{model.display_name || model.model}</span>{model.display_name && model.display_name !== model.model && <span className="block truncate font-mono text-[11px] text-muted-foreground">{model.model}</span>}{model.health_error && <span className="block break-words text-[11px] text-destructive">{model.health_error}</span>}</span>
                   <span className="text-muted-foreground">{model.last_checked_at ? `${model.latency_ms} ms · ${formatTime(model.last_checked_at)}` : "尚未检活"}</span>
                   <span>{modelStatus(model)}</span>
+                  <Button type="button" variant="ghost" size="icon" className="h-7 w-7" title="删除此模型" aria-label={`删除模型 ${model.model}`} disabled={patch.isPending} onClick={(e) => { e.preventDefault(); removeModel(key, model.model) }}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button>
                 </label>)}
               </div>}
             </div>}

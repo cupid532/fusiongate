@@ -256,6 +256,7 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 	}
 	defer tx.Rollback()
 	previous := map[string]int{}
+	previousModels := map[string]struct{}{}
 	rows, err := tx.QueryContext(ctx, `SELECT model,enabled FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
 	if err != nil {
 		return err
@@ -265,6 +266,7 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 		var enabled int
 		if rows.Scan(&model, &enabled) == nil {
 			previous[strings.ToLower(model)] = enabled
+			previousModels[strings.ToLower(model)] = struct{}{}
 		}
 	}
 	_ = rows.Close()
@@ -283,6 +285,17 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 			enabled = 1
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,?)`, keyID, id, model.DisplayName, model.Capabilities, stamp, enabled); err != nil {
+			return err
+		}
+	}
+	// Keep manually added and previously discovered models that the upstream omits;
+	// users can remove them explicitly from the per-Key inventory.
+	for model := range previousModels {
+		if seen[model] {
+			continue
+		}
+		enabled := previous[model]
+		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,'chat,stream',?,?)`, keyID, model, model, stamp, enabled); err != nil {
 			return err
 		}
 	}

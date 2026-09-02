@@ -617,6 +617,7 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			CostMultiplier     *float64  `json:"cost_multiplier"`
 			SortOrder          *int      `json:"sort_order"`
 			Models             *[]string `json:"models"`
+			RemoveModels       []string  `json:"remove_models"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -706,6 +707,17 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		}
 		if encryptedArg != nil {
 			_, _ = a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
+		}
+		for _, model := range in.RemoveModels {
+			model = normalizeProviderKeyModel(model)
+			if model == "" {
+				continue
+			}
+			if _, err := a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, model); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			_, _ = a.db.Exec(`DELETE FROM provider_api_key_model_health WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, model)
 		}
 		if in.Models != nil {
 			selected := map[string]bool{}

@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.52
+
+- Complete per-Key model inventory controls: discovery no longer silently removes manually added or previously retained models, and every inventory row now has an explicit Delete model action.
+- Add a dedicated backend `remove_models` operation so deleting a model removes both its Key inventory entry and its model health record without affecting other Keys.
+
 ## V2.51
 
 - Remove the phantom undeletable Key row from channel editing: existing channels now render exactly their persisted Keys, and empty new-Key rows appear only after clicking Add Key.
