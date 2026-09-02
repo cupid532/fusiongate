@@ -33,22 +33,33 @@ const DialogContent = React.forwardRef<
       )}
       {...props}
     >
-      {children}
       {/*
-        `sticky` rather than `absolute`: this content box is the scroll
-        container (max-h + overflow-y-auto), and an absolutely positioned child
-        scrolls away with the content. In a tall dialog — the provider editor,
-        say — the close button used to disappear off the top as soon as you
-        scrolled. Sticky keeps it pinned to the visible top edge instead.
-        Zero height plus a negative top margin keeps it out of the grid flow so
-        it doesn't add a gap above the header.
+        The close button, pinned to the top-right in every dialog.
+
+        Two constraints make this fiddlier than `absolute right-4 top-4`:
+
+        1. By default this content box is itself the scroll container (max-h +
+           overflow-y-auto). An absolutely positioned child of a scroll
+           container scrolls away with the content, so in a tall dialog — the
+           provider editor, say — the button used to vanish off the top.
+           `sticky top-0` pins it to the visible edge instead.
+        2. Consumers may override the layout: ProviderModelManagementDialog
+           passes `flex flex-col overflow-hidden` and scrolls an inner panel.
+           So this cannot rely on grid-only properties (an earlier version used
+           `justify-self-end`, which is inert in a flex column and dropped the
+           button to the bottom-left), and it must come FIRST in DOM order so
+           it lands at the top of a flex column rather than after the footer.
+
+        `h-0` plus the negative bottom margin cancel the parent's `gap`, so a
+        zero-height row does not push the header down.
       */}
-      <div className="pointer-events-none sticky top-0 -mt-1 h-0 justify-self-end">
-        <DialogPrimitive.Close className="pointer-events-auto -mr-1 grid h-7 w-7 place-items-center rounded-md text-muted-foreground opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none">
+      <div className="pointer-events-none sticky top-0 z-20 -mb-4 flex h-0 justify-end">
+        <DialogPrimitive.Close className="pointer-events-auto -mr-1 -mt-1 grid h-7 w-7 place-items-center rounded-md bg-background/80 text-muted-foreground opacity-70 backdrop-blur-sm transition-opacity hover:bg-muted hover:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none">
           <X className="h-4 w-4" />
           <span className="sr-only">关闭</span>
         </DialogPrimitive.Close>
       </div>
+      {children}
     </DialogPrimitive.Content>
   </DialogPortal>
 ))

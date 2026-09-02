@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.69
+
+- Fix the dialog close button rendering at the bottom-left instead of the top-right in dialogs that override the content layout to a flex column (the per-Key model management dialog). V2.67 positioned it with the grid-only `justify-self-end`, which is inert in a flex column, so the zero-height wrapper fell to the end of the column. It is now first in DOM order and aligned with flex, staying pinned top-right in both layouts while still not scrolling away in tall dialogs.
+
 ## V2.68
 
 - Add a 全部模型 / 已选模型 filter to the per-Key model management dialog, each showing a live count, so a Key's current selection can be reviewed on its own instead of being hunted for among every discovered model. The filter composes with the search box, and an empty selection is distinguished from an empty search result.
