@@ -20,4 +20,16 @@ These instructions apply to every automated agent and contributor working in thi
 
 - Run `gofmt` on changed Go files.
 - Run `go test ./...` and `go vet ./...` before pushing.
+- For console changes, also run `npm run build`, `npx tsc -b`, `npx oxlint`, and `npx vitest run` in `web/`.
+- `go.mod` requires Go 1.25; if the host toolchain is older, run the Go steps in a container:
+  `docker run --rm -v "$PWD:/src" -w /src golang:1.25.12-alpine sh -c "apk add --no-cache build-base && go test ./..."`
 - Never commit `.env` files, databases, credentials, secrets, or deployment data.
+
+## Deployment parity
+
+The deployed host and `origin/main` must always agree on version and behaviour. Practically:
+
+- **Push before you deploy.** `deploy/deploy-from-origin.sh` refuses any commit that is not an ancestor of `origin/main`, refuses a dirty working tree, and refuses a commit whose `Version` matches what is already running. Do not work around these checks; fix the cause.
+- **Never edit the deployed tree.** `/opt/fusiongate/app` and `/opt/fusiongate/releases/*` are build artifacts. Source changes belong in the git checkout, committed and pushed. A previous flow lost this and left the host running code that existed in no commit.
+- **The running process must be identifiable.** `/healthz` reports `version` and `revision`; `revision` must equal a real commit SHA on `origin/main`. Keep it that way when touching build flags or the Dockerfile.
+- Built console assets under `internal/fusiongate/ui/` are committed so native `go build`/`go test` can satisfy `//go:embed ui`. The Docker build regenerates them from `web/`, so `web/` is the source of truth — run `deploy/build-web.sh` and commit the result alongside any console change.

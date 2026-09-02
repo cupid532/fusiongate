@@ -4,6 +4,14 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  /*
+    Declaring color-scheme is what makes the browser render its *own* UI to
+    match the theme: <select> popups, number-input spinners, scrollbars, focus
+    rings and native dialogs. Without it every one of those stayed light inside
+    the dark console — most visibly the channel and time-range dropdowns on the
+    渠道 / 请求账本 pages.
+  */
+  color-scheme: light;
   --background: #eae9e3;
   --foreground: #413a2c;
   --card: #fcfbfc;
@@ -40,6 +48,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: #17140f;
   --foreground: #ede7d8;
   --card: #201c15;

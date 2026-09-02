@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react"
 import { api, setCsrfToken } from "@/lib/api"
+import { notify, setUnauthorizedHandler } from "@/lib/notify"
 
 type Session = {
   authenticated: boolean
@@ -38,6 +39,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       })
       .catch(() => setAuthenticated(false))
       .finally(() => setLoading(false))
+  }, [])
+
+  // Sessions live in the gateway's memory with a 12h expiry, so they vanish on
+  // every restart. Previously nothing noticed: the console stayed fully drawn
+  // while every request 401'd behind it. Now any 401/403 from anywhere drops
+  // back to the login screen and says why.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setAuthenticated((wasAuthenticated) => {
+        if (wasAuthenticated) {
+          notify({
+            tone: "error",
+            title: "登录状态已失效",
+            description: "网关重启或会话过期，请重新登录。",
+          })
+        }
+        return false
+      })
+    })
+    return () => setUnauthorizedHandler(null)
   }, [])
 
   const login = useCallback(async (password: string) => {

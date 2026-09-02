@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { Plus, Trash2 } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
+import { useConfirmDelete } from "@/components/ui/confirm"
+import { notifyError } from "@/lib/notify"
 
 const providerTypes = [
   { value: "openai_compatible", label: "OpenAI 兼容" },
@@ -43,6 +45,42 @@ export function ProviderDialog({
   onCreated?: (provider: { id: number; name: string }) => void
 }) {
   const qc = useQueryClient()
+  const confirmDelete = useConfirmDelete()
+
+  // The per-key egress / cost-multiplier / delete controls below drive the API
+  // directly rather than through useMutation, so the global mutation error
+  // handler never sees their failures. These wrappers give them the same
+  // "it said something when it broke" behaviour.
+  const refreshKeys = useCallback(
+    () => qc.invalidateQueries({ queryKey: ["provider-keys", provider?.id] }),
+    [qc, provider?.id]
+  )
+  const patchKey = useCallback(
+    async (keyId: number, body: Record<string, unknown>) => {
+      if (!provider) return
+      try {
+        await api(`/api/admin/providers/${provider.id}/keys/${keyId}`, { method: "PATCH", body: JSON.stringify(body) })
+        await refreshKeys()
+      } catch (err) {
+        notifyError("更新 Key 失败", err instanceof Error ? err.message : undefined)
+        await refreshKeys()
+      }
+    },
+    [provider, refreshKeys]
+  )
+  const removeKey = useCallback(
+    async (keyId: number) => {
+      if (!provider) return
+      try {
+        await api(`/api/admin/providers/${provider.id}/keys/${keyId}`, { method: "DELETE" })
+        await refreshKeys()
+      } catch (err) {
+        notifyError("删除 Key 失败", err instanceof Error ? err.message : undefined)
+      }
+    },
+    [provider, refreshKeys]
+  )
+
   const [newKeys, setNewKeys] = useState<Array<{ name: string; api_key: string; egress_mode: string; ip_pool_node_id: number; cost_multiplier: number }>>([])
   const [form, setForm] = useState({
     name: "",
@@ -183,9 +221,9 @@ export function ProviderDialog({
             </div>
             {provider && existingKeys.length > 0 && <div className="space-y-2">{existingKeys.map((key) => <div key={key.id} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_minmax(0,1fr)_8rem_auto_auto_auto]">
               <Input defaultValue={key.name || `Key ${key.id}`} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ name: e.target.value }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} />
-              <select defaultValue={key.egress_mode === "node" ? `node:${key.ip_pool_node_id}` : key.egress_mode} onChange={(e) => { const [mode, node] = e.target.value.split(":"); api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ egress_mode: mode, ip_pool_node_id: mode === "node" ? Number(node) : null }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"><option value="inherit">继承渠道出口</option><option value="direct">直连</option>{nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>节点：{node.name}</option>)}</select>
-              <div className="flex min-w-0 items-center gap-1"><span className="shrink-0 text-xs text-muted-foreground">成本倍率</span><Input type="number" min="0.01" max="1000" step="0.01" defaultValue={key.cost_multiplier || 1} onBlur={(e) => api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "PATCH", body: JSON.stringify({ cost_multiplier: Number(e.target.value) }) }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] }))} aria-label={`${key.name} 成本倍率`} /></div>
-              <Button type="button" variant="ghost" size="icon" title="删除 Key" onClick={() => { if (confirm(`删除 ${key.name || key.key_hint}？`)) api(`/api/admin/providers/${provider.id}/keys/${key.id}`, { method: "DELETE" }).then(() => qc.invalidateQueries({ queryKey: ["provider-keys", provider.id] })) }} aria-label={`删除 ${key.name || key.key_hint}`}><Trash2 /></Button>
+              <select defaultValue={key.egress_mode === "node" ? `node:${key.ip_pool_node_id}` : key.egress_mode} onChange={(e) => { const [mode, node] = e.target.value.split(":"); void patchKey(key.id, { egress_mode: mode, ip_pool_node_id: mode === "node" ? Number(node) : null }) }} className="h-9 rounded-md border border-input bg-transparent px-2 text-sm"><option value="inherit">继承渠道出口</option><option value="direct">直连</option>{nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>节点：{node.name}</option>)}</select>
+              <div className="flex min-w-0 items-center gap-1"><span className="shrink-0 text-xs text-muted-foreground">成本倍率</span><Input type="number" min="0.01" max="1000" step="0.01" defaultValue={key.cost_multiplier || 1} onBlur={(e) => { void patchKey(key.id, { cost_multiplier: Number(e.target.value) }) }} aria-label={`${key.name} 成本倍率`} /></div>
+              <Button type="button" variant="ghost" size="icon" title="删除 Key" onClick={async () => { if (await confirmDelete(`Key ${key.name || key.key_hint}`)) void removeKey(key.id) }} aria-label={`删除 ${key.name || key.key_hint}`}><Trash2 /></Button>
             </div>)}</div>}
             <div className="space-y-2">
               {newKeys.map((key, index) => <div key={index} className="grid gap-2 rounded-md border p-2 sm:grid-cols-[8rem_minmax(0,1fr)_9rem_7rem_auto]">

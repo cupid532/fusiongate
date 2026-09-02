@@ -13,6 +13,7 @@ import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { ModelAliasManager } from "@/components/ModelAliasManager"
 import { PricingDialog } from "@/components/PricingDialog"
 import { RouteDialog } from "@/components/RouteDialog"
+import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 
 const price = (micros: number) => `$${(micros / 1_000_000).toFixed(micros % 1_000_000 === 0 ? 0 : 3)}`
 const pricingSource = (source?: string) => !source ? "未定价" : source === "manual" ? "手工" : source.includes("openrouter.ai") ? "OpenRouter" : "官网"
@@ -46,6 +47,8 @@ function sortRoutes(routes: Route[], strategy: RoutingStrategy) {
 
 export function Routes() {
   const qc = useQueryClient()
+  const confirm = useConfirm()
+  const confirmDelete = useConfirmDelete()
   const [q, setQ] = useState("")
   const [pricingOpen, setPricingOpen] = useState(false)
   const [pricingModel, setPricingModel] = useState("")
@@ -145,10 +148,10 @@ export function Routes() {
                   <select
                     aria-label={`将 ${item.provider_name || item.upstream_model} 移入其他故障转移组`}
                     value=""
-                    onChange={(event) => {
+                    onChange={async (event) => {
                       const target = event.target.value
                       if (!target) return
-                      if (confirm(`将「${item.provider_name} / ${item.upstream_model}」加入故障转移组「${target}」？\n\n上游模型名保持不变。`)) updateRoute.mutate({ id: item.id, patch: { public_name: target } })
+                      if (await confirm({ title: `加入故障转移组「${target}」？`, description: `「${item.provider_name} / ${item.upstream_model}」将并入该组，上游模型名保持不变。`, confirmLabel: "加入" })) updateRoute.mutate({ id: item.id, patch: { public_name: target } })
                     }}
                     className="h-8 max-w-40 rounded-md border border-input bg-transparent px-2 text-xs"
                     title="加入其他故障转移组"
@@ -157,7 +160,7 @@ export function Routes() {
                     {modelNames.filter((model) => model !== name).map((model) => <option key={model} value={model}>{model}</option>)}
                   </select>
                   <Button variant={item.enabled ? "outline" : "ghost"} size="sm" onClick={() => updateRoute.mutate({ id: item.id, patch: { enabled: !item.enabled } })}>{item.enabled ? "路由已启用" : "路由已停用"}</Button>
-                  <Button variant="ghost" size="icon" onClick={() => { if (confirm(`删除路由「${name} / ${item.upstream_model}」？`)) remove.mutate(item.id) }} aria-label="删除路由"><Trash2 className="text-destructive" /></Button>
+                  <Button variant="ghost" size="icon" onClick={async () => { if (await confirmDelete(`路由「${name} / ${item.upstream_model}」`)) remove.mutate(item.id) }} aria-label="删除路由"><Trash2 className="text-destructive" /></Button>
                 </div>
               </div>
             })}</div>

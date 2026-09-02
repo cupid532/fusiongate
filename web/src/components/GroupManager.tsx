@@ -12,9 +12,11 @@ import {
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { useConfirmDelete } from "@/components/ui/confirm"
 
 export function GroupManager({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
   const qc = useQueryClient()
+  const confirmDelete = useConfirmDelete()
   const [name, setName] = useState("")
 
   const { data: groups = [], isLoading } = useQuery({
@@ -68,8 +70,8 @@ export function GroupManager({ open, onOpenChange }: { open: boolean; onOpenChan
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => {
-                    if (confirm(`删除分组「${g.name}」？成员渠道会变为未分组。`)) remove.mutate(g.id)
+                  onClick={async () => {
+                    if (await confirmDelete(`分组「${g.name}」`, "成员渠道会变为未分组，渠道本身不会被删除。")) remove.mutate(g.id)
                   }}
                 >
                   删除

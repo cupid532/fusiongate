@@ -112,7 +112,12 @@ export function Login() {
               <Label htmlFor="password">管理员密码</Label>
               <Input
                 id="password"
+                // name + autocomplete are what let a password manager offer to
+                // save this credential and fill it next time. Without them the
+                // field was invisible to 1Password, Keychain and friends.
+                name="password"
                 type="password"
+                autoComplete="current-password"
                 placeholder="输入管理员密码"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}

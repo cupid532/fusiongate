@@ -5,9 +5,39 @@
     <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="fusiongate-version" content="{{FUSIONGATE_VERSION}}" />
+    <meta name="color-scheme" content="light dark" />
     <title>FusionGate Console</title>
-    <script type="module" crossorigin src="/ui/assets/index-bSYUwYKe.js"></script>
-    <link rel="stylesheet" crossorigin href="/ui/assets/index-BxNZY3O4.css">
+    <script>
+      /*
+        Pre-paint theme resolution. Deliberately inline, deliberately not a
+        module, and deliberately ahead of the stylesheet.
+
+        The theme class is applied by React in providers/theme.tsx, which only
+        runs once the bundle has parsed. Until then <html> carried no class, so
+        :root — the light palette — painted first and every dark-theme load
+        flashed a full viewport of #eae9e3 before flipping. This resolves the
+        same value from the same localStorage key synchronously, before the
+        first paint, so there is nothing to flip.
+
+        Keep this in sync with providers/theme.tsx (key: fusiongate-theme).
+        Wrapped in try/catch because localStorage throws outright in some
+        privacy modes, and a broken <head> script would take the page with it.
+      */
+      ;(function () {
+        try {
+          var stored = localStorage.getItem("fusiongate-theme")
+          var dark =
+            stored === "dark" ||
+            (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches)
+          if (dark) document.documentElement.classList.add("dark")
+        } catch (e) {
+          /* no stored preference available; fall through to the light default */
+        }
+      })()
+    </script>
+    <script type="module" crossorigin src="/ui/assets/index-Qs2Cab3X.js"></script>
+    <link rel="modulepreload" crossorigin href="/ui/assets/button-BZXaLaJ4.js">
+    <link rel="stylesheet" crossorigin href="/ui/assets/index-ClgWvHVA.css">
   </head>
   <body>
     <div id="root"></div>

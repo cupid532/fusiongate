@@ -164,7 +164,7 @@ curl -fsSL https://raw.githubusercontent.com/cupid532/fusiongate/main/deploy/ins
 - 启用非 root 容器、只读根文件系统、能力裁剪和健康检查；
 - 安装 `fusiongatectl` 运维命令。
 
-常用操作：
+常用操作（安装器托管的部署）：
 
 ```bash
 sudo fusiongatectl status
@@ -173,6 +173,13 @@ sudo fusiongatectl update
 sudo fusiongatectl backup
 fusiongatectl health
 ```
+
+如果该主机不是由 `deploy/install.sh` 安装的（即没有
+`/opt/fusiongate/.fusiongate-install`，Compose 与 Caddy 由你自己维护），
+`fusiongatectl` 不适用。请改用 `deploy/deploy-from-origin.sh` 升级——它只允许
+部署已经推送到 `origin/main` 的提交，并在部署后校验 `/healthz` 上报的
+`version` 与 `revision`，从而保证服务器与 GitHub 始终一致。两种部署模式的
+差异与操作方式见 [DEPLOYMENT.md](DEPLOYMENT.md#two-deployment-models)。
 
 建议先下载并审阅脚本，再执行：
 

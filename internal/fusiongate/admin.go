@@ -1931,8 +1931,40 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			args = append(args, like)
 		}
 	}
+	// Aggregate over every row the filter matches, before the page limit is
+	// applied. The console's summary tiles ("当前范围请求 / 成功 / 失败 /
+	// 总 Token · 费用") used to be summed client-side over whatever the page
+	// returned, so with the default limit of 100 against a ledger holding tens
+	// of thousands of rows they silently reported the newest 100 as if that
+	// were the whole selected range.
+	whereClause := strings.Join(where, " AND ")
+	filterArgs := append([]any(nil), args...)
+	var (
+		total        int64
+		okCount      int64
+		failedCount  int64
+		runningCount int64
+		inputTokens  int64
+		outputTokens int64
+		costMicros   int64
+	)
+	summaryQuery := `SELECT COUNT(*),
+		COALESCE(SUM(CASE WHEN l.completed_at IS NOT NULL AND l.success=1 THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN l.completed_at IS NOT NULL AND l.success=0 THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN l.completed_at IS NULL THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(l.input_tokens),0),
+		COALESCE(SUM(l.output_tokens),0),
+		COALESCE(SUM(l.cost_micros),0)
+		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + whereClause
+	if err := a.reader().QueryRow(summaryQuery, filterArgs...).Scan(
+		&total, &okCount, &failedCount, &runningCount, &inputTokens, &outputTokens, &costMicros,
+	); err != nil {
+		fail(w, 500, "database_error", err.Error())
+		return
+	}
+
 	args = append(args, limit)
-	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id DESC LIMIT ?`
+	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + whereClause + ` ORDER BY l.id DESC LIMIT ?`
 	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
@@ -1966,7 +1998,27 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"items": out, "count": len(out), "server_now": serverNow.Format(time.RFC3339Nano)})
+	writeJSON(w, 200, map[string]any{
+		"items": out,
+		// count is the size of this page; total is how many rows the filter
+		// actually matches. They differ whenever the ledger is larger than the
+		// limit, and the console needs both to say "最新 100 / 共 18,608".
+		"count":      len(out),
+		"total":      total,
+		"limit":      limit,
+		"truncated":  total > int64(len(out)),
+		"server_now": serverNow.Format(time.RFC3339Nano),
+		"totals": map[string]any{
+			"requests":      total,
+			"success":       okCount,
+			"failed":        failedCount,
+			"running":       runningCount,
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
+			"total_tokens":  inputTokens + outputTokens,
+			"cost_micros":   costMicros,
+		},
+	})
 }
 
 func validateUpstream(raw string, cfg Config) error {

@@ -1,5 +1,24 @@
 # Changelog
 
+## V2.67
+
+- Surface expired sessions instead of failing silently: any 401/403 now returns the console to the login screen with an explanation, rather than leaving a fully drawn UI whose every request failed behind it.
+- Report every failed read and write. A single mutation- and query-cache error handler covers all of the console's mutations, replacing the handful of ad-hoc `onError` callbacks; failed table loads render a distinct error state with a retry instead of falling through to the "no data" empty state.
+- Replace all native `confirm()` and `alert()` dialogs with themed in-app equivalents, and gate clearing the request ledger behind type-to-confirm.
+- Return true ledger totals from `/api/admin/requests`: `total`, `limit`, `truncated`, and a `totals` aggregate computed over the whole filtered range. The console's summary tiles previously summed only the returned page, reporting the newest 100 rows as if they were the entire selection.
+- Declare `color-scheme` per theme so native selects, number inputs, scrollbars, and focus rings follow the dark console instead of staying light.
+- Resolve the theme before first paint via an inline script, removing the full-viewport light flash on every load, and stop freezing the OS preference into local storage on first mount.
+- Fetch upstream balances only for channels that have one configured, cutting a fan-out of one request per channel down to the few that return data.
+- Derive the sidebar's gateway status from live channel health instead of hard-coding "网关运行正常".
+- Fix drag-to-reorder landing on the wrong side of the drop target when dragging downwards, and show where the row will land.
+- Keep the dialog close button reachable in tall scrolling dialogs, and restore spacing between stacked dialog buttons on narrow screens.
+- Debounce the request-ledger search so typing issues one query per pause rather than one per keystroke.
+- Check the response status before saving an export, so an expired session no longer writes an error body to disk as a `.json` download.
+- Open the channel editor from a row's name; the base URL stays as an explicit external link.
+- Route unknown location hashes to the dashboard instead of rendering a blank page.
+- Add `autocomplete`/`name` to the admin password field so password managers can save and fill it.
+- Close the mobile navigation drawer on Escape, mark the active nav item with `aria-current`, and take the full-screen scrim out of the tab order.
+
 ## V2.57
 
 - Fetch all paginated discovery results with deduplication, loop protection, cancellation, and bounded model counts.

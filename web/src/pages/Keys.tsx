@@ -11,6 +11,7 @@ import { CopyButton } from "@/components/ui/copy-button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
+import { useConfirmDelete } from "@/components/ui/confirm"
 
 type KeyForm = {
   name: string
@@ -36,6 +37,7 @@ const emptyForm: KeyForm = {
 
 export function Keys() {
   const qc = useQueryClient()
+  const confirmDelete = useConfirmDelete()
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState<KeyForm>(emptyForm)
   const [revealed, setRevealed] = useState("")
@@ -215,8 +217,8 @@ export function Keys() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => {
-                              if (confirm(`删除密钥「${k.name}」？`)) remove.mutate(k.id)
+                            onClick={async () => {
+                              if (await confirmDelete(`访问密钥「${k.name}」`, "使用该密钥的客户端会立即失去访问权限。")) remove.mutate(k.id)
                             }}
                             aria-label={`删除 ${k.name}`}
                           >

@@ -191,9 +191,27 @@ export interface RequestLedgerRow {
   stale?: boolean
 }
 
+export interface RequestLedgerTotals {
+  requests: number
+  success: number
+  failed: number
+  running: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cost_micros: number
+}
+
 export interface RequestLedgerPayload {
   items: RequestLedgerRow[]
+  /** Rows in this page. */
   count: number
+  /** Rows matching the filter across the whole ledger, ignoring `limit`. */
+  total: number
+  limit: number
+  truncated: boolean
+  /** Aggregates over the full filtered range, not just the returned page. */
+  totals: RequestLedgerTotals
   server_now: string
 }
 

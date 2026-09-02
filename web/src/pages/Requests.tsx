@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { RefreshCw, Search, Trash2, Download, HardDrive, Save } from "lucide-react"
-import { api, getCsrfToken } from "@/lib/api"
+import { api, apiDownload, saveBlob } from "@/lib/api"
+import { notifySuccess } from "@/lib/notify"
 import type { Provider, RequestLedgerPayload, LedgerStatus } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
@@ -10,6 +11,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { SegmentedTabs } from "@/components/ui/segmented-tabs"
+import { useConfirm } from "@/components/ui/confirm"
+import { QueryError } from "@/components/ui/query-error"
+import { useDebounced } from "@/lib/use-debounced"
 
 type StatusFilter = "all" | "running" | "success" | "failed"
 
@@ -59,9 +63,14 @@ function LiveClock({ startIso, phase, stale }: { startIso: string; phase: "first
   )
 }
 
+const PAGE_LIMIT = 100
+
 export function Requests() {
+  const confirm = useConfirm()
   const [status, setStatus] = useState<StatusFilter>("all")
   const [q, setQ] = useState("")
+  // The query keys off the debounced value; the input stays fully responsive.
+  const debouncedQ = useDebounced(q, 350)
   const [providerId, setProviderId] = useState("")
   const [range, setRange] = useState("")
   const [view, setView] = useState<"list" | "group">("list")
@@ -102,34 +111,31 @@ export function Requests() {
     if (Number.isFinite(parsed) && parsed > 0) maxMb = parsed
   }
 
-  async function exportLedger() {
-    // Export honors the time-range and status filters (the same ones the list uses).
-    const q = new URLSearchParams()
-    if (status !== "all") q.set("status", status)
-    if (range) {
-      const now = new Date()
-      const ms: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
-      if (ms[range]) q.set("from", new Date(now.getTime() - ms[range]).toISOString())
-    }
-    const qs = q.toString()
-    try {
-      const res = await fetch(`/api/admin/ledger/export${qs ? `?${qs}` : ""}`, { headers: { "X-CSRF-Token": getCsrfToken() } })
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.json`
-      a.click()
-      URL.revokeObjectURL(url)
-    } catch {
-      /* ignore */
-    }
-  }
+  const exportLedger = useMutation({
+    mutationFn: async () => {
+      // Export honors the time-range and status filters (the same ones the list uses).
+      const params = new URLSearchParams()
+      if (status !== "all") params.set("status", status)
+      if (range) {
+        const now = new Date()
+        const ms: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
+        if (ms[range]) params.set("from", new Date(now.getTime() - ms[range]).toISOString())
+      }
+      const qs = params.toString()
+      // apiDownload checks res.ok. The previous version did not, and swallowed
+      // every failure in an empty catch — so an expired session wrote the 401
+      // error body to disk as fusiongate-requests-<date>.json and looked like
+      // a successful export.
+      const blob = await apiDownload(`/api/admin/ledger/export${qs ? `?${qs}` : ""}`)
+      saveBlob(blob, `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.json`)
+    },
+    onSuccess: () => notifySuccess("账本已导出"),
+  })
 
   const params = useMemo(() => {
-    const p = new URLSearchParams({ limit: "100" })
+    const p = new URLSearchParams({ limit: String(PAGE_LIMIT) })
     if (status !== "all") p.set("status", status)
-    if (q.trim()) p.set("q", q.trim())
+    if (debouncedQ.trim()) p.set("q", debouncedQ.trim())
     if (providerId) p.set("provider_id", providerId)
     if (range) {
       const now = new Date()
@@ -137,10 +143,10 @@ export function Requests() {
       if (ms[range]) p.set("from", new Date(now.getTime() - ms[range]).toISOString())
     }
     return p.toString()
-  }, [status, q, providerId, range])
+  }, [status, debouncedQ, providerId, range])
 
   const requestsQuery = useQuery({
-    queryKey: ["requests", status, q, providerId, range],
+    queryKey: ["requests", status, debouncedQ, providerId, range],
     queryFn: () => api<RequestLedgerPayload>(`/api/admin/requests?${params}`),
     refetchInterval: 5000,
   })
@@ -148,6 +154,8 @@ export function Requests() {
   const isLoading = requestsQuery.isLoading
   const isFetching = requestsQuery.isFetching
   const refetch = requestsQuery.refetch
+  const truncated = requestsQuery.data?.truncated ?? false
+  const totalRows = requestsQuery.data?.total ?? rows.length
 
   const groupByModel = useMemo(() => {
     const map = new Map<string, { model: string; count: number; success: number; failed: number; tokens: number; cost_micros: number; avg_latency: number }>()
@@ -167,16 +175,20 @@ export function Requests() {
     return { list, maxTokens: Math.max(1, ...list.map((g) => g.tokens)) }
   }, [rows])
 
+  // Comes straight from the server's aggregate over the whole filtered range.
+  // Summing the returned page here instead — which is what this did before —
+  // reported the newest 100 rows under a "当前范围" label.
   const summary = useMemo(() => {
-    let cost = 0, tokens = 0, failed = 0, ok = 0
-    for (const r of rows) {
-      cost += r.cost_micros
-      tokens += r.total_tokens
-      if (r.success) ok++
-      else if (!r.running) failed++
+    const totals = requestsQuery.data?.totals
+    if (!totals) return { count: 0, ok: 0, failed: 0, tokens: 0, cost: 0 }
+    return {
+      count: totals.requests,
+      ok: totals.success,
+      failed: totals.failed,
+      tokens: totals.total_tokens,
+      cost: totals.cost_micros,
     }
-    return { count: rows.length, ok, failed, tokens, cost }
-  }, [rows])
+  }, [requestsQuery.data?.totals])
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
@@ -193,9 +205,9 @@ export function Requests() {
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
-          { label: "当前范围请求", value: String(summary.count), tone: "text-foreground" },
-          { label: "成功", value: String(summary.ok), tone: "text-emerald-600" },
-          { label: "失败", value: String(summary.failed), tone: summary.failed ? "text-destructive" : "text-muted-foreground" },
+          { label: "当前范围请求", value: summary.count.toLocaleString(), tone: "text-foreground" },
+          { label: "成功", value: summary.ok.toLocaleString(), tone: "text-emerald-600" },
+          { label: "失败", value: summary.failed.toLocaleString(), tone: summary.failed ? "text-destructive" : "text-muted-foreground" },
           { label: "总 Token · 费用", value: `${formatTokens(summary.tokens)} · ${formatCost(summary.cost)}`, tone: "text-primary" },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border bg-card p-3">
@@ -250,16 +262,34 @@ export function Requests() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2 border-t pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
-              <Button variant="outline" size="sm" onClick={() => exportLedger()} disabled={ledger?.rows === 0}>
+              {/* `ledger` is undefined while loading, and `undefined === 0` is
+                  false — so these used to be clickable before the row count had
+                  even arrived. Gate on the loaded value instead. */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => exportLedger.mutate()}
+                disabled={exportLedger.isPending || !ledger || ledger.rows === 0}
+              >
                 <Download className="h-3.5 w-3.5" />
-                导出
+                {exportLedger.isPending ? "导出中…" : "导出"}
               </Button>
               <Button
                 variant="destructive"
                 size="sm"
-                disabled={clearLedger.isPending || ledger?.rows === 0}
-                onClick={() => {
-                  if (window.confirm("确定清空整个请求账本？此操作不可恢复。")) clearLedger.mutate()
+                disabled={clearLedger.isPending || !ledger || ledger.rows === 0}
+                onClick={async () => {
+                  // Type-to-confirm: this drops every row permanently, and the
+                  // ledger routinely holds tens of thousands of them. A single
+                  // native OK button was too easy to hit by reflex.
+                  const ok = await confirm({
+                    title: "清空整个请求账本？",
+                    description: `将永久删除 ${(ledger?.rows ?? 0).toLocaleString()} 行请求记录（约 ${ledger?.used_mb ?? 0} MB），用量与费用统计会同时归零。此操作不可恢复，建议先导出备份。`,
+                    destructive: true,
+                    confirmLabel: "永久清空",
+                    requireText: "清空账本",
+                  })
+                  if (ok) clearLedger.mutate()
                 }}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -338,6 +368,14 @@ export function Requests() {
 
           {isLoading ? (
             <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
+          ) : requestsQuery.isError ? (
+            <QueryError
+              title="无法加载请求账本"
+              error={requestsQuery.error}
+              onRetry={() => void refetch()}
+              retrying={isFetching}
+              className="m-4 border-none bg-transparent"
+            />
           ) : rows.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">当前筛选范围还没有请求</div>
           ) : view === "group" ? (
@@ -425,6 +463,23 @@ export function Requests() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/*
+            The list is capped at PAGE_LIMIT rows. Saying so matters: with tens
+            of thousands of rows in the ledger the table silently showed the
+            newest hundred and gave no hint that anything was missing, while
+            the group-by-model view aggregated only that same hundred.
+          */}
+          {truncated && !isLoading && !requestsQuery.isError && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground">
+              <span>
+                显示最新 <span className="font-medium tabular-nums text-foreground">{rows.length}</span> 条，
+                当前筛选共 <span className="font-medium tabular-nums text-foreground">{totalRows.toLocaleString()}</span> 条
+                {view === "group" && "（分组统计仅基于已加载的这些记录，上方汇总为全量）"}
+              </span>
+              <span>需要完整数据请使用「导出」，或收窄时间范围与筛选条件。</span>
             </div>
           )}
         </CardContent>

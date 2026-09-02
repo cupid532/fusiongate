@@ -22,6 +22,8 @@ import { CodexCard } from "@/components/CodexCard"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { ModelPicker } from "@/components/ModelPicker"
 import { AuthEgressDialog } from "@/components/AuthEgressDialog"
+import { useConfirmDelete } from "@/components/ui/confirm"
+import { notify } from "@/lib/notify"
 
 const platformLabels: Record<string, string> = {
   codex: "Codex (ChatGPT)",
@@ -45,6 +47,7 @@ function statusBadge(p: Provider) {
 
 export function AuthFiles() {
   const qc = useQueryClient()
+  const confirmDelete = useConfirmDelete()
   const [importOpen, setImportOpen] = useState(false)
   const [oauthOpen, setOauthOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -76,7 +79,7 @@ export function AuthFiles() {
 
   const batchModelSync = useMutation({
     mutationFn: async (ids: number[]) => api<{ providers: number; succeeded: number; failed: number; models: number }>("/api/admin/auth/models/sync", { method: "POST", body: JSON.stringify({ provider_ids: ids }) }),
-    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["providers"] }); alert(`模型识别完成：${r.succeeded}/${r.providers} 个认证成功，发现 ${r.models} 个模型${r.failed ? `，${r.failed} 个失败` : ""}`) },
+    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["providers"] }); notify({ tone: r.failed ? "error" : "success", title: "模型识别完成", description: `${r.succeeded}/${r.providers} 个认证成功，发现 ${r.models} 个模型${r.failed ? `，${r.failed} 个失败` : ""}`, duration: 10_000 }) },
   })
 
   const batchHealthCheck = useMutation({
@@ -84,7 +87,7 @@ export function AuthFiles() {
       api<{ total: number }>("/api/admin/health-checks", { method: "POST", body: JSON.stringify({ provider_ids: ids, model_scope: "all" }) }),
     onSuccess: (j) => {
       setSelected(new Set())
-      alert(`检活任务已启动，共 ${j.total} 个模型。可在「质量检测」页查看结果。`)
+      notify({ tone: "success", title: "检活任务已启动", description: `共 ${j.total} 个模型，可在「质量检测」页查看结果。`, duration: 8_000 })
     },
   })
 
@@ -236,8 +239,8 @@ export function AuthFiles() {
                                 <Button
                                   variant="ghost"
                                   size="icon"
-                                  onClick={() => {
-                                    if (confirm(`删除认证文件「${p.name}」？`)) remove.mutate(p.id)
+                                  onClick={async () => {
+                                    if (await confirmDelete(`认证文件「${p.name}」`, "使用该认证的模型路由会同时失效。")) remove.mutate(p.id)
                                   }}
                                   aria-label={`删除 ${p.name}`}
                                 >

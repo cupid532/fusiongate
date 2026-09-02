@@ -2,11 +2,27 @@
 
 The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and proxies requests to FusionGate over an isolated Docker network; the application container is not published directly on the host.
 
+## Two deployment models
+
+There are two supported ways to run FusionGate, and they are operated differently. Pick one per host and know which one you are on — `ls /opt/fusiongate/.fusiongate-install` tells you.
+
+| | Installer-managed | Self-managed |
+|---|---|---|
+| Set up by | `deploy/install.sh` | hand-written Compose + existing host Caddy |
+| Marker file | `/opt/fusiongate/.fusiongate-install` exists | absent |
+| Compose file | `/opt/fusiongate/app/deploy/compose.production.yml` | `/opt/fusiongate/docker-compose.yml` |
+| Env file | `/opt/fusiongate/config/compose.env` | `/opt/fusiongate/config/fusiongate.env` |
+| Caddy | container, managed by the bundle | host service, shared with other sites |
+| Upgrades | `fusiongatectl update` | [`deploy/deploy-from-origin.sh`](#self-managed-upgrades) |
+
+Everything below applies to both models except the sections marked otherwise. **`fusiongatectl` requires the installer-managed layout** and will refuse to run without the marker file — on a self-managed host, use `deploy/deploy-from-origin.sh` and plain `docker compose` instead.
+
 ## Quick navigation
 
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Operations](#operations)
+- [Self-managed upgrades](#self-managed-upgrades)
 - [OAuth production notes](#oauth-production-notes)
 - [Firewall](#firewall)
 - [Restore](#restore)
@@ -49,7 +65,10 @@ The installer itself prompts securely by default. `FUSIONGATE_ADMIN_PASSWORD_FIL
 
 | Path | Purpose |
 |---|---|
-| `/opt/fusiongate/app` | Managed application source and Compose definition |
+| `/opt/fusiongate/app` | Managed application source and Compose definition (installer-managed only) |
+| `/opt/fusiongate/releases/<sha>` | Immutable `git archive` export used as the build context (self-managed) |
+| `/opt/fusiongate/last-deployed-commit` | Commit SHA of the running image, written after a verified deploy |
+| `/opt/fusiongate/last-rollback-image` | Image tag the previous deploy can be reverted to |
 | `/opt/fusiongate/config` | Root-only configuration and secret source files |
 | `/opt/fusiongate/data` | SQLite database and WAL files, owned by container UID 10001 |
 | `/opt/fusiongate/quality-detector-data` | Quality-detector SQLite sessions and reports, owned by container UID 10002; API keys are not persisted |
@@ -81,6 +100,55 @@ sudo fusiongatectl logs 100
 ```
 
 Backups briefly stop the FusionGate application container to produce a consistent archive. The archive contains the database and encryption key and must be protected like production credentials.
+
+## Self-managed upgrades
+
+On a self-managed host, upgrades go through `deploy/deploy-from-origin.sh`. Its purpose is to make one property true at all times: **the running process is a commit that exists on `origin/main`.**
+
+```bash
+# deploy whatever origin/main currently points at
+sudo /root/work/fusiongate-ui-strategy/deploy/deploy-from-origin.sh
+
+# check every precondition without building anything
+sudo FUSIONGATE_DRY_RUN=1 .../deploy/deploy-from-origin.sh
+
+# roll back to an earlier pushed commit
+sudo .../deploy/deploy-from-origin.sh 8bf7d9d
+```
+
+The script refuses to proceed — it does not warn and continue — when:
+
+- the checkout has uncommitted changes, so what you are looking at is not what would ship;
+- the requested commit is not an ancestor of `origin/main`, i.e. it was never pushed;
+- `internal/fusiongate/version.go` still reports the version that is already running, which per [AGENTS.md](AGENTS.md) means the bump was forgotten.
+
+What it then does:
+
+1. `git archive` the exact commit into `releases/<short-sha>/`. The build context therefore contains only committed content — a stray local file cannot be baked into an image even by accident.
+2. Build with `org.opencontainers.image.revision` / `.version` set from that commit, and assert the resulting labels match before the image is allowed near traffic.
+3. Tag the outgoing image `fusiongate:rollback-<timestamp>`.
+4. Recreate `fusiongate` **and** `quality-detector` together, then wait for both container health checks.
+5. On health failure, automatically restore the rollback image and abandon the deploy.
+6. Verify `/healthz` reports the intended `revision` and `version`, then record the commit in `last-deployed-commit`.
+7. Prune old rollback images, candidate images, release exports, and build cache.
+
+### Verifying parity at any time
+
+```bash
+# what the host is running
+curl -fsS https://api.codelee.de/healthz | jq '{version, revision}'
+
+# what GitHub has
+git -C /root/work/fusiongate-ui-strategy fetch origin --quiet
+git -C /root/work/fusiongate-ui-strategy rev-parse origin/main
+```
+
+The `revision` and `origin/main` values must be identical. If they are not, the host is running something GitHub does not have (or vice versa) and the next deploy should reconcile it.
+
+> The build context is a throwaway export, not a checkout. Do not edit
+> `/opt/fusiongate/app` or `/opt/fusiongate/releases/*` and expect it to
+> survive — all source changes belong in the git checkout, committed and
+> pushed.
 
 ## OAuth production notes
 

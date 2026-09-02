@@ -10,9 +10,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
+import { useConfirmDelete } from "@/components/ui/confirm"
+import { notify } from "@/lib/notify"
 
 export function IPPool() {
   const qc = useQueryClient()
+  const confirmDelete = useConfirmDelete()
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState("")
   const [link, setLink] = useState("")
@@ -129,7 +132,7 @@ export function IPPool() {
                             size="sm"
                             onClick={() =>
                               test.mutate(n.id, {
-                                onSuccess: (r) => alert(`状态：${r.status}\n出口 IP：${r.exit_ip}\n延迟：${r.latency_ms} ms`),
+                                onSuccess: (r) => notify({ tone: r.status === "ok" ? "success" : "error", title: `${n.name}：${r.status === "ok" ? "连通" : r.status}`, description: `出口 IP ${r.exit_ip} · 延迟 ${r.latency_ms} ms`, duration: 12_000 }),
                               })
                             }
                           >
@@ -139,8 +142,8 @@ export function IPPool() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => {
-                              if (confirm(`删除节点「${n.name}」？`)) remove.mutate(n.id)
+                            onClick={async () => {
+                              if (await confirmDelete(`节点「${n.name}」`)) remove.mutate(n.id)
                             }}
                             aria-label={`删除 ${n.name}`}
                           >

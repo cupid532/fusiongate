@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
+import { useConfirm } from "@/components/ui/confirm"
 
 function formatDate(iso?: string) {
   if (!iso) return "—"
@@ -28,6 +29,7 @@ function formatDuration(seconds: number): string {
 
 export function CodexCard({ provider }: { provider: Provider }) {
   const qc = useQueryClient()
+  const confirm = useConfirm()
   const [expanded, setExpanded] = useState(false)
   const [notice, setNotice] = useState("")
 
@@ -92,14 +94,14 @@ export function CodexCard({ provider }: { provider: Provider }) {
     },
   })
 
-  function handleRedeem(creditId?: string) {
+  async function handleRedeem(creditId?: string) {
     const total = quota?.reset_cards ?? 0
     if (total <= 0) {
       setNotice("当前没有可用的重置卡")
       setTimeout(() => setNotice(""), 3000)
       return
     }
-    if (!confirm(`当前有 ${total} 张重置卡，确定使用 1 张重置卡？`)) return
+    if (!(await confirm({ title: "使用 1 张重置卡？", description: `当前共有 ${total} 张，使用后不可撤销。`, confirmLabel: "使用 1 张" }))) return
     redeem.mutate(creditId)
   }
 

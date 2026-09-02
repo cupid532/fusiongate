@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink } from "lucide-react"
 import { api } from "@/lib/api"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
@@ -19,6 +19,8 @@ import { ProviderModelManagementDialog } from "@/components/ProviderModelManagem
 import { ExportImportDialog } from "@/components/ExportImportDialog"
 import { GroupManager } from "@/components/GroupManager"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
+import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
+import { QueryError } from "@/components/ui/query-error"
 
 type Filter = "all" | "enabled" | "disabled" | "archived"
 
@@ -47,6 +49,8 @@ function statusBadge(p: Provider) {
 
 export function Providers() {
   const qc = useQueryClient()
+  const confirm = useConfirm()
+  const confirmDelete = useConfirmDelete()
   const [filter, setFilter] = useState<Filter>("all")
   const [q, setQ] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -63,6 +67,10 @@ export function Providers() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [multiSelect, setMultiSelect] = useState(false)
   const [draggingId, setDraggingId] = useState<number | null>(null)
+  // Which row the pointer is currently over, so the table can show where the
+  // dragged row would land. Before this the only feedback was the source row
+  // dimming, which told you nothing about the destination.
+  const [dragOverId, setDragOverId] = useState<number | null>(null)
 
   const { data: routing } = useQuery({
     queryKey: ["routing"],
@@ -75,15 +83,25 @@ export function Providers() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["routing"] }),
   })
 
-  const { data: providers = [], isLoading, refetch, isFetching } = useQuery({
+  const { data: providers = [], isLoading, refetch, isFetching, isError, error } = useQuery({
     queryKey: ["providers"],
     queryFn: () => api<Provider[]>("/api/admin/providers"),
     select: (list) => list.filter((p) => p.auth_kind !== "oauth"),
   })
 
   // 批量获取余额（仅对有手动余额的渠道显示进度条）
+  //
+  // This used to fan out to /balance for *every* provider. With 112 channels
+  // configured that was 112 requests on each mount and again after every 60s
+  // staleTime lapse — of which only the handful with a manual balance returned
+  // anything the table renders. The list response already carries
+  // manual_balance_micros, so gate on it and ask only for the ones that count.
+  const balanceTargets = useMemo(
+    () => providers.filter((p) => (p.manual_balance_micros ?? 0) > 0),
+    [providers]
+  )
   const balances = useQueries({
-    queries: providers.map((p) => ({
+    queries: balanceTargets.map((p) => ({
       queryKey: ["balance", p.id],
       queryFn: () =>
         api<{ manual?: { configured_micros: number; remaining_micros: number; used_percent: number } }>(
@@ -94,12 +112,12 @@ export function Providers() {
   })
   const balanceMap = useMemo(() => {
     const m = new Map<number, { remaining_micros: number; used_percent: number }>()
-    providers.forEach((p, i) => {
+    balanceTargets.forEach((p, i) => {
       const b = balances[i]?.data?.manual
       if (b) m.set(p.id, { remaining_micros: b.remaining_micros, used_percent: b.used_percent })
     })
     return m
-  }, [providers, balances])
+  }, [balanceTargets, balances])
 
   const update = useMutation({
     mutationFn: async ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
@@ -119,7 +137,14 @@ export function Providers() {
       const targetIndex = ids.indexOf(targetId)
       if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
       const [moved] = ids.splice(sourceIndex, 1)
-      ids.splice(targetIndex, 0, moved)
+      // targetIndex was measured before the splice above removed the dragged
+      // row. When dragging downwards everything after the source has shifted
+      // up by one, so reusing the stale index dropped the row *after* the
+      // target while dragging upwards dropped it *before* — the same gesture
+      // behaving differently by direction. Compensate for the removal so the
+      // row always lands exactly where the drop indicator showed it would.
+      const insertAt = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
+      ids.splice(insertAt, 0, moved)
       await api("/api/admin/providers/reorder", { method: "PATCH", body: JSON.stringify({ provider_ids: ids }) })
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
@@ -237,8 +262,22 @@ export function Providers() {
                   <Button
                     size="sm"
                     variant="destructive"
-                    onClick={() => {
-                      if (confirm(`删除选中的 ${selected.size} 个渠道？`)) batch.mutate({ ids: [...selected], action: "delete" })
+                    onClick={async () => {
+                      const names = [...selected]
+                        .map((id) => providers.find((p) => p.id === id)?.name)
+                        .filter(Boolean)
+                        .slice(0, 5)
+                        .join("、")
+                      if (
+                        await confirm({
+                          title: `删除选中的 ${selected.size} 个渠道？`,
+                          description: `${names}${selected.size > 5 ? " 等" : ""}。此操作不可恢复，相关的模型路由也会一并失效。`,
+                          destructive: true,
+                          confirmLabel: `删除 ${selected.size} 个`,
+                        })
+                      ) {
+                        batch.mutate({ ids: [...selected], action: "delete" })
+                      }
                     }}
                   >
                     删除
@@ -261,6 +300,14 @@ export function Providers() {
 
           {isLoading ? (
             <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
+          ) : isError ? (
+            <QueryError
+              title="无法加载渠道列表"
+              error={error}
+              onRetry={() => void refetch()}
+              retrying={isFetching}
+              className="m-4 border-none bg-transparent"
+            />
           ) : filtered.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">没有符合条件的渠道</div>
           ) : (
@@ -281,15 +328,56 @@ export function Providers() {
                 </thead>
                 <tbody>
                   {filtered.map((p) => (
-                    <tr key={p.id} draggable={!multiSelect} onDragStart={(event) => { setDraggingId(p.id); event.dataTransfer.effectAllowed = "move" }} onDragEnd={() => setDraggingId(null)} onDragOver={(event) => { if (!multiSelect) { event.preventDefault(); event.dataTransfer.dropEffect = "move" } }} onDrop={(event) => { event.preventDefault(); if (draggingId && draggingId !== p.id) reorder.mutate({ sourceId: draggingId, targetId: p.id }); setDraggingId(null) }} className={cn("border-b last:border-0 hover:bg-muted/40", draggingId === p.id && "opacity-50")}>
+                    <tr
+                      key={p.id}
+                      draggable={!multiSelect}
+                      onDragStart={(event) => { setDraggingId(p.id); event.dataTransfer.effectAllowed = "move" }}
+                      onDragEnd={() => { setDraggingId(null); setDragOverId(null) }}
+                      onDragOver={(event) => { if (!multiSelect && draggingId != null) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragOverId(p.id) } }}
+                      onDragLeave={() => setDragOverId((current) => (current === p.id ? null : current))}
+                      onDrop={(event) => { event.preventDefault(); if (draggingId && draggingId !== p.id) reorder.mutate({ sourceId: draggingId, targetId: p.id }); setDraggingId(null); setDragOverId(null) }}
+                      className={cn(
+                        "border-b last:border-0 hover:bg-muted/40",
+                        draggingId === p.id && "opacity-40",
+                        // The indicator sits on the edge the row will arrive at,
+                        // which depends on drag direction.
+                        dragOverId === p.id && draggingId !== p.id && (
+                          providers.findIndex((x) => x.id === draggingId) < providers.findIndex((x) => x.id === p.id)
+                            ? "border-b-2 border-b-primary"
+                            : "border-t-2 border-t-primary"
+                        )
+                      )}
+                    >
                       <td className="px-3 py-3">
                         {multiSelect ? <input type="checkbox" aria-label={`选择 ${p.name}`} checked={selected.has(p.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(p.id); else next.delete(p.id); setSelected(next) }} /> : <GripVertical className="h-4 w-4 cursor-grab text-muted-foreground/60 active:cursor-grabbing" aria-label={`拖动 ${p.name} 排序`} />}
                       </td>
                       <td className="px-4 py-3">
-                        <a href={p.base_url} target="_blank" rel="noreferrer" className="font-medium hover:text-primary hover:underline">
+                        {/*
+                          The channel name used to be an <a href={base_url}> —
+                          clicking it opened something like
+                          https://api.openai.com/v1 in a new tab, which is an
+                          API root, not a page. Editing is what people actually
+                          want from a row's name; the base URL stays reachable
+                          as an explicit small link underneath.
+                        */}
+                        <button
+                          type="button"
+                          onClick={() => { setEditing(p); setDialogOpen(true) }}
+                          className="text-left font-medium hover:text-primary hover:underline"
+                        >
                           {p.name}
+                        </button>
+                        <a
+                          href={p.base_url}
+                          target="_blank"
+                          rel="noreferrer noopener"
+                          onClick={(event) => event.stopPropagation()}
+                          className="flex max-w-[260px] items-center gap-1 truncate text-xs text-muted-foreground hover:text-foreground"
+                          title={`在新标签打开 ${p.base_url}`}
+                        >
+                          <span className="truncate">{p.base_url}</span>
+                          <ExternalLink className="h-3 w-3 shrink-0 opacity-60" />
                         </a>
-                        <div className="truncate text-xs text-muted-foreground">{p.base_url}</div>
                         {balanceMap.has(p.id) && (
                           <div className="mt-2 max-w-[220px]">
                             <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
@@ -366,8 +454,10 @@ export function Providers() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => {
-                              if (confirm(`删除渠道「${p.name}」？`)) remove.mutate(p.id)
+                            onClick={async () => {
+                              if (await confirmDelete(`渠道「${p.name}」`, "该渠道下的 Key 与模型路由也会失效。")) {
+                                remove.mutate(p.id)
+                              }
                             }}
                             aria-label={`删除 ${p.name}`}
                           >

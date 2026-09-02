@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useQueryClient } from "@tanstack/react-query"
 import { Menu, Moon, Sun, LogOut, RefreshCw, ExternalLink } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { Button, buttonVariants } from "@/components/ui/button"
 import { useTheme } from "@/providers/theme"
 import { useAuth } from "@/providers/auth"
 
@@ -32,9 +32,14 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
 
   async function refreshAll() {
     setRefreshing(true)
-    await queryClient.invalidateQueries()
-    // 等待后台重取一段时间后关闭动画
-    setTimeout(() => setRefreshing(false), 800)
+    try {
+      // invalidateQueries already resolves once the active refetches settle,
+      // so the extra fixed 800ms timer the old version added on top just made
+      // the spinner outlast the work it was reporting.
+      await queryClient.invalidateQueries()
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   return (
@@ -54,9 +59,19 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
         <Button variant="ghost" size="icon" onClick={() => void refreshAll()} aria-label="刷新全部" title="刷新全部数据">
           <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
         </Button>
-        <Button variant="ghost" size="icon" onClick={() => window.open(GITHUB_URL, "_blank")} aria-label="打开 GitHub 仓库" title="打开 GitHub 仓库">
+        {/* An anchor rather than window.open: it gets middle-click and
+            "open in new window" for free, and rel=noopener stops the opened
+            page from holding a reference back to this one via window.opener. */}
+        <a
+          href={GITHUB_URL}
+          target="_blank"
+          rel="noreferrer noopener"
+          aria-label="打开 GitHub 仓库"
+          title="打开 GitHub 仓库"
+          className={buttonVariants({ variant: "ghost", size: "icon" })}
+        >
           <ExternalLink className="h-4 w-4" />
-        </Button>
+        </a>
         <Button variant="ghost" size="icon" onClick={toggle} aria-label="切换明暗主题">
           {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
         </Button>

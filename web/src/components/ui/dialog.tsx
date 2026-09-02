@@ -34,10 +34,21 @@ const DialogContent = React.forwardRef<
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none disabled:pointer-events-none">
-        <X className="h-4 w-4" />
-        <span className="sr-only">关闭</span>
-      </DialogPrimitive.Close>
+      {/*
+        `sticky` rather than `absolute`: this content box is the scroll
+        container (max-h + overflow-y-auto), and an absolutely positioned child
+        scrolls away with the content. In a tall dialog — the provider editor,
+        say — the close button used to disappear off the top as soon as you
+        scrolled. Sticky keeps it pinned to the visible top edge instead.
+        Zero height plus a negative top margin keeps it out of the grid flow so
+        it doesn't add a gap above the header.
+      */}
+      <div className="pointer-events-none sticky top-0 -mt-1 h-0 justify-self-end">
+        <DialogPrimitive.Close className="pointer-events-auto -mr-1 grid h-7 w-7 place-items-center rounded-md text-muted-foreground opacity-70 transition-opacity hover:bg-muted hover:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none">
+          <X className="h-4 w-4" />
+          <span className="sr-only">关闭</span>
+        </DialogPrimitive.Close>
+      </div>
     </DialogPrimitive.Content>
   </DialogPortal>
 ))
@@ -49,7 +60,10 @@ const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 DialogHeader.displayName = "DialogHeader"
 
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  <div className={cn("flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2", className)} {...props} />
+  // `gap-2` instead of `sm:space-x-2`: space-x contributes nothing on the
+  // mobile `flex-col-reverse` axis, so stacked buttons sat flush against each
+  // other. gap applies on whichever axis is active.
+  <div className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)} {...props} />
 )
 DialogFooter.displayName = "DialogFooter"
 

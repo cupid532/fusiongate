@@ -6,9 +6,11 @@ import type { ModelAlias } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { useConfirmDelete } from "@/components/ui/confirm"
 
 export function ModelAliasManager({ model, aliases, upstreamModels }: { model: string; aliases: ModelAlias[]; upstreamModels: string[] }) {
   const qc = useQueryClient()
+  const confirmDelete = useConfirmDelete()
   const [adding, setAdding] = useState(false)
   const [alias, setAlias] = useState("")
   const modelAliases = useMemo(() => aliases.filter((item) => item.target_model === model), [aliases, model])
@@ -51,7 +53,7 @@ export function ModelAliasManager({ model, aliases, upstreamModels }: { model: s
                 </button>
                 <button
                   className="rounded-full p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                  onClick={() => { if (confirm(`删除调用别名「${item.alias}」？`)) remove.mutate(item.alias) }}
+                  onClick={async () => { if (await confirmDelete(`调用别名「${item.alias}」`)) remove.mutate(item.alias) }}
                   title="删除调用别名"
                   aria-label={`删除 ${item.alias}`}
                 ><Trash2 className="h-3 w-3" /></button>

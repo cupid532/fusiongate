@@ -45,4 +45,8 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 )
 Button.displayName = "Button"
 
-export { Button }
+// buttonVariants is shared so a real <a> can be styled as a button without
+// pulling in Radix Slot just for asChild. The warning is about hot-reload
+// boundaries only, not runtime correctness.
+// oxlint-disable-next-line react/only-export-components
+export { Button, buttonVariants }
