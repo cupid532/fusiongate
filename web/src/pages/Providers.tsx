@@ -3,6 +3,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { motion } from "motion/react"
 import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink } from "lucide-react"
 import { api } from "@/lib/api"
+import { reorderProviderIDs } from "@/lib/provider-order"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
@@ -86,8 +87,12 @@ export function Providers() {
   const { data: providers = [], isLoading, refetch, isFetching, isError, error } = useQuery({
     queryKey: ["providers"],
     queryFn: () => api<Provider[]>("/api/admin/providers"),
-    select: (list) => list.filter((p) => p.auth_kind !== "oauth"),
   })
+
+  // Keep the complete provider list for reorder payloads. The table hides OAuth
+  // entries, archived entries, and search/filter misses, but the reorder API
+  // intentionally requires every provider ID so hidden rows are not lost.
+  const visibleProviders = useMemo(() => providers.filter((p) => p.auth_kind !== "oauth"), [providers])
 
   // 批量获取余额（仅对有手动余额的渠道显示进度条）
   //
@@ -132,19 +137,8 @@ export function Providers() {
 
   const reorder = useMutation({
     mutationFn: async ({ sourceId, targetId }: { sourceId: number; targetId: number }) => {
-      const ids = providers.map((provider) => provider.id)
-      const sourceIndex = ids.indexOf(sourceId)
-      const targetIndex = ids.indexOf(targetId)
-      if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
-      const [moved] = ids.splice(sourceIndex, 1)
-      // targetIndex was measured before the splice above removed the dragged
-      // row. When dragging downwards everything after the source has shifted
-      // up by one, so reusing the stale index dropped the row *after* the
-      // target while dragging upwards dropped it *before* — the same gesture
-      // behaving differently by direction. Compensate for the removal so the
-      // row always lands exactly where the drop indicator showed it would.
-      const insertAt = sourceIndex < targetIndex ? targetIndex - 1 : targetIndex
-      ids.splice(insertAt, 0, moved)
+      // Use the complete API result, not the filtered/search-visible table rows.
+      const ids = reorderProviderIDs(providers.map((provider) => provider.id), sourceId, targetId)
       await api("/api/admin/providers/reorder", { method: "PATCH", body: JSON.stringify({ provider_ids: ids }) })
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
@@ -160,7 +154,7 @@ export function Providers() {
   })
 
   const filtered = useMemo(() => {
-    let list = providers
+    let list = visibleProviders
     if (filter === "enabled") list = list.filter((p) => p.enabled && !p.archived)
     else if (filter === "disabled") list = list.filter((p) => !p.enabled && !p.archived)
     else if (filter === "archived") list = list.filter((p) => p.archived)
@@ -170,16 +164,16 @@ export function Providers() {
       list = list.filter((p) => p.name.toLowerCase().includes(kw) || p.base_url.toLowerCase().includes(kw))
     }
     return list
-  }, [providers, filter, q])
+  }, [visibleProviders, filter, q])
 
   const counts = useMemo(
     () => ({
-      all: providers.filter((p) => !p.archived).length,
-      enabled: providers.filter((p) => p.enabled && !p.archived).length,
-      disabled: providers.filter((p) => !p.enabled && !p.archived).length,
-      archived: providers.filter((p) => p.archived).length,
+      all: visibleProviders.filter((p) => !p.archived).length,
+      enabled: visibleProviders.filter((p) => p.enabled && !p.archived).length,
+      disabled: visibleProviders.filter((p) => !p.enabled && !p.archived).length,
+      archived: visibleProviders.filter((p) => p.archived).length,
     }),
-    [providers]
+    [visibleProviders]
   )
 
   return (
