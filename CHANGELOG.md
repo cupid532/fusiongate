@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.77
+
+- Correct provider creation and backup-import persistence placeholders, validate imported Key 优选策略 values, and reset round-robin state only for the affected channel.
+
 ## V2.76
 
 - Add provider-level Key 优选策略: configured order, low multiplier first, high multiplier first, or round-robin distribution while preserving request-local Key failover.
