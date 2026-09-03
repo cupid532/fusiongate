@@ -111,6 +111,17 @@ func validKeySelectionMode(mode string) bool {
 	}
 }
 
+func (a *App) resetProviderKeyRoundRobin(providerID int64) {
+	prefix := strconv.FormatInt(providerID, 10) + "\x00"
+	a.routeMu.Lock()
+	for key := range a.providerKeyRoundRobin {
+		if strings.HasPrefix(key, prefix) {
+			delete(a.providerKeyRoundRobin, key)
+		}
+	}
+	a.routeMu.Unlock()
+}
+
 func normalizeProviderKeyModel(model string) string {
 	return strings.ToLower(strings.TrimSpace(model))
 }
@@ -389,10 +400,10 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 		return nil, err
 	}
 	type candidate struct {
-		ordinal                                                    int
-		key                                                        selectedProviderKey
-		encrypted                                                  []byte
-		keyNodeID                                                  sql.NullInt64
+		ordinal                                                                   int
+		key                                                                       selectedProviderKey
+		encrypted                                                                 []byte
+		keyNodeID                                                                 sql.NullInt64
 		egressMode, cooldownUntil, policy, allowlist, defaultModel, selectionMode string
 	}
 	candidates := make([]candidate, 0)

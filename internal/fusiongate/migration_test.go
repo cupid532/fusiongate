@@ -66,7 +66,7 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	}
 	defer a.Close()
 	for table, columns := range map[string][]string{
-		"providers":         {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "health_check_enabled", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived"},
+		"providers":         {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "health_check_enabled", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived", "key_selection_mode"},
 		"provider_api_keys": {"health_check_enabled"},
 		"model_routes":      {"sort_order"},
 		"api_keys":          {"encrypted_key"},
@@ -135,6 +135,10 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	var healthCheckEnabled int
 	if err := a.db.QueryRow(`SELECT health_check_enabled FROM providers WHERE id=1`).Scan(&healthCheckEnabled); err != nil || healthCheckEnabled != 1 {
 		t.Fatalf("legacy provider health check default=%d err=%v", healthCheckEnabled, err)
+	}
+	var keySelectionMode string
+	if err := a.db.QueryRow(`SELECT key_selection_mode FROM providers WHERE id=1`).Scan(&keySelectionMode); err != nil || keySelectionMode != providerKeySelectionConfigured {
+		t.Fatalf("legacy provider key selection mode=%q err=%v", keySelectionMode, err)
 	}
 	var policyTable string
 	if err := a.db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name='route_policies'`).Scan(&policyTable); err != sql.ErrNoRows {

@@ -335,6 +335,9 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 		provider.Type = strings.TrimSpace(provider.Type)
 		provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
 		provider.DefaultModel = normalizeProviderKeyModel(provider.DefaultModel)
+		if strings.TrimSpace(provider.KeySelectionMode) != "" && !validKeySelectionMode(provider.KeySelectionMode) {
+			return fmt.Errorf("provider %q contains an invalid key selection mode", provider.Name)
+		}
 		provider.KeySelectionMode = normalizeKeySelectionMode(provider.KeySelectionMode)
 		provider.GroupName = strings.TrimSpace(provider.GroupName)
 		provider.IPPoolNodeName = strings.TrimSpace(provider.IPPoolNodeName)
@@ -515,7 +518,7 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 		var authKind string
 		findErr := tx.QueryRow(`SELECT id,auth_kind FROM providers WHERE name=?`, provider.Name).Scan(&providerID, &authKind)
 		if errors.Is(findErr, sql.ErrNoRows) {
-			res, insertErr := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_status,group_id,group_sort_order,ip_pool_node_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM providers),?,'unknown',?,?,?,?,?,?,?,?,?,'ready',?,?,?,?,?,?,1,?,?)`, provider.Name, provider.Type, provider.BaseURL, firstEncrypted, boolInt(provider.Enabled), provider.Priority, provider.Weight, provider.Notes, provider.PassthroughMode, provider.ClientPolicy, provider.MaxConcurrency, provider.RequestTimeoutMS, provider.FailureThreshold, provider.CooldownSeconds, "api_key", "manual", groupID, provider.GroupSortOrder, providerNodeID, provider.DefaultModel, provider.KeySelectionMode, provider.ProtocolPolicy, provider.ProtocolPreference, now(), now())
+			res, insertErr := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_status,group_id,group_sort_order,ip_pool_node_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM providers),?,'unknown',?,?,?,?,?,?,?,?,?,'ready',?,?,?,?,?,?,?,1,?,?)`, provider.Name, provider.Type, provider.BaseURL, firstEncrypted, boolInt(provider.Enabled), provider.Priority, provider.Weight, provider.Notes, provider.PassthroughMode, provider.ClientPolicy, provider.MaxConcurrency, provider.RequestTimeoutMS, provider.FailureThreshold, provider.CooldownSeconds, "api_key", "manual", groupID, provider.GroupSortOrder, providerNodeID, provider.DefaultModel, provider.KeySelectionMode, provider.ProtocolPolicy, provider.ProtocolPreference, now(), now())
 			if insertErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
 				return
@@ -650,11 +653,10 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	a.routeMu.Lock()
 	for _, providerID := range changedProviderIDs {
-		delete(a.providerStates, providerID)
+		a.resetProviderRuntime(providerID)
+		a.resetProviderKeyRoundRobin(providerID)
 	}
-	a.routeMu.Unlock()
 	writeJSON(w, http.StatusOK, result)
 }
 

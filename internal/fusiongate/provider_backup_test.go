@@ -17,6 +17,9 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	}
 	defer a.Close()
 	providerID := insertTestProvider(t, a, "backup-source", "openai_compatible", "https://backup.example.com", "sk-backup-primary-123456", 7, 80, "normalized", "any", 3, 4, 45)
+	if _, err := a.db.Exec(`UPDATE providers SET key_selection_mode=? WHERE id=?`, providerKeySelectionHighMultiplier, providerID); err != nil {
+		t.Fatal(err)
+	}
 	if err := a.migrateProviderAPIKeys(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +56,7 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	if provider.HealthCheckEnabled == nil || !*provider.HealthCheckEnabled {
 		t.Fatal("export did not preserve the default enabled health check")
 	}
-	if provider.Name != "backup-source" || provider.BaseURL != "https://backup.example.com" || len(provider.Keys) != 2 || len(provider.Routes) != 1 {
+	if provider.Name != "backup-source" || provider.BaseURL != "https://backup.example.com" || provider.KeySelectionMode != providerKeySelectionHighMultiplier || len(provider.Keys) != 2 || len(provider.Routes) != 1 {
 		t.Fatalf("provider=%#v", provider)
 	}
 	if provider.Keys[0].APIKey != "sk-backup-primary-123456" || provider.Keys[1].APIKey != "sk-backup-secondary-654321" {
@@ -105,7 +108,7 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 		Format: providerBackupFormat, Version: providerBackupVersion, ContainsSecrets: true,
 		Providers: []providerBackupProvider{{
 			Name: "imported", Type: "openai_compatible", BaseURL: "https://import.example.com", Notes: "restored", Enabled: true,
-			Priority: 5, Weight: 90, PassthroughMode: "normalized", ClientPolicy: "any", RequestTimeoutMS: 90000, FailureThreshold: 4, CooldownSeconds: 60,
+			Priority: 5, Weight: 90, PassthroughMode: "normalized", ClientPolicy: "any", RequestTimeoutMS: 90000, FailureThreshold: 4, CooldownSeconds: 60, KeySelectionMode: providerKeySelectionRoundRobin,
 			Keys: []providerBackupKey{
 				{Name: "主 Key", APIKey: "sk-import-primary-123456", EgressMode: providerKeyEgressInherit, Enabled: true, SortOrder: 0, Models: []providerBackupKeyModel{{Model: "deepseek-test", DisplayName: "DeepSeek Test", Capabilities: "chat,stream", Enabled: boolPtr(false)}}},
 				{Name: "备用 Key", APIKey: "sk-import-secondary-654321", Model: "glm-test", EgressMode: providerKeyEgressDirect, Enabled: true, SortOrder: 1},

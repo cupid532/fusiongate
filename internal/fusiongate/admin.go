@@ -415,7 +415,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		res, err := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,ip_pool_node_id,group_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, in.Name, in.Type, in.BaseURL, encrypted, boolInt(enabled), priority, sortOrder, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, ipPoolNodeID, groupID, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, now(), now())
+		res, err := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,ip_pool_node_id,group_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, in.Name, in.Type, in.BaseURL, encrypted, boolInt(enabled), priority, sortOrder, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, ipPoolNodeID, groupID, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, now(), now())
 		if err != nil {
 			fail(w, http.StatusConflict, "provider_conflict", err.Error())
 			return
@@ -1187,9 +1187,7 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		}
 	}
 	if in.KeySelectionMode != nil {
-		a.routeMu.Lock()
-		a.providerKeyRoundRobin = map[string]int{}
-		a.routeMu.Unlock()
+		a.resetProviderKeyRoundRobin(id)
 	}
 	if resetRuntime {
 		a.resetProviderRuntime(id)
