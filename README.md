@@ -1,6 +1,6 @@
 # FusionGate
 
-当前版本以 [`internal/fusiongate/version.go`](internal/fusiongate/version.go) 为准。所有 Agent 和贡献者在更新前必须遵循 [AGENTS.md](AGENTS.md) 中的版本递增规则。
+根目录 [`VERSION`](VERSION) 是发布入口，并且必须与 [`internal/fusiongate/version.go`](internal/fusiongate/version.go) 完全一致。所有 Agent 和贡献者在更新前必须遵循 [AGENTS.md](AGENTS.md) 中的版本递增规则。
 
 面向个人和小型可信团队的**自托管 AI 账号与 API 聚合网关**。它将多个上游渠道映射成统一模型名，并通过一把下游 API Key 提供 OpenAI 兼容访问和完整请求账本。
 
@@ -141,6 +141,18 @@ docker compose up -d --build
 ```
 
 Compose 默认绑定 `127.0.0.1:8787`；请使用 Tailscale/WireGuard 或配置了 TLS 与访问控制的反向代理，而不是直接将后台暴露到公网。
+
+正式发布使用 pull-only 的 `deploy/compose.release.yml`，只引用 `ghcr.io/cupid532/fusiongate:<tag>`，没有 `build:`。`VERSION` 的 `V2.75` 对应 Git/GHCR tag `v2.75`。tag workflow 成功后按以下方式精确拉取和更新：
+
+```bash
+export FUSIONGATE_REF=v2.75
+docker compose -f deploy/compose.release.yml config --images
+docker compose -f deploy/compose.release.yml pull fusiongate
+docker compose -f deploy/compose.release.yml up -d --no-build fusiongate
+curl -fsS http://127.0.0.1:8787/healthz
+```
+
+每次更新必须显式修改 `FUSIONGATE_REF` 并先检查 `config --images`。旧 shell 或 `.env` 中残留的 `FUSIONGATE_REF` 不会自动前进；它会让 `pull` 成功但仍拉取/运行旧 tag。不要用 `latest` 代替可复现的 release tag。
 
 Compose 同时构建质量检测侧车，并与 FusionGate 共享网络命名空间。检测器自身仍只监听 `127.0.0.1`，不会新增公开端口；运行状态保存在独立 Docker volume。重建 FusionGate 主容器会替换这个网络命名空间，因此必须同时重建 `fusiongate` 与 `quality-detector`；`fusiongatectl restart`、更新流程和容器健康检查会共同保证这一点。构建固定到已审查的上游提交与 SHA-256，升级检测器必须显式更新 `deploy/quality-detector.Dockerfile`。
 

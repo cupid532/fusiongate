@@ -1,0 +1,34 @@
+name: fusiongate
+
+# Pull-only release layout. FUSIONGATE_REF must be a published tag such as v2.75.
+services:
+  fusiongate:
+    image: ghcr.io/cupid532/fusiongate:${FUSIONGATE_REF:?set FUSIONGATE_REF to a published release tag}
+    pull_policy: always
+    restart: unless-stopped
+    env_file:
+      - ${FUSIONGATE_ENV_FILE:-/opt/fusiongate/config/fusiongate.env}
+    environment:
+      FUSIONGATE_ADDR: 0.0.0.0:8787
+      FUSIONGATE_DATA_DIR: /data
+      FUSIONGATE_MASTER_KEY_FILE: /run/secrets/fusiongate_master_key
+      FUSIONGATE_ADMIN_PASSWORD_FILE: /run/secrets/fusiongate_admin_password
+    ports:
+      - "127.0.0.1:${FUSIONGATE_PORT:-8787}:8787"
+    volumes:
+      - ${FUSIONGATE_DATA_PATH:-/opt/fusiongate/data}:/data
+      - ${FUSIONGATE_MASTER_KEY_PATH:-/opt/fusiongate/config/master_key}:/run/secrets/fusiongate_master_key:ro
+      - ${FUSIONGATE_ADMIN_PASSWORD_PATH:-/opt/fusiongate/config/admin_password}:/run/secrets/fusiongate_admin_password:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fusiongate-healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

@@ -13,8 +13,23 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    outputs:
+      oci-version: ${{ steps.version.outputs.oci_version }}
     steps:
       - uses: actions/checkout@v4
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_version=$(sed -n 's/^const Version = "\(V[0-9][0-9]*\.[0-9][0-9]\)"$/\1/p' internal/fusiongate/version.go)
+          test -n "$source_version"
+          test "$(cat VERSION)" = "$source_version"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            expected_tag="v${source_version#V}"
+            test "$GITHUB_REF_NAME" = "$expected_tag" || { echo "tag $GITHUB_REF_NAME does not match $expected_tag" >&2; exit 1; }
+          fi
+          echo "oci_version=${source_version#V}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -79,7 +94,7 @@ jobs:
           build-args: |
             FUSIONGATE_BUILD_REVISION=${{ github.sha }}
             FUSIONGATE_BUILD_SOURCE=${{ github.server_url }}/${{ github.repository }}
-            FUSIONGATE_BUILD_VERSION=${{ github.ref_name }}
+            FUSIONGATE_BUILD_VERSION=${{ needs.validate.outputs.oci-version }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
