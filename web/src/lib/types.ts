@@ -15,6 +15,22 @@ export interface DashboardData {
   cost_micros: number
 }
 
+export type ProviderKeySelectionMode = "configured" | "low_multiplier" | "high_multiplier" | "round_robin"
+
+export const PROVIDER_KEY_SELECTION_MODE_LABELS: Record<ProviderKeySelectionMode, string> = {
+  configured: "按配置顺序",
+  low_multiplier: "低成本优先",
+  high_multiplier: "高倍率优先",
+  round_robin: "轮询分摊",
+}
+
+export const PROVIDER_KEY_SELECTION_MODE_HELP: Record<ProviderKeySelectionMode, string> = {
+  configured: "按 Key 的配置顺序依次尝试。",
+  low_multiplier: "优先尝试成本倍率最低的 Key。",
+  high_multiplier: "优先尝试成本倍率最高的 Key。",
+  round_robin: "每次请求轮换首选 Key，均匀分摊请求。",
+}
+
 export interface Provider {
   id: number
   name: string
@@ -75,6 +91,7 @@ export interface Provider {
   default_model?: string
   api_key_count: number
   enabled_api_key_count: number
+  key_selection_mode: ProviderKeySelectionMode
 }
 
 export interface Route {

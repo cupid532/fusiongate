@@ -1,5 +1,14 @@
 # Changelog
 
+## V2.76
+
+- Add provider-level Key 优选策略: configured order, low multiplier first, high multiplier first, or round-robin distribution while preserving request-local Key failover.
+
+## V2.75
+
+- Fix upstream-channel drag ordering so filtered, searched, archived, and OAuth-hidden rows remain in the complete reorder payload and downward drops land at the indicated position.
+- Add a pull-only GHCR release Compose layout and validate source, release, and container versions in CI; document how to escape stale pinned refs such as v2.31.
+
 ## V2.74
 
 - Space the Codex window label after 受限于 and in the over-limit warning. The hourly labels begin with a digit, so "受限于5 小时限制" ran together as one token.

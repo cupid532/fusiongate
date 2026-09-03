@@ -20,6 +20,13 @@ var errNoProviderKeySupportsModel = errors.New("no enabled API key supports this
 const providerKeySoftLimit = 500
 
 const (
+	providerKeySelectionConfigured     = "configured"
+	providerKeySelectionLowMultiplier  = "low_multiplier"
+	providerKeySelectionHighMultiplier = "high_multiplier"
+	providerKeySelectionRoundRobin     = "round_robin"
+)
+
+const (
 	providerKeyEgressInherit = "inherit"
 	providerKeyEgressDirect  = "direct"
 	providerKeyEgressNode    = "node"
@@ -85,6 +92,23 @@ type selectedProviderKey struct {
 
 func validProviderKeyEgressMode(mode string) bool {
 	return mode == providerKeyEgressInherit || mode == providerKeyEgressDirect || mode == providerKeyEgressNode
+}
+
+func normalizeKeySelectionMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if validKeySelectionMode(mode) {
+		return mode
+	}
+	return providerKeySelectionConfigured
+}
+
+func validKeySelectionMode(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case providerKeySelectionConfigured, providerKeySelectionLowMultiplier, providerKeySelectionHighMultiplier, providerKeySelectionRoundRobin:
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeProviderKeyModel(model string) string {
@@ -316,6 +340,7 @@ func (a *App) selectProviderKeys(ctx context.Context, providerID int64, upstream
 
 func (a *App) selectProviderKeysBatch(ctx context.Context, requests []providerKeySelectionRequest) (map[providerKeySelectionKey]providerKeySelectionResult, error) {
 	selected := make(map[providerKeySelectionKey]providerKeySelectionResult, len(requests))
+	selectionModes := make(map[providerKeySelectionKey]string, len(requests))
 	type initializedRequest struct {
 		key     providerKeySelectionKey
 		request providerKeySelectionRequest
@@ -353,7 +378,7 @@ func (a *App) selectProviderKeysBatch(ctx context.Context, requests []providerKe
 		args = append(args, i, item.request.providerID, item.request.upstreamModel)
 	}
 	query.WriteString(`)
-SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.model_policy,k.model_allowlist,k.egress_mode,k.ip_pool_node_id,COALESCE(k.cooldown_until,''),k.cost_multiplier,p.default_model
+SELECT c.ordinal,k.id,k.credential,k.name,k.key_hint,k.model,k.model_policy,k.model_allowlist,k.egress_mode,k.ip_pool_node_id,COALESCE(k.cooldown_until,''),k.cost_multiplier,p.default_model,p.key_selection_mode
 FROM candidates c
 JOIN providers p ON p.id=c.provider_id
 JOIN provider_api_keys k ON k.provider_id=c.provider_id AND k.enabled=1
@@ -368,12 +393,12 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 		key                                                        selectedProviderKey
 		encrypted                                                  []byte
 		keyNodeID                                                  sql.NullInt64
-		egressMode, cooldownUntil, policy, allowlist, defaultModel string
+		egressMode, cooldownUntil, policy, allowlist, defaultModel, selectionMode string
 	}
 	candidates := make([]candidate, 0)
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.ordinal, &c.key.ID, &c.encrypted, &c.key.Name, &c.key.Hint, &c.key.Model, &c.policy, &c.allowlist, &c.egressMode, &c.keyNodeID, &c.cooldownUntil, &c.key.CostMultiplier, &c.defaultModel); err != nil {
+		if err := rows.Scan(&c.ordinal, &c.key.ID, &c.encrypted, &c.key.Name, &c.key.Hint, &c.key.Model, &c.policy, &c.allowlist, &c.egressMode, &c.keyNodeID, &c.cooldownUntil, &c.key.CostMultiplier, &c.defaultModel, &c.selectionMode); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -392,6 +417,7 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 	}
 	for _, c := range candidates {
 		item := initialized[c.ordinal]
+		selectionModes[item.key] = normalizeKeySelectionMode(c.selectionMode)
 		inventory, exclusions, setErr := a.providerKeyModelSets(ctx, c.key.ID)
 		if setErr != nil {
 			return nil, setErr
@@ -425,6 +451,30 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 		result.err = nil
 		result.keys = append(result.keys, c.key)
 		selected[item.key] = result
+	}
+	for key, result := range selected {
+		mode := selectionModes[key]
+		if len(result.keys) > 1 && (mode == providerKeySelectionLowMultiplier || mode == providerKeySelectionHighMultiplier) {
+			sort.SliceStable(result.keys, func(i, j int) bool {
+				if result.keys[i].CostMultiplier == result.keys[j].CostMultiplier {
+					return false
+				}
+				if mode == providerKeySelectionLowMultiplier {
+					return result.keys[i].CostMultiplier < result.keys[j].CostMultiplier
+				}
+				return result.keys[i].CostMultiplier > result.keys[j].CostMultiplier
+			})
+		}
+		if len(result.keys) > 1 && mode == providerKeySelectionRoundRobin {
+			a.routeMu.Lock()
+			keyName := fmt.Sprintf("%d\x00%s", key.providerID, key.upstreamModel)
+			start := a.providerKeyRoundRobin[keyName] % len(result.keys)
+			a.providerKeyRoundRobin[keyName] = (start + 1) % len(result.keys)
+			a.routeMu.Unlock()
+			rotated := append([]selectedProviderKey(nil), result.keys[start:]...)
+			result.keys = append(rotated, result.keys[:start]...)
+		}
+		selected[key] = result
 	}
 	return selected, nil
 }

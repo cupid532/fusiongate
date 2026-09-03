@@ -2,7 +2,15 @@ import { useCallback, useEffect, useState } from "react"
 import { Plus, Trash2 } from "lucide-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-import type { IPPoolNode, Provider, ProviderGroup, ProviderKey } from "@/lib/types"
+import {
+  PROVIDER_KEY_SELECTION_MODE_HELP,
+  PROVIDER_KEY_SELECTION_MODE_LABELS,
+  type IPPoolNode,
+  type Provider,
+  type ProviderGroup,
+  type ProviderKey,
+  type ProviderKeySelectionMode,
+} from "@/lib/types"
 import {
   Dialog,
   DialogContent,
@@ -94,6 +102,7 @@ export function ProviderDialog({
     notes: "",
     ip_pool_node_id: 0,
     group_id: 0,
+    key_selection_mode: "configured" as ProviderKeySelectionMode,
   })
 
   const { data: nodes = [] } = useQuery({
@@ -125,6 +134,7 @@ export function ProviderDialog({
         notes: provider?.notes ?? "",
         ip_pool_node_id: provider?.ip_pool_node_id ?? 0,
         group_id: provider?.group_id ?? 0,
+        key_selection_mode: provider?.key_selection_mode ?? "configured",
       })
     }
   }, [open, provider])
@@ -140,6 +150,7 @@ export function ProviderDialog({
         request_timeout_ms: form.request_timeout_ms,
         passthrough_mode: form.passthrough_mode,
         notes: form.notes,
+        key_selection_mode: form.key_selection_mode,
         ip_pool_node_id: form.ip_pool_node_id || null,
       }
       if (form.group_id) body.group_id = form.group_id
@@ -238,6 +249,23 @@ export function ProviderDialog({
           <div className="flex flex-col gap-1.5">
             <Label>优先级（数字越大越优先）</Label>
             <Input type="number" min={0} value={form.priority} onChange={(e) => set("priority", Number(e.target.value))} />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="provider-key-selection-mode">Key 优选策略</Label>
+            <select
+              id="provider-key-selection-mode"
+              value={form.key_selection_mode}
+              onChange={(e) => set("key_selection_mode", e.target.value as ProviderKeySelectionMode)}
+              aria-describedby="provider-key-selection-mode-help"
+              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+            >
+              {Object.entries(PROVIDER_KEY_SELECTION_MODE_LABELS).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+            <div id="provider-key-selection-mode-help" className="text-xs text-muted-foreground">
+              {PROVIDER_KEY_SELECTION_MODE_HELP[form.key_selection_mode]}
+            </div>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>转发模式</Label>
