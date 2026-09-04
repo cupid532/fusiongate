@@ -1945,6 +1945,12 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		fail(w, http.StatusBadRequest, "invalid_status_filter", "status must be all, running, success, or failed")
 		return
 	}
+	if s := strings.TrimSpace(r.URL.Query().Get("before")); s != "" {
+		if id, parseErr := strconv.ParseInt(s, 10, 64); parseErr == nil && id > 0 {
+			where = append(where, "l.id < ?")
+			args = append(args, id)
+		}
+	}
 	if query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))); query != "" {
 		like := "%" + query + "%"
 		where = append(where, `(LOWER(l.public_model) LIKE ? OR LOWER(l.upstream_model) LIKE ? OR LOWER(l.protocol) LIKE ? OR LOWER(l.request_id) LIKE ? OR LOWER(l.gateway_request_id) LIKE ? OR LOWER(l.client_ip) LIKE ? OR LOWER(COALESCE(NULLIF(l.provider_name,''),p.name,'')) LIKE ? OR LOWER(l.provider_key_name) LIKE ? OR LOWER(l.provider_key_hint) LIKE ? OR LOWER(l.error_type) LIKE ? OR LOWER(l.retry_reason) LIKE ?)`)
@@ -1967,6 +1973,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		runningCount int64
 		inputTokens  int64
 		outputTokens int64
+		cachedTokens int64
 		costMicros   int64
 	)
 	summaryQuery := `SELECT COUNT(*),
@@ -1975,10 +1982,11 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		COALESCE(SUM(CASE WHEN l.completed_at IS NULL THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(l.input_tokens),0),
 		COALESCE(SUM(l.output_tokens),0),
+		COALESCE(SUM(l.cached_tokens),0),
 		COALESCE(SUM(l.cost_micros),0)
 		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + whereClause
 	if err := a.reader().QueryRow(summaryQuery, filterArgs...).Scan(
-		&total, &okCount, &failedCount, &runningCount, &inputTokens, &outputTokens, &costMicros,
+		&total, &okCount, &failedCount, &runningCount, &inputTokens, &outputTokens, &cachedTokens, &costMicros,
 	); err != nil {
 		fail(w, 500, "database_error", err.Error())
 		return
@@ -2036,6 +2044,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			"running":       runningCount,
 			"input_tokens":  inputTokens,
 			"output_tokens": outputTokens,
+			"cached_tokens": cachedTokens,
 			"total_tokens":  inputTokens + outputTokens,
 			"cost_micros":   costMicros,
 		},

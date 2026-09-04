@@ -3,7 +3,7 @@ package fusiongate
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/csv"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -171,7 +171,6 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 
 	q := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms
 		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id ASC LIMIT ?`
-	serverNow := time.Now().UTC()
 	pageArgs := append([]any{}, args...)
 	pageArgs = append(pageArgs, ledgerExportLimit)
 	rows, err := a.reader().Query(q, pageArgs...)
@@ -181,7 +180,13 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 	defer rows.Close()
 
-	out := []map[string]any{}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="fusiongate-requests.csv"`)
+	w.WriteHeader(http.StatusOK)
+	// BOM so Excel opens UTF-8 columns correctly.
+	w.Write([]byte{0xEF, 0xBB, 0xBF})
+	cw := csv.NewWriter(w)
+	_ = cw.Write([]string{"时间", "完成时间", "请求ID", "模型", "上游模型", "渠道", "协议", "流式", "状态", "HTTP状态码", "错误类型", "思考强度", "首字节(ms)", "延迟(ms)", "输入Token", "输出Token", "缓存Token", "思考Token", "总Token", "费用(微)", "费用类型", "客户端IP", "重试原因"})
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency, usageReported int
 		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, clientIP, reasoningEffort string
@@ -189,40 +194,36 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		var input, output, cached, reasoning, cost int64
 		var requestTimeoutMS int64
 		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
+			break
 		}
-		var firstByteMS any
+		fb := ""
 		if firstByte.Valid {
-			firstByteMS = firstByte.Int64
+			fb = strconv.FormatInt(firstByte.Int64, 10)
 		}
-		out = append(out, map[string]any{
-			"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt,
-			"retry_reason": retryReason, "provider_name": providerName, "client_ip": clientIP,
-			"created_at": created, "completed_at": completed, "running": completed == "",
-			"first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto,
-			"stream": strBool(stream), "success": strBool(success), "status_code": status,
-			"error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output,
-			"cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output,
-			"cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported),
-			"reasoning_effort": reasoningEffort,
-			"stale":            completed == "" && ledgerRowStale(created, requestTimeoutMS, serverNow),
+		statusLabel := "失败"
+		if completed == "" {
+			statusLabel = "进行中"
+		} else if strBool(success) {
+			statusLabel = "成功"
+		}
+		_ = cw.Write([]string{
+			created, completed, rid, pm, um, providerName, proto,
+			boolLabel(strBool(stream)), statusLabel, strconv.Itoa(status), et,
+			reasoningEffort, fb, strconv.Itoa(latency),
+			strconv.FormatInt(input, 10), strconv.FormatInt(output, 10),
+			strconv.FormatInt(cached, 10), strconv.FormatInt(reasoning, 10),
+			strconv.FormatInt(input+output, 10), strconv.FormatInt(cost, 10), ct,
+			clientIP, retryReason,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		fail(w, http.StatusInternalServerError, "database_error", err.Error())
-		return
+	cw.Flush()
+}
+
+func boolLabel(b bool) string {
+	if b {
+		return "是"
 	}
-	var lastID int
-	if len(out) > 0 {
-		lastID = out[len(out)-1]["id"].(int)
-	}
-	payload := map[string]any{"items": out, "count": len(out), "last_id": lastID, "truncated": len(out) >= ledgerExportLimit, "server_now": serverNow.Format(time.RFC3339Nano)}
-	b, _ := json.Marshal(payload)
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Disposition", `attachment; filename="fusiongate-requests.json"`)
-	w.WriteHeader(http.StatusOK)
-	w.Write(b)
+	return "否"
 }
 
 func mbCeil(bytes int64) int64 {

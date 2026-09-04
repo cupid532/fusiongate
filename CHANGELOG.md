@@ -1,5 +1,11 @@
 # Changelog
 
+## V2.81
+
+- Add a 缓存命中率 summary tile to the request ledger. The backend now sums `cached_tokens` alongside the other totals, and the tile shows the ratio of cached to input tokens as a percentage — green above 50%, amber for any cache hits, grey for none.
+- Export the ledger as CSV instead of JSON. The file opens directly in Excel, Google Sheets, and Numbers with Chinese column headers, a UTF-8 BOM, and human-readable status labels (成功/失败/进行中, 是/否).
+- Add cursor-based pagination to the request ledger. The table still loads 100 rows initially, but a 加载更多 button at the bottom fetches the next page (and the next, and the next) without reloading the first — so the full ledger is browsable without paying the cost of loading everything at once. Changing any filter resets to page one.
+
 ## V2.80
 
 - Remove the redundant 剩余额度 headline bar from the Codex auth cards. Now that every window row is a fuel gauge showing 剩余, the headline duplicated whichever window was the tighter one. The card now shows only the per-window rows (5 小时限制 / 每周限制 / 每月限制), each with its own bar, countdown, and 当前瓶颈 badge.

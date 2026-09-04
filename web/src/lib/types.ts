@@ -215,6 +215,7 @@ export interface RequestLedgerTotals {
   running: number
   input_tokens: number
   output_tokens: number
+  cached_tokens: number
   total_tokens: number
   cost_micros: number
 }

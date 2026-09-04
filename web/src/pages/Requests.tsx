@@ -159,12 +159,18 @@ export function Requests() {
       // error body to disk as fusiongate-requests-<date>.json and looked like
       // a successful export.
       const blob = await apiDownload(`/api/admin/ledger/export${qs ? `?${qs}` : ""}`)
-      saveBlob(blob, `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.json`)
+      saveBlob(blob, `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.csv`)
     },
     onSuccess: () => notifySuccess("账本已导出"),
   })
 
-  const params = useMemo(() => {
+  const [pages, setPages] = useState<RequestLedgerPayload[]>([])
+  const [loadingMore, setLoadingMore] = useState(false)
+
+  // Reset accumulated pages when any filter changes.
+  useEffect(() => { setPages([]) }, [status, debouncedQ, providerId, range])
+
+  const baseParams = useMemo(() => {
     const p = new URLSearchParams({ limit: String(PAGE_LIMIT) })
     if (status !== "all") p.set("status", status)
     if (debouncedQ.trim()) p.set("q", debouncedQ.trim())
@@ -174,20 +180,40 @@ export function Requests() {
       const ms: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
       if (ms[range]) p.set("from", new Date(now.getTime() - ms[range]).toISOString())
     }
-    return p.toString()
+    return p
   }, [status, debouncedQ, providerId, range])
 
   const requestsQuery = useQuery({
     queryKey: ["requests", status, debouncedQ, providerId, range],
-    queryFn: () => api<RequestLedgerPayload>(`/api/admin/requests?${params}`),
+    queryFn: () => api<RequestLedgerPayload>(`/api/admin/requests?${baseParams.toString()}`),
     refetchInterval: 5000,
   })
-  const rows = useMemo(() => requestsQuery.data?.items ?? [], [requestsQuery.data?.items])
+
+  const firstPage = requestsQuery.data
+  const rows = useMemo(() => {
+    const first = firstPage?.items ?? []
+    const rest = pages.flatMap((p) => p.items)
+    return [...first, ...rest]
+  }, [firstPage, pages])
   const isLoading = requestsQuery.isLoading
   const isFetching = requestsQuery.isFetching
-  const refetch = requestsQuery.refetch
-  const truncated = requestsQuery.data?.truncated ?? false
-  const totalRows = requestsQuery.data?.total ?? rows.length
+  const refetch = () => { setPages([]); return requestsQuery.refetch() }
+  const totalRows = firstPage?.total ?? rows.length
+  const hasMore = rows.length < totalRows
+
+  async function loadMore() {
+    const lastId = rows[rows.length - 1]?.id
+    if (!lastId || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const p = new URLSearchParams(baseParams)
+      p.set("before", String(lastId))
+      const page = await api<RequestLedgerPayload>(`/api/admin/requests?${p.toString()}`)
+      setPages((prev) => [...prev, page])
+    } finally {
+      setLoadingMore(false)
+    }
+  }
 
   const groupByModel = useMemo(() => {
     const map = new Map<string, { model: string; count: number; success: number; failed: number; tokens: number; cost_micros: number; avg_latency: number }>()
@@ -212,13 +238,16 @@ export function Requests() {
   // reported the newest 100 rows under a "当前范围" label.
   const summary = useMemo(() => {
     const totals = requestsQuery.data?.totals
-    if (!totals) return { count: 0, ok: 0, failed: 0, tokens: 0, cost: 0 }
+    if (!totals) return { count: 0, ok: 0, failed: 0, tokens: 0, cost: 0, cacheRate: 0 }
+    const inputTokens = totals.input_tokens ?? 0
+    const cachedTokens = totals.cached_tokens ?? 0
     return {
       count: totals.requests,
       ok: totals.success,
       failed: totals.failed,
       tokens: totals.total_tokens,
       cost: totals.cost_micros,
+      cacheRate: inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0,
     }
   }, [requestsQuery.data?.totals])
 
@@ -235,11 +264,12 @@ export function Requests() {
         </Button>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
         {[
           { label: "当前范围请求", value: summary.count.toLocaleString(), tone: "text-foreground" },
           { label: "成功", value: summary.ok.toLocaleString(), tone: "text-emerald-600" },
           { label: "失败", value: summary.failed.toLocaleString(), tone: summary.failed ? "text-destructive" : "text-muted-foreground" },
+          { label: "缓存命中率", value: `${summary.cacheRate.toFixed(1)}%`, tone: summary.cacheRate >= 50 ? "text-emerald-600" : summary.cacheRate > 0 ? "text-amber-500" : "text-muted-foreground" },
           { label: "总 Token · 费用", value: `${formatTokens(summary.tokens)} · ${formatCost(summary.cost)}`, tone: "text-primary" },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border bg-card p-3">
@@ -500,20 +530,20 @@ export function Requests() {
             </div>
           )}
 
-          {/*
-            The list is capped at PAGE_LIMIT rows. Saying so matters: with tens
-            of thousands of rows in the ledger the table silently showed the
-            newest hundred and gave no hint that anything was missing, while
-            the group-by-model view aggregated only that same hundred.
-          */}
-          {truncated && !isLoading && !requestsQuery.isError && (
+          {!isLoading && !requestsQuery.isError && rows.length > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground">
               <span>
-                显示最新 <span className="font-medium tabular-nums text-foreground">{rows.length}</span> 条，
-                当前筛选共 <span className="font-medium tabular-nums text-foreground">{totalRows.toLocaleString()}</span> 条
-                {view === "group" && "（分组统计仅基于已加载的这些记录，上方汇总为全量）"}
+                已加载 <span className="font-medium tabular-nums text-foreground">{rows.length}</span> 条
+                {totalRows > rows.length && (
+                  <>，当前筛选共 <span className="font-medium tabular-nums text-foreground">{totalRows.toLocaleString()}</span> 条</>
+                )}
+                {view === "group" && totalRows > rows.length && "（分组统计仅基于已加载的记录，上方汇总为全量）"}
               </span>
-              <span>需要完整数据请使用「导出」，或收窄时间范围与筛选条件。</span>
+              {hasMore && (
+                <Button variant="outline" size="sm" disabled={loadingMore} onClick={loadMore}>
+                  {loadingMore ? "加载中…" : `加载更多（剩余 ${(totalRows - rows.length).toLocaleString()} 条）`}
+                </Button>
+              )}
             </div>
           )}
         </CardContent>
