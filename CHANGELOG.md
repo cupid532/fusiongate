@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.83
+
+- Remove the standalone 缓存分析 tab from the request ledger. The per-model group cards already carry cache rate, and the per-request column gives the row-level detail, so the channel-grouped view was redundant.
+
 ## V2.82
 
 - Redesign cache rate presentation in the request ledger. The single aggregate tile was misleading on a multi-channel gateway where each channel and each Key carries a different cache profile. Changes:

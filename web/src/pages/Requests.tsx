@@ -119,7 +119,7 @@ export function Requests() {
   const debouncedQ = useDebounced(q, 350)
   const [providerId, setProviderId] = useState("")
   const [range, setRange] = useState("")
-  const [view, setView] = useState<"list" | "group" | "cache">("list")
+  const [view, setView] = useState<"list" | "group">("list")
 
   const { data: providers = [] } = useQuery({
     queryKey: ["providers"],
@@ -247,30 +247,6 @@ export function Requests() {
       .map((g) => ({ ...g, avg_latency: g.count ? Math.round(g.avg_latency / g.count) : 0 }))
       .sort((a, b) => b.tokens - a.tokens)
     return { list, maxTokens: Math.max(1, ...list.map((g) => g.tokens)) }
-  }, [rows])
-
-  const groupByChannel = useMemo(() => {
-    type ChannelGroup = { channel: string; keys: Map<string, { keyLabel: string; count: number; input_tokens: number; cached_tokens: number; tokens: number; cost_micros: number }> ; count: number; input_tokens: number; cached_tokens: number; tokens: number; cost_micros: number }
-    const map = new Map<string, ChannelGroup>()
-    for (const r of rows) {
-      const ch = r.provider_name || "未知渠道"
-      const g = map.get(ch) ?? { channel: ch, keys: new Map(), count: 0, input_tokens: 0, cached_tokens: 0, tokens: 0, cost_micros: 0 }
-      g.count++
-      g.input_tokens += r.input_tokens
-      g.cached_tokens += r.cached_tokens
-      g.tokens += r.total_tokens
-      g.cost_micros += r.cost_micros
-      const keyLabel = [r.provider_key_name, r.provider_key_hint].filter(Boolean).join(" · ") || "默认 Key"
-      const k = g.keys.get(keyLabel) ?? { keyLabel, count: 0, input_tokens: 0, cached_tokens: 0, tokens: 0, cost_micros: 0 }
-      k.count++
-      k.input_tokens += r.input_tokens
-      k.cached_tokens += r.cached_tokens
-      k.tokens += r.total_tokens
-      k.cost_micros += r.cost_micros
-      g.keys.set(keyLabel, k)
-      map.set(ch, g)
-    }
-    return [...map.values()].sort((a, b) => b.tokens - a.tokens)
   }, [rows])
 
   // Comes straight from the server's aggregate over the whole filtered range.
@@ -403,13 +379,12 @@ export function Requests() {
       </Card>
 
       <div className="mb-3">
-        <SegmentedTabs<"list" | "group" | "cache">
+        <SegmentedTabs<"list" | "group">
           value={view}
           onChange={setView}
           tabs={[
             { value: "list", label: "明细" },
             { value: "group", label: "按模型分组", count: groupByModel.list.length },
-            { value: "cache", label: "缓存分析", count: groupByChannel.length },
           ]}
         />
       </div>
@@ -506,57 +481,6 @@ export function Requests() {
                     </div>
                   </div>
                 ))}
-              </div>
-            </div>
-          ) : view === "cache" ? (
-            <div className="p-4">
-              <div className="space-y-3">
-                {groupByChannel.map((ch) => {
-                  const chRate = cacheRate(ch.cached_tokens, ch.input_tokens)
-                  const keys = [...ch.keys.values()]
-                  return (
-                    <div key={ch.channel} className="rounded-lg border p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
-                          <span className="truncate">{ch.channel}</span>
-                          <span className="shrink-0 text-[10px] text-muted-foreground">{ch.count} 请求</span>
-                        </div>
-                        <span className={cn("shrink-0 text-base font-bold tabular-nums", chRate >= 50 ? "text-emerald-600" : chRate > 0 ? "text-amber-500" : "text-muted-foreground")}>
-                          {chRate.toFixed(1)}%
-                        </span>
-                      </div>
-                      <div className="mt-2 h-1.5 rounded-full bg-muted">
-                        <div className={cn("h-1.5 rounded-full", chRate >= 50 ? "bg-emerald-500" : chRate > 0 ? "bg-amber-500" : "bg-muted-foreground/30")} style={{ width: `${Math.max(chRate > 0 ? 2 : 0, chRate)}%` }} />
-                      </div>
-                      {keys.length > 1 && (
-                        <div className="mt-2.5 space-y-1.5 border-t pt-2.5">
-                          {keys.sort((a, b) => b.input_tokens - a.input_tokens).map((k) => {
-                            const kRate = cacheRate(k.cached_tokens, k.input_tokens)
-                            return (
-                              <div key={k.keyLabel} className="flex items-center gap-3 text-xs">
-                                <span className="min-w-0 flex-1 truncate text-muted-foreground" title={k.keyLabel}>{k.keyLabel}</span>
-                                <span className="shrink-0 tabular-nums text-muted-foreground">{k.count} 请求</span>
-                                <span className="w-16 shrink-0">
-                                  <div className="h-1 rounded-full bg-muted">
-                                    <div className={cn("h-1 rounded-full", kRate >= 50 ? "bg-emerald-500" : kRate > 0 ? "bg-amber-500" : "bg-muted-foreground/30")} style={{ width: `${Math.max(kRate > 0 ? 2 : 0, kRate)}%` }} />
-                                  </div>
-                                </span>
-                                <span className={cn("w-14 shrink-0 text-right font-medium tabular-nums", kRate >= 50 ? "text-emerald-600" : kRate > 0 ? "text-amber-500" : "text-muted-foreground")}>
-                                  {kRate.toFixed(1)}%
-                                </span>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-                        <span>Token {formatTokens(ch.tokens)}</span>
-                        <span>缓存 {formatTokens(ch.cached_tokens)}</span>
-                        <span>费用 {formatCost(ch.cost_micros)}</span>
-                      </div>
-                    </div>
-                  )
-                })}
               </div>
             </div>
           ) : (
