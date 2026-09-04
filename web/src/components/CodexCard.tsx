@@ -151,54 +151,11 @@ export function CodexCard({ provider }: { provider: Provider }) {
           <div className="py-4 text-center text-sm text-muted-foreground">加载配额中…</div>
         ) : quota ? (
           <>
-            {/*
-              Headline: the window that is actually closest to cutting you off.
-              This used to read `remaining_quota`, which the backend derives
-              from the primary window alone — on Plus and Team that is the
-              5-hour window, so a nearly-exhausted weekly allowance was
-              invisible behind a full bar.
-            */}
-            {binding ? (
-              <div>
-                <div className="mb-1 flex items-end justify-between gap-2">
-                  <span className="min-w-0 text-xs text-muted-foreground">
-                    剩余额度
-                    {/* Space before the label: the labels start with a digit
-                        for the hourly windows, and "受限于5 小时限制" reads as
-                        one run-on token without it. */}
-                    <span className="ml-1 text-foreground/70">· 受限于 {binding.label}</span>
-                  </span>
-                  <span className={cn("shrink-0 text-2xl font-bold tracking-tight tabular-nums", remainingTone(remainingPercent(binding.window)))}>
-                    {remainingPercent(binding.window).toFixed(1)}%
-                  </span>
-                </div>
-                <div className="h-2 overflow-hidden rounded-full bg-muted">
-                  <motion.div
-                    className={cn("h-2 rounded-full", remainingBarTone(remainingPercent(binding.window)))}
-                    initial={{ width: 0 }}
-                    animate={{ width: `${remainingPercent(binding.window)}%` }}
-                    transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-                  />
-                </div>
-                <div className="mt-1 text-[11px] text-muted-foreground">
-                  已用 {binding.window.used_percent.toFixed(1)}%
-                  {windows.length >= 2 && " · 两个窗口中更紧的那个"}
-                </div>
-              </div>
-            ) : (
+            {windows.length === 0 ? (
               <div className="rounded-md border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 上游未返回配额窗口信息。
               </div>
-            )}
-
-            {/* Every window the account has, shortest period first, each with
-                its own live countdown.
-
-                These rows used to fill as the allowance was spent while the
-                headline above drained — two bars on one card moving in
-                opposite directions for the same fact. Every gauge here now
-                reads the same way: full is untouched, empty is exhausted. */}
-            {windows.length > 0 && (
+            ) : (
               <div className="space-y-2">
                 {windows.map((w) => {
                   const left = countdownFor(w.window.reset_after_seconds)

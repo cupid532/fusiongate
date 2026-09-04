@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.80
+
+- Remove the redundant 剩余额度 headline bar from the Codex auth cards. Now that every window row is a fuel gauge showing 剩余, the headline duplicated whichever window was the tighter one. The card now shows only the per-window rows (5 小时限制 / 每周限制 / 每月限制), each with its own bar, countdown, and 当前瓶颈 badge.
+
 ## V2.79
 
 - Fix model management not routing. Adding or removing models in the per-Key 模型管理 dialog only wrote to `provider_api_key_models` (the Key-level inventory) but never touched `model_routes` (the gateway's routing table), so saved models never appeared in routing or health checks. The save handler now computes the union of enabled models across all Keys for the provider and creates or removes `model_routes` entries accordingly — the same strategy the discovery flow uses, applied after every management save.
