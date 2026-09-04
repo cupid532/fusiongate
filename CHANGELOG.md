@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.79
+
+- Fix model management not routing. Adding or removing models in the per-Key 模型管理 dialog only wrote to `provider_api_key_models` (the Key-level inventory) but never touched `model_routes` (the gateway's routing table), so saved models never appeared in routing or health checks. The save handler now computes the union of enabled models across all Keys for the provider and creates or removes `model_routes` entries accordingly — the same strategy the discovery flow uses, applied after every management save.
+
 ## V2.78
 
 - Read every quota gauge the same way. The 认证文件 cards headlined 剩余额度 with a draining bar, but the 5 小时 / 每周 / 每月 rows underneath filled up as the allowance was spent — two bars on one card moving in opposite directions for the same fact. Each window row now starts full and drains, labelled 剩余, and the 剩余余额 bar on 上游渠道 does the same. Colour thresholds are stated in what is left: amber at 40%, red at 20%, with the over-limit callout tied to the same red threshold.

@@ -886,8 +886,97 @@ func (a *App) saveProviderModelManagement(ctx context.Context, providerID int64,
 		st.Status = "saved"
 		statuses = append(statuses, st)
 	}
+	// Sync model_routes so the gateway can actually route to models that
+	// were just enabled (or stop routing to models that were just removed).
+	//
+	// The management dialog operates on per-Key inventory
+	// (provider_api_key_models), but the gateway resolves requests against
+	// model_routes.  Before this, saving in the dialog silently updated
+	// only the Key layer — the route table was never touched, so the model
+	// never appeared in routing or health checks.
+	//
+	// Strategy: compute the *union* of every enabled model across all Keys
+	// for this provider.  Models in that union that have no model_routes row
+	// get one created; models NOT in the union (and not enabled anywhere)
+	// get their route removed and an exclusion recorded so re-discovery
+	// does not immediately add them back.
+	allEnabled := map[string]bool{}
+	{
+		rows, e := tx.QueryContext(ctx, `
+			SELECT DISTINCT LOWER(m.model) FROM provider_api_key_models m
+			JOIN provider_api_keys k ON k.id=m.provider_key_id
+			WHERE k.provider_id=? AND m.enabled=1`, providerID)
+		if e != nil {
+			return statuses, e
+		}
+		for rows.Next() {
+			var m string
+			if e = rows.Scan(&m); e != nil {
+				rows.Close()
+				return statuses, e
+			}
+			allEnabled[m] = true
+		}
+		if e = rows.Close(); e != nil {
+			return statuses, e
+		}
+	}
+	stamp := now()
+	routeAdded := 0
+	for m := range allEnabled {
+		if _, e := tx.ExecContext(ctx, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?)`, providerID, m, m); e != nil {
+			return statuses, e
+		}
+		res, e := tx.ExecContext(ctx, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
+SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?
+WHERE NOT EXISTS(SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(upstream_model)=?)`, m, providerID, m, "chat,stream", 1, 0, m, 0, 0, stamp, stamp, providerID, m)
+		if e != nil {
+			return statuses, e
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			routeAdded++
+		}
+	}
+	// Remove routes for models that no longer have any enabled Key.
+	{
+		rows, e := tx.QueryContext(ctx, `SELECT id,LOWER(upstream_model) FROM model_routes WHERE provider_id=?`, providerID)
+		if e != nil {
+			return statuses, e
+		}
+		type routeRow struct {
+			id    int64
+			model string
+		}
+		var existing []routeRow
+		for rows.Next() {
+			var rr routeRow
+			if e = rows.Scan(&rr.id, &rr.model); e != nil {
+				rows.Close()
+				return statuses, e
+			}
+			existing = append(existing, rr)
+		}
+		if e = rows.Close(); e != nil {
+			return statuses, e
+		}
+		for _, rr := range existing {
+			if allEnabled[rr.model] {
+				continue
+			}
+			if _, e = tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, rr.model, rr.model, stamp); e != nil {
+				return statuses, e
+			}
+			if _, e = tx.ExecContext(ctx, `DELETE FROM model_routes WHERE id=?`, rr.id); e != nil {
+				return statuses, e
+			}
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return statuses, err
+	}
+	if routeAdded > 0 {
+		a.triggerPricingSync()
 	}
 	return statuses, nil
 }
