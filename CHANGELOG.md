@@ -1,5 +1,13 @@
 # Changelog
 
+## V2.82
+
+- Redesign cache rate presentation in the request ledger. The single aggregate tile was misleading on a multi-channel gateway where each channel and each Key carries a different cache profile. Changes:
+  - Per-request **缓存率** column in the detail table (between Token and 费用), showing `cached / input` for every individual row — green ≥50%, amber >0%, dash when no input tokens.
+  - **按模型分组** now includes a 缓存率 stat in each model card.
+  - New **缓存分析** tab: groups by channel, each with an overall cache rate bar; channels with multiple Keys expand to show per-Key breakdowns with their own mini bars. Sorted by total token volume.
+  - The top summary tile is relabelled 综合缓存率 to make it clear it is the gateway-wide aggregate.
+
 ## V2.81
 
 - Add a 缓存命中率 summary tile to the request ledger. The backend now sums `cached_tokens` alongside the other totals, and the tile shows the ratio of cached to input tokens as a percentage — green above 50%, amber for any cache hits, grey for none.
