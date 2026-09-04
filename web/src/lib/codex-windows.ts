@@ -89,22 +89,45 @@ export function bindingWindow(quota: CodexAccountQuota | undefined): NamedWindow
   const windows = namedWindows(quota)
   if (windows.length === 0) return null
   return windows.reduce((worst, candidate) =>
-    candidate.window.used_percent > worst.window.used_percent ? candidate : worst
+    remainingPercent(candidate.window) < remainingPercent(worst.window) ? candidate : worst
   )
 }
 
-/** Tailwind class for a usage level, shared by the bars and the numbers. */
-export function usageTone(usedPercent: number): string {
-  if (usedPercent >= 90) return "text-destructive"
-  if (usedPercent >= 70) return "text-amber-500"
+/**
+ * How much of the window is left, 0–100.
+ *
+ * Every bar on the card is a *fuel gauge*: full when the allowance is
+ * untouched, draining as it is spent. Reading `remaining_percent` where the
+ * upstream sends it (and deriving it otherwise) keeps a single source for that
+ * number, so a bar's width, its colour and its label can never disagree.
+ */
+export function remainingPercent(window: CodexUsageWindow): number {
+  const value = window.remaining_percent ?? 100 - window.used_percent
+  return Math.min(100, Math.max(0, value))
+}
+
+/**
+ * Tailwind class for a remaining level, shared by the bars and the numbers.
+ *
+ * Thresholds are stated in terms of what is *left*, matching the gauge:
+ * under 40% left warns, under 20% left is critical.
+ */
+export function remainingTone(remaining: number): string {
+  if (remaining <= REMAINING_CRITICAL) return "text-destructive"
+  if (remaining <= REMAINING_WARNING) return "text-amber-500"
   return "text-foreground"
 }
 
-export function usageBarTone(usedPercent: number): string {
-  if (usedPercent >= 90) return "bg-destructive"
-  if (usedPercent >= 70) return "bg-amber-500"
+export function remainingBarTone(remaining: number): string {
+  if (remaining <= REMAINING_CRITICAL) return "bg-destructive"
+  if (remaining <= REMAINING_WARNING) return "bg-amber-500"
   return "bg-primary"
 }
+
+/** Below this share of the allowance the gauge turns amber. */
+export const REMAINING_WARNING = 40
+/** Below this share of the allowance the gauge turns red. */
+export const REMAINING_CRITICAL = 20
 
 /**
  * Readable plan name. The API returns bare lowercase identifiers ("free",

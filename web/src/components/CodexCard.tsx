@@ -6,12 +6,14 @@ import { api } from "@/lib/api"
 import type { CodexAccountQuota, Provider } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
 import {
+  REMAINING_CRITICAL,
   bindingWindow,
   formatResetDuration,
   namedWindows,
   planLabel,
-  usageBarTone,
-  usageTone,
+  remainingBarTone,
+  remainingPercent,
+  remainingTone,
 } from "@/lib/codex-windows"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -166,15 +168,15 @@ export function CodexCard({ provider }: { provider: Provider }) {
                         one run-on token without it. */}
                     <span className="ml-1 text-foreground/70">· 受限于 {binding.label}</span>
                   </span>
-                  <span className={cn("shrink-0 text-2xl font-bold tracking-tight tabular-nums", usageTone(binding.window.used_percent))}>
-                    {(100 - binding.window.used_percent).toFixed(1)}%
+                  <span className={cn("shrink-0 text-2xl font-bold tracking-tight tabular-nums", remainingTone(remainingPercent(binding.window)))}>
+                    {remainingPercent(binding.window).toFixed(1)}%
                   </span>
                 </div>
                 <div className="h-2 overflow-hidden rounded-full bg-muted">
                   <motion.div
-                    className={cn("h-2 rounded-full", usageBarTone(binding.window.used_percent))}
+                    className={cn("h-2 rounded-full", remainingBarTone(remainingPercent(binding.window)))}
                     initial={{ width: 0 }}
-                    animate={{ width: `${Math.max(0, 100 - binding.window.used_percent)}%` }}
+                    animate={{ width: `${remainingPercent(binding.window)}%` }}
                     transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
                   />
                 </div>
@@ -190,31 +192,37 @@ export function CodexCard({ provider }: { provider: Provider }) {
             )}
 
             {/* Every window the account has, shortest period first, each with
-                its own live countdown. */}
+                its own live countdown.
+
+                These rows used to fill as the allowance was spent while the
+                headline above drained — two bars on one card moving in
+                opposite directions for the same fact. Every gauge here now
+                reads the same way: full is untouched, empty is exhausted. */}
             {windows.length > 0 && (
               <div className="space-y-2">
                 {windows.map((w) => {
                   const left = countdownFor(w.window.reset_after_seconds)
                   const total = w.window.limit_window_seconds ?? 0
                   const elapsedRatio = total > 0 && left != null ? 1 - left / total : 0
+                  const remaining = remainingPercent(w.window)
                   return (
                     <div key={w.slot} className="rounded-lg border p-2.5">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium">
                           {w.label}
                           {binding?.slot === w.slot && windows.length >= 2 && (
-                            <Badge variant={w.window.used_percent >= 90 ? "danger" : "warning"}>当前瓶颈</Badge>
+                            <Badge variant={remaining <= REMAINING_CRITICAL ? "danger" : "warning"}>当前瓶颈</Badge>
                           )}
                         </span>
-                        <span className={cn("shrink-0 text-sm font-semibold tabular-nums", usageTone(w.window.used_percent))}>
-                          {w.window.used_percent.toFixed(1)}% 已用
+                        <span className={cn("shrink-0 text-sm font-semibold tabular-nums", remainingTone(remaining))}>
+                          剩余 {remaining.toFixed(1)}%
                         </span>
                       </div>
                       <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
                         <motion.div
-                          className={cn("h-1.5 rounded-full", usageBarTone(w.window.used_percent))}
+                          className={cn("h-1.5 rounded-full", remainingBarTone(remaining))}
                           initial={{ width: 0 }}
-                          animate={{ width: `${Math.min(100, w.window.used_percent)}%` }}
+                          animate={{ width: `${remaining}%` }}
                           transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
                         />
                       </div>
@@ -237,12 +245,14 @@ export function CodexCard({ provider }: { provider: Provider }) {
             )}
 
             {/* Only Plus/Team-style accounts carry two windows; make the
-                consequence of that explicit when one of them is nearly spent. */}
-            {binding && binding.window.used_percent >= 90 && (
+                consequence of that explicit when one of them is nearly spent.
+                Tied to the same threshold that turns the gauge red, so the
+                callout and the colour can never contradict each other. */}
+            {binding && remainingPercent(binding.window) <= REMAINING_CRITICAL && (
               <div className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
-                  {binding.label} 已用 {binding.window.used_percent.toFixed(1)}%
+                  {binding.label} 仅剩 {remainingPercent(binding.window).toFixed(1)}%
                   {countdownFor(binding.window.reset_after_seconds) != null &&
                     `，${formatResetDuration(countdownFor(binding.window.reset_after_seconds)!)}后才会重置`}
                   。达限后该认证会被跳过。

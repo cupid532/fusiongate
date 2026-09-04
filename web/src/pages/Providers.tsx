@@ -3,7 +3,9 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { motion } from "motion/react"
 import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink } from "lucide-react"
 import { api } from "@/lib/api"
+import { remainingBarTone } from "@/lib/codex-windows"
 import { reorderProviderIDs } from "@/lib/provider-order"
+import { providerSiteURL } from "@/lib/provider-site"
 import type { Provider, RoutingStrategy } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
@@ -347,31 +349,31 @@ export function Providers() {
                       </td>
                       <td className="px-4 py-3">
                         {/*
-                          The channel name used to be an <a href={base_url}> —
-                          clicking it opened something like
-                          https://api.openai.com/v1 in a new tab, which is an
-                          API root, not a page. Editing is what people actually
-                          want from a row's name; the base URL stays reachable
-                          as an explicit small link underneath.
+                          The name opens the channel's own site, which is what
+                          you reach for when you want to top up or check an
+                          account. It links to the *origin* of base_url, not
+                          base_url itself: the latter is an API root
+                          (…/v1) and opens a 404 or a JSON error. Editing keeps
+                          its own gear button in the actions column, so the row
+                          no longer overloads the name with two meanings.
                         */}
-                        <button
-                          type="button"
-                          onClick={() => { setEditing(p); setDialogOpen(true) }}
-                          className="text-left font-medium hover:text-primary hover:underline"
-                        >
-                          {p.name}
-                        </button>
-                        <a
-                          href={p.base_url}
-                          target="_blank"
-                          rel="noreferrer noopener"
-                          onClick={(event) => event.stopPropagation()}
-                          className="flex max-w-[260px] items-center gap-1 truncate text-xs text-muted-foreground hover:text-foreground"
-                          title={`在新标签打开 ${p.base_url}`}
-                        >
-                          <span className="truncate">{p.base_url}</span>
-                          <ExternalLink className="h-3 w-3 shrink-0 opacity-60" />
-                        </a>
+                        {providerSiteURL(p.base_url) ? (
+                          <a
+                            href={providerSiteURL(p.base_url)}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="flex items-center gap-1 font-medium hover:text-primary hover:underline"
+                            title={`在新标签打开 ${providerSiteURL(p.base_url)}`}
+                          >
+                            <span className="truncate">{p.name}</span>
+                            <ExternalLink className="h-3 w-3 shrink-0 opacity-50" />
+                          </a>
+                        ) : (
+                          <span className="font-medium">{p.name}</span>
+                        )}
+                        <div className="max-w-[260px] truncate text-xs text-muted-foreground" title={p.base_url}>
+                          {p.base_url}
+                        </div>
                         {balanceMap.has(p.id) && (
                           <div className="mt-2 max-w-[220px]">
                             <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
@@ -380,13 +382,16 @@ export function Providers() {
                                 {formatCost(balanceMap.get(p.id)!.remaining_micros)}
                               </span>
                             </div>
+                            {/* Same fuel-gauge reading as the auth-file cards:
+                                the bar is labelled 剩余余额, so it must start
+                                full and drain, not fill up as money is spent. */}
                             <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                               <div
                                 className={cn(
                                   "h-1.5 rounded-full",
-                                  balanceMap.get(p.id)!.used_percent > 90 ? "bg-destructive" : balanceMap.get(p.id)!.used_percent > 70 ? "bg-amber-500" : "bg-primary"
+                                  remainingBarTone(100 - balanceMap.get(p.id)!.used_percent)
                                 )}
-                                style={{ width: `${Math.min(100, balanceMap.get(p.id)!.used_percent)}%` }}
+                                style={{ width: `${Math.min(100, Math.max(0, 100 - balanceMap.get(p.id)!.used_percent))}%` }}
                               />
                             </div>
                           </div>

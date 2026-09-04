@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.78
+
+- Read every quota gauge the same way. The 认证文件 cards headlined 剩余额度 with a draining bar, but the 5 小时 / 每周 / 每月 rows underneath filled up as the allowance was spent — two bars on one card moving in opposite directions for the same fact. Each window row now starts full and drains, labelled 剩余, and the 剩余余额 bar on 上游渠道 does the same. Colour thresholds are stated in what is left: amber at 40%, red at 20%, with the over-limit callout tied to the same red threshold.
+- Open the channel's own site from its name on 上游渠道. Clicking the name opened the edit dialog, which the gear button in the actions column already does; it now opens the origin of `base_url` in a new tab — the site, not the `…/v1` API root that a direct `base_url` link lands on. Non-http values render as plain text rather than a dead link.
+
 ## V2.77
 
 - Correct provider creation and backup-import persistence placeholders, validate imported Key 优选策略 values, and reset round-robin state only for the affected channel.

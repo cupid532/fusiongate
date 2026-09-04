@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest"
-import { bindingWindow, namedWindows, planLabel, windowLabel, windowLabelShort } from "./codex-windows"
+import {
+  bindingWindow,
+  namedWindows,
+  planLabel,
+  remainingBarTone,
+  remainingPercent,
+  remainingTone,
+  windowLabel,
+  windowLabelShort,
+} from "./codex-windows"
 import type { CodexAccountQuota, CodexUsageWindow } from "./types"
 
 function win(limitWindowSeconds: number, usedPercent: number): CodexUsageWindow {
@@ -88,6 +97,45 @@ describe("bindingWindow", () => {
 
   it("returns null when there are no windows", () => {
     expect(bindingWindow(quota({}))).toBeNull()
+  })
+})
+
+describe("remainingPercent", () => {
+  it("prefers the reported remaining share", () => {
+    expect(remainingPercent(win(FIVE_HOURS, 30))).toBe(70)
+  })
+
+  it("derives it when the upstream omits it", () => {
+    const partial = { used_percent: 30, limit_window_seconds: FIVE_HOURS } as CodexUsageWindow
+    expect(remainingPercent(partial)).toBe(70)
+  })
+
+  it("clamps upstream values that fall outside 0–100", () => {
+    expect(remainingPercent({ used_percent: 130, remaining_percent: -30 })).toBe(0)
+    expect(remainingPercent({ used_percent: -5, remaining_percent: 105 })).toBe(100)
+  })
+})
+
+describe("remaining tone", () => {
+  // The gauge is a fuel gauge: 100 is untouched, 0 is exhausted. The
+  // thresholds are stated in what is *left*, so the colour and the bar width
+  // can never point in opposite directions.
+  it("stays neutral while more than 40% is left", () => {
+    expect(remainingTone(100)).toBe("text-foreground")
+    expect(remainingTone(41)).toBe("text-foreground")
+    expect(remainingBarTone(100)).toBe("bg-primary")
+  })
+
+  it("warns at 40% left and below", () => {
+    expect(remainingTone(40)).toBe("text-amber-500")
+    expect(remainingTone(21)).toBe("text-amber-500")
+    expect(remainingBarTone(40)).toBe("bg-amber-500")
+  })
+
+  it("goes critical at 20% left and below", () => {
+    expect(remainingTone(20)).toBe("text-destructive")
+    expect(remainingTone(0)).toBe("text-destructive")
+    expect(remainingBarTone(0)).toBe("bg-destructive")
   })
 })
 
