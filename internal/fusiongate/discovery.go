@@ -450,6 +450,9 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 	switch p.Type {
 	case "openai", "grok", "openrouter", "openai_compatible", "opencode":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
+		if p.Type == "opencode" {
+			setOpenCodeProbeHeaders(req.Header, p.ID)
+		}
 	case "codex_oauth":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
 		if p.AuthCredential != nil && p.AuthCredential.AccountID != "" {

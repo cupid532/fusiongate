@@ -667,6 +667,9 @@ func setProviderAuth(req *http.Request, z resolvedRoute) error {
 		if z.Provider.Type == "grok_oauth" {
 			setGrokClientHeaders(req.Header)
 		}
+		if z.Provider.Type == "opencode" {
+			ensureFusionGateUserAgent(req.Header)
+		}
 	case "anthropic":
 		req.Header.Set("x-api-key", z.Credential)
 	case "claude_oauth":
@@ -1486,6 +1489,7 @@ func (a *App) proxyUpstream(w http.ResponseWriter, incoming *http.Request, z res
 		// Suppress net/http's synthetic Go User-Agent when the real client sent none.
 		req.Header.Set("User-Agent", "")
 	}
+	applyOpenCodeRequestHeaders(req, z, incoming, options.RawBody)
 	if !options.Transparent {
 		// Let net/http negotiate and transparently decode gzip itself. Forwarding
 		// the downstream Accept-Encoding header disables automatic decoding, which

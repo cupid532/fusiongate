@@ -73,6 +73,7 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 	if _, present := incoming.Header["User-Agent"]; !present {
 		req.Header.Set("User-Agent", "")
 	}
+	applyOpenCodeRequestHeaders(req, z, incoming, encoded)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	if err := setProviderAuth(req, z); err != nil {

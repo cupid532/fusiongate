@@ -1,5 +1,10 @@
 # Changelog
 
+## V2.85
+
+- Send `x-opencode-session` on every request to an OpenCode channel. OpenCode Go requires one stable ID per conversation and may reject requests without it from 2026-09-06. A header the client already sends is forwarded untouched; otherwise the gateway derives one — from another vendor's session header (Codex CLI `session_id`, `x-session-id`), from the body (OpenAI `prompt_cache_key`, Claude Code's `metadata.user_id` session segment), or as a fingerprint of gateway credential + system prompt + first user message, which every later turn of the same conversation reproduces. Health-check probes and model discovery identify themselves as `fusiongate-probe-<provider id>`.
+- Stop presenting a blank User-Agent to OpenCode. The proxy blanks the header when the real client sent none (so Go's synthetic UA never leaks); OpenCode filed those requests under "Unknown client". For `opencode` channels only, a blank UA now reads `FusionGate/<version>`; a real client UA is never overwritten and other channel types are unchanged.
+
 ## V2.84
 
 - Make manual health checks (检活) resilient and legible instead of failing whole. A route whose upstream model no enabled Key can serve — switched off in that Key's inventory, absent from every Key, or with no Key that has health checks on — used to abort the entire job with one English line (`no enabled key/model combinations`); on this deployment that made channel *Fast* impossible to check at all. Such routes are now carried through the job as **已跳过** items with the exact reason attached, while the probeable routes still run. New `GET /api/admin/providers/{id}/health-check-targets` reports, before starting, every route and every Key with a per-item verdict, and the dialog is built from it so what it offers is exactly what the job will do.

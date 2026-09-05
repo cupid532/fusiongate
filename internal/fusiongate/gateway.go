@@ -1341,6 +1341,7 @@ func (a *App) chatAnthropic(w http.ResponseWriter, r *http.Request, body map[str
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	copyUpstreamRequestHeaders(req.Header, r.Header)
 	setOpenCodeAnthropicHeaders(req.Header)
+	applyOpenCodeRequestHeaders(req, z, r, encoded)
 	req.Header.Set("content-type", "application/json")
 	if err := setProviderAuth(req, z); err != nil {
 		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "route_configuration_error", Err: err}
@@ -1385,6 +1386,7 @@ func (a *App) chatGemini(w http.ResponseWriter, r *http.Request, body map[string
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(encoded))
 	copyUpstreamRequestHeaders(req.Header, r.Header)
+	applyOpenCodeRequestHeaders(req, z, r, encoded)
 	req.Header.Set("content-type", "application/json")
 	if err := setProviderAuth(req, z); err != nil {
 		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "route_configuration_error", Err: err}
