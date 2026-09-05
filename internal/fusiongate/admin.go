@@ -813,6 +813,27 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, map[string]any{"keys": statuses})
 		return
 	}
+	if len(parts) == 2 && parts[1] == "health-check-targets" {
+		if r.Method != http.MethodGet {
+			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
+			return
+		}
+		if a.healthCheckJobs == nil {
+			fail(w, http.StatusServiceUnavailable, "health_check_unavailable", "health check service is unavailable")
+			return
+		}
+		preview, err := a.healthCheckJobs.Preview(r.Context(), id)
+		if errors.Is(err, sql.ErrNoRows) {
+			fail(w, http.StatusNotFound, "not_found", "provider not found")
+			return
+		}
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, preview)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "keys" {
 		a.providerKeys(w, r, id)
 		return

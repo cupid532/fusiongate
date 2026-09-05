@@ -60,6 +60,7 @@ export function Providers() {
   const [editing, setEditing] = useState<Provider | null>(null)
   const [healthCheckOpen, setHealthCheckOpen] = useState(false)
   const [healthCheckProvider, setHealthCheckProvider] = useState<Provider | null>(null)
+  const [batchHealthOpen, setBatchHealthOpen] = useState(false)
   const [balanceOpen, setBalanceOpen] = useState(false)
   const [balanceProvider, setBalanceProvider] = useState<Provider | null>(null)
   const [keysOpen, setKeysOpen] = useState(false)
@@ -168,6 +169,13 @@ export function Providers() {
     return list
   }, [visibleProviders, filter, q])
 
+  // Only providers the server would accept; the rest are named in the tooltip
+  // rather than turned into a rejected request.
+  const healthEligible = useMemo(
+    () => providers.filter((p) => selected.has(p.id) && p.enabled && p.health_check_enabled && !p.archived).map((p) => p.id),
+    [providers, selected]
+  )
+
   const counts = useMemo(
     () => ({
       all: visibleProviders.filter((p) => !p.archived).length,
@@ -254,6 +262,16 @@ export function Providers() {
                   </Button>
                   <Button size="sm" variant="outline" onClick={() => batch.mutate({ ids: [...selected], action: "disable" })}>
                     停用
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={healthEligible.length === 0}
+                    title={healthEligible.length === 0 ? "所选渠道均已停用或关闭了检活" : healthEligible.length < selected.size ? `${selected.size - healthEligible.length} 个渠道已停用或关闭检活，将被跳过` : undefined}
+                    onClick={() => setBatchHealthOpen(true)}
+                  >
+                    <HeartPulse className="h-4 w-4" />
+                    批量检活（{healthEligible.length}）
                   </Button>
                   <Button
                     size="sm"
@@ -409,7 +427,14 @@ export function Providers() {
                           <Button variant="ghost" size="icon" onClick={() => setModelsProvider(p)} aria-label={`模型管理 ${p.name}`} title="模型管理">
                             <ListChecks className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" onClick={() => { setHealthCheckProvider(p); setHealthCheckOpen(true) }} aria-label={`检活 ${p.name}`} title="模型检活">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => { setHealthCheckProvider(p); setHealthCheckOpen(true) }}
+                            disabled={p.archived || !p.enabled || !p.health_check_enabled}
+                            aria-label={`检活 ${p.name}`}
+                            title={p.archived ? "已归档的渠道不能检活" : !p.enabled ? "渠道已停用，无法检活" : !p.health_check_enabled ? "该渠道已关闭检活，可在编辑中开启" : "模型检活"}
+                          >
                             <HeartPulse className="h-4 w-4" />
                           </Button>
                           <Button
@@ -478,8 +503,17 @@ export function Providers() {
         <HealthCheckDialog
           open={healthCheckOpen}
           onOpenChange={setHealthCheckOpen}
-          providerId={healthCheckProvider.id}
-          providerName={healthCheckProvider.name}
+          providerIds={[healthCheckProvider.id]}
+          title={`模型检活 · ${healthCheckProvider.name}`}
+        />
+      )}
+      {batchHealthOpen && (
+        <HealthCheckDialog
+          open={batchHealthOpen}
+          onOpenChange={setBatchHealthOpen}
+          providerIds={healthEligible}
+          title={`批量检活 · ${healthEligible.length} 个渠道`}
+          autoStart
         />
       )}
       {balanceProvider && (

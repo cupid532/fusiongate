@@ -122,3 +122,14 @@ export const providerModelsApi = {
   discover: providerKeysApi.discover,
   saveManagement: (providerId: number, keys: Array<Record<string, unknown>>) => api<{ keys: Array<{ key_id: number; status: string; error?: string }> }>(`/api/admin/providers/${providerId}/model-management`, { method: "PATCH", body: JSON.stringify({ keys }) }),
 }
+
+export const healthChecksApi = {
+  /** Routes × keys a manual check of this provider would probe, with reasons for the ones it cannot. */
+  preview: (providerId: number) => api<import("@/lib/types").HealthCheckPreview>(`/api/admin/providers/${providerId}/health-check-targets`),
+  /** The job currently occupying the single manual-check slot, if any. */
+  active: () => api<{ active: boolean; job?: import("@/lib/types").HealthCheckJob }>("/api/admin/health-checks"),
+  start: (body: { provider_ids: number[]; model_scope: "all" | "selected"; route_ids?: number[]; provider_key_ids?: number[] }) =>
+    api<import("@/lib/types").HealthCheckJob>("/api/admin/health-checks", { method: "POST", body: JSON.stringify(body) }),
+  get: (jobId: string) => api<import("@/lib/types").HealthCheckJob>(`/api/admin/health-checks/${jobId}`),
+  cancel: (jobId: string) => api<import("@/lib/types").HealthCheckJob>(`/api/admin/health-checks/${jobId}`, { method: "DELETE" }),
+}

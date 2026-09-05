@@ -489,12 +489,16 @@ export interface HealthCheckResult {
 export interface HealthCheckJob {
   id: string
   mode?: string
+  /** queued | running | cancelling | completed | cancelled */
   status: string
   total: number
   completed: number
   healthy: number
   failed: number
   skipped: number
+  created_at?: string
+  started_at?: string
+  finished_at?: string
   can_cancel?: boolean
   results: HealthCheckResult[]
 }
@@ -530,4 +534,35 @@ export interface CodexAccountQuota {
   used_quota: number
   remaining_quota: number
   next_reset_date?: string
+}
+
+export interface HealthCheckKeyPreview {
+  key_id: number
+  name: string
+  hint: string
+  enabled: boolean
+  health_check_enabled: boolean
+  supported: boolean
+  reason?: string
+}
+
+export interface HealthCheckRoutePreview {
+  route_id: number
+  public_name: string
+  upstream_model: string
+  capabilities: string
+  supported: boolean
+  reason?: string
+  keys: HealthCheckKeyPreview[]
+}
+
+/** What a manual health check of one provider would probe, and why some routes cannot be. */
+export interface HealthCheckPreview {
+  provider_id: number
+  provider_name: string
+  auth_kind: string
+  enabled: boolean
+  health_check_enabled: boolean
+  probeable: number
+  routes: HealthCheckRoutePreview[]
 }

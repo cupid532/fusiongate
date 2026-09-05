@@ -45,7 +45,26 @@ type healthCheckTarget struct {
 	PublicName      string
 	UpstreamModel   string
 	Capabilities    string
+	// SkipReason is set when the route is kept in the job only to be reported
+	// as skipped: no enabled API key can serve this upstream model. Empty for
+	// targets that will actually be probed.
+	SkipReason string
 }
+
+// Reasons a route or key cannot be probed. They are user-facing (the console
+// translates the exact strings), so change them together with
+// web/src/lib/health-check-messages.ts.
+const (
+	reasonNoHealthKeys     = "no enabled API key has health checks turned on"
+	reasonNoSelectedKeys   = "none of the selected API keys are enabled for health checks"
+	reasonModelDisabled    = "this model is switched off on every API key; enable it in model management"
+	reasonModelUnlisted    = "no API key lists this model; discover models for a key or add it in model management"
+	reasonKeyDisabled      = "API key is disabled"
+	reasonKeyHealthOff     = "health checks are off for this API key"
+	reasonKeyModelOff      = "model is switched off on this API key"
+	reasonKeyModelUnlisted = "this API key does not list the model"
+	reasonNotChat          = "only chat models support generation health checks"
+)
 
 type healthCheckJob struct {
 	ID         string                  `json:"id"`
@@ -154,6 +173,15 @@ func (m *healthCheckJobManager) StartModels(ctx context.Context, providerIDs, ro
 			Model:           target.UpstreamModel,
 			Mode:            mode,
 			Status:          "queued",
+		}
+		if target.SkipReason != "" {
+			// Reported, never probed: the job would otherwise have failed as a
+			// whole with one opaque error the moment any route lacked a key.
+			job.Results[i].Status = "skipped"
+			job.Results[i].Error = target.SkipReason
+			job.Results[i].FinishedAt = job.CreatedAt
+			job.Completed++
+			job.Skipped++
 		}
 	}
 	m.jobs[jobID] = job
@@ -339,62 +367,246 @@ func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers 
 	}
 	expanded := make([]healthCheckTarget, 0, len(targets))
 	for _, target := range targets {
-		var authKind string
-		if err := m.app.db.QueryRowContext(ctx, `SELECT auth_kind FROM providers WHERE id=?`, target.ProviderID).Scan(&authKind); err != nil {
-			return nil, err
-		}
-		if authKind != "api_key" {
-			expanded = append(expanded, target)
-			continue
-		}
-		rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint,k.model,k.model_policy,k.model_allowlist,p.default_model FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.provider_id=? AND k.enabled=1 AND k.health_check_enabled=1 ORDER BY k.sort_order,k.id`, target.ProviderID)
+		keyTargets, reason, err := m.routeKeyTargets(ctx, target, allowed)
 		if err != nil {
 			return nil, err
 		}
-		type keyCandidate struct {
-			id                                                 int64
-			name, hint, model, policy, allowlist, defaultModel string
+		if len(keyTargets) == 0 {
+			skipped := target
+			skipped.SkipReason = reason
+			expanded = append(expanded, skipped)
+			continue
 		}
-		candidates := make([]keyCandidate, 0)
-		for rows.Next() {
-			var c keyCandidate
-			if err := rows.Scan(&c.id, &c.name, &c.hint, &c.model, &c.policy, &c.allowlist, &c.defaultModel); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			candidates = append(candidates, c)
+		for _, item := range keyTargets {
+			matched[item.ProviderKeyID] = true
 		}
-		if err := rows.Close(); err != nil {
-			return nil, err
-		}
-		for _, c := range candidates {
-			if len(allowed) > 0 && !allowed[c.id] {
-				continue
-			}
-			inventory, exclusions, err := m.app.providerKeyModelSets(ctx, c.id)
-			if err != nil {
-				return nil, err
-			}
-			if !providerKeySupportsModel(c.policy, c.allowlist, c.model, c.defaultModel, target.UpstreamModel, inventory, exclusions) {
-				continue
-			}
-			item := target
-			item.ProviderKeyID, item.ProviderKeyName, item.ProviderKeyHint = c.id, c.name, c.hint
-			expanded = append(expanded, item)
-			matched[c.id] = true
-		}
+		expanded = append(expanded, keyTargets...)
 	}
 	if len(allowed) > 0 && len(matched) != len(allowed) {
 		return nil, errors.New("one or more selected keys are disabled, missing, or do not support the selected models")
 	}
-	targets = expanded
-	if len(targets) == 0 {
-		return nil, errors.New("the selected providers have no enabled key/model combinations")
-	}
-	if len(targets) > manualHealthCheckMaxItems {
+	if len(expanded) > manualHealthCheckMaxItems {
 		return nil, fmt.Errorf("health check expands to more than %d key/model combinations", manualHealthCheckMaxItems)
 	}
-	return targets, nil
+	return expanded, nil
+}
+
+// routeKeyTargets expands one enabled route into per-key probe targets.
+//
+// OAuth providers have no key cards, so the route itself is the single target.
+// For API-key providers it returns one target per enabled, health-check-enabled
+// key that can serve the upstream model (optionally narrowed to `allowed`).
+// When no key qualifies it returns no targets and a reason that names the
+// actual cause — the model switched off on every key, the model missing from
+// every key's inventory, or no key having health checks on — so the caller can
+// report the route as skipped instead of failing the whole job.
+func (m *healthCheckJobManager) routeKeyTargets(ctx context.Context, target healthCheckTarget, allowed map[int64]bool) ([]healthCheckTarget, string, error) {
+	var authKind string
+	if err := m.app.db.QueryRowContext(ctx, `SELECT auth_kind FROM providers WHERE id=?`, target.ProviderID).Scan(&authKind); err != nil {
+		return nil, "", err
+	}
+	if authKind != "api_key" {
+		return []healthCheckTarget{target}, "", nil
+	}
+	rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint,k.model,k.model_policy,k.model_allowlist,p.default_model FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.provider_id=? AND k.enabled=1 AND k.health_check_enabled=1 ORDER BY k.sort_order,k.id`, target.ProviderID)
+	if err != nil {
+		return nil, "", err
+	}
+	type keyCandidate struct {
+		id                                                 int64
+		name, hint, model, policy, allowlist, defaultModel string
+	}
+	candidates := make([]keyCandidate, 0)
+	for rows.Next() {
+		var c keyCandidate
+		if err := rows.Scan(&c.id, &c.name, &c.hint, &c.model, &c.policy, &c.allowlist, &c.defaultModel); err != nil {
+			rows.Close()
+			return nil, "", err
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, "", err
+	}
+	if len(candidates) == 0 {
+		return nil, reasonNoHealthKeys, nil
+	}
+	out := make([]healthCheckTarget, 0, len(candidates))
+	considered := 0
+	disabledSomewhere := false
+	for _, c := range candidates {
+		if len(allowed) > 0 && !allowed[c.id] {
+			continue
+		}
+		considered++
+		inventory, exclusions, err := m.app.providerKeyModelSets(ctx, c.id)
+		if err != nil {
+			return nil, "", err
+		}
+		if !providerKeySupportsModel(c.policy, c.allowlist, c.model, c.defaultModel, target.UpstreamModel, inventory, exclusions) {
+			if enabled, listed := inventory[normalizeProviderKeyModel(target.UpstreamModel)]; listed && !enabled {
+				disabledSomewhere = true
+			}
+			continue
+		}
+		item := target
+		item.ProviderKeyID, item.ProviderKeyName, item.ProviderKeyHint = c.id, c.name, c.hint
+		out = append(out, item)
+	}
+	if len(out) > 0 {
+		return out, "", nil
+	}
+	switch {
+	case considered == 0:
+		return nil, reasonNoSelectedKeys, nil
+	case disabledSomewhere:
+		return nil, reasonModelDisabled, nil
+	default:
+		return nil, reasonModelUnlisted, nil
+	}
+}
+
+type healthCheckKeyPreview struct {
+	KeyID              int64  `json:"key_id"`
+	Name               string `json:"name"`
+	Hint               string `json:"hint"`
+	Enabled            bool   `json:"enabled"`
+	HealthCheckEnabled bool   `json:"health_check_enabled"`
+	Supported          bool   `json:"supported"`
+	Reason             string `json:"reason,omitempty"`
+}
+
+type healthCheckRoutePreview struct {
+	RouteID       int64                   `json:"route_id"`
+	PublicName    string                  `json:"public_name"`
+	UpstreamModel string                  `json:"upstream_model"`
+	Capabilities  string                  `json:"capabilities"`
+	Supported     bool                    `json:"supported"`
+	Reason        string                  `json:"reason,omitempty"`
+	Keys          []healthCheckKeyPreview `json:"keys"`
+}
+
+// healthCheckPreview is what the console shows before starting a manual check:
+// every enabled route of the provider, which keys can probe it, and — for the
+// ones nothing can probe — why. It mirrors loadModelTargets exactly, so what the
+// dialog offers is what the job will do.
+type healthCheckPreview struct {
+	ProviderID         int64                     `json:"provider_id"`
+	ProviderName       string                    `json:"provider_name"`
+	AuthKind           string                    `json:"auth_kind"`
+	Enabled            bool                      `json:"enabled"`
+	HealthCheckEnabled bool                      `json:"health_check_enabled"`
+	Probeable          int                       `json:"probeable"`
+	Routes             []healthCheckRoutePreview `json:"routes"`
+}
+
+func (m *healthCheckJobManager) Preview(ctx context.Context, providerID int64) (healthCheckPreview, error) {
+	out := healthCheckPreview{Routes: []healthCheckRoutePreview{}}
+	var providerType string
+	var enabled, healthEnabled int
+	if err := m.app.db.QueryRowContext(ctx, `SELECT id,name,type,auth_kind,enabled,health_check_enabled FROM providers WHERE id=?`, providerID).Scan(&out.ProviderID, &out.ProviderName, &providerType, &out.AuthKind, &enabled, &healthEnabled); err != nil {
+		return out, err
+	}
+	out.Enabled, out.HealthCheckEnabled = strBool(enabled), strBool(healthEnabled)
+
+	type keyRow struct {
+		id                                   int64
+		name, hint, model, policy, allowlist string
+		defaultModel                         string
+		enabled, healthEnabled               bool
+		inventory, exclusions                map[string]bool
+	}
+	keys := []keyRow{}
+	if out.AuthKind == "api_key" {
+		rows, err := m.app.db.QueryContext(ctx, `SELECT k.id,k.name,k.key_hint,k.model,k.model_policy,k.model_allowlist,k.enabled,k.health_check_enabled,p.default_model FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, providerID)
+		if err != nil {
+			return out, err
+		}
+		for rows.Next() {
+			var k keyRow
+			var en, hc int
+			if err := rows.Scan(&k.id, &k.name, &k.hint, &k.model, &k.policy, &k.allowlist, &en, &hc, &k.defaultModel); err != nil {
+				rows.Close()
+				return out, err
+			}
+			k.enabled, k.healthEnabled = strBool(en), strBool(hc)
+			keys = append(keys, k)
+		}
+		if err := rows.Close(); err != nil {
+			return out, err
+		}
+		for i := range keys {
+			inventory, exclusions, err := m.app.providerKeyModelSets(ctx, keys[i].id)
+			if err != nil {
+				return out, err
+			}
+			keys[i].inventory, keys[i].exclusions = inventory, exclusions
+		}
+	}
+
+	rows, err := m.app.db.QueryContext(ctx, `SELECT id,public_name,upstream_model,capabilities FROM model_routes WHERE provider_id=? AND enabled=1 ORDER BY sort_order,id`, providerID)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		route := healthCheckRoutePreview{Keys: []healthCheckKeyPreview{}}
+		if err := rows.Scan(&route.RouteID, &route.PublicName, &route.UpstreamModel, &route.Capabilities); err != nil {
+			return out, err
+		}
+		if !strings.Contains(route.Capabilities, "chat") {
+			route.Reason = reasonNotChat
+			out.Routes = append(out.Routes, route)
+			continue
+		}
+		if out.AuthKind != "api_key" {
+			route.Supported = true
+			out.Probeable++
+			out.Routes = append(out.Routes, route)
+			continue
+		}
+		healthKeys := 0
+		disabledSomewhere := false
+		for _, k := range keys {
+			kp := healthCheckKeyPreview{KeyID: k.id, Name: k.name, Hint: k.hint, Enabled: k.enabled, HealthCheckEnabled: k.healthEnabled}
+			supports := providerKeySupportsModel(k.policy, k.allowlist, k.model, k.defaultModel, route.UpstreamModel, k.inventory, k.exclusions)
+			switch {
+			case !k.enabled:
+				kp.Reason = reasonKeyDisabled
+			case !k.healthEnabled:
+				kp.Reason = reasonKeyHealthOff
+			case !supports:
+				if enabled, listed := k.inventory[normalizeProviderKeyModel(route.UpstreamModel)]; listed && !enabled {
+					kp.Reason = reasonKeyModelOff
+					disabledSomewhere = true
+				} else {
+					kp.Reason = reasonKeyModelUnlisted
+				}
+			default:
+				kp.Supported = true
+			}
+			if k.enabled && k.healthEnabled {
+				healthKeys++
+			}
+			if kp.Supported {
+				route.Supported = true
+				out.Probeable++
+			}
+			route.Keys = append(route.Keys, kp)
+		}
+		if !route.Supported {
+			switch {
+			case healthKeys == 0:
+				route.Reason = reasonNoHealthKeys
+			case disabledSomewhere:
+				route.Reason = reasonModelDisabled
+			default:
+				route.Reason = reasonModelUnlisted
+			}
+		}
+		out.Routes = append(out.Routes, route)
+	}
+	return out, rows.Err()
 }
 
 func (m *healthCheckJobManager) run(ctx context.Context, jobID string) {
@@ -474,6 +686,10 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 	}
 	item := job.Results[index]
 	mode := job.Mode
+	if item.Status != "queued" {
+		m.mu.Unlock()
+		return
+	}
 	job.Results[index].Status = "running"
 	job.Results[index].StartedAt = now()
 	m.mu.Unlock()

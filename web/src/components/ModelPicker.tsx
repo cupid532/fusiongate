@@ -34,12 +34,19 @@ export function ModelPicker({
   providerId,
   providerName,
   providerIds,
+  mixedTypes = false,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   providerId: number
   providerName: string
   providerIds?: number[]
+  /**
+   * The selection spans several platforms (Codex + Grok, say). One inventory
+   * cannot be shared across them, so the picker offers the only sensible bulk
+   * action instead: discover and enable every model on each credential.
+   */
+  mixedTypes?: boolean
 }) {
   const qc = useQueryClient()
   const [models, setModels] = useState<DiscoveredModel[]>([])
@@ -48,8 +55,11 @@ export function ModelPicker({
   const [error, setError] = useState("")
   const [result, setResult] = useState("")
 
+  const targets = providerIds?.length ? providerIds : [providerId]
+  const bulk = mixedTypes && targets.length > 1
+
   useEffect(() => {
-    if (open && providerId) {
+    if (open && providerId && !bulk) {
       setLoading(true)
       setError("")
       setResult("")
@@ -62,12 +72,25 @@ export function ModelPicker({
         .catch((e) => setError(e instanceof Error ? e.message : "识别失败"))
         .finally(() => setLoading(false))
     }
-  }, [open, providerId])
+  }, [open, providerId, bulk])
+
+  const syncAll = useMutation({
+    mutationFn: () =>
+      api<{ providers: number; succeeded: number; failed: number; models: number }>("/api/admin/auth/models/sync", {
+        method: "POST",
+        body: JSON.stringify({ provider_ids: targets }),
+      }),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["providers"] })
+      qc.invalidateQueries({ queryKey: ["routes"] })
+      setResult(`${r.succeeded}/${r.providers} 个认证识别成功，共启用 ${r.models} 个模型${r.failed ? `，${r.failed} 个失败` : ""}`)
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : "识别失败"),
+  })
 
   const enabledModels = useMemo(() => models.filter((m) => m.existing).sort((a, b) => a.id.localeCompare(b.id)), [models])
   const disabledModels = useMemo(() => models.filter((m) => !m.existing).sort((a, b) => a.id.localeCompare(b.id)), [models])
 
-  const targets = providerIds?.length ? providerIds : [providerId]
   const save = useMutation({
     mutationFn: async () =>
       targets.length > 1
@@ -102,10 +125,26 @@ export function ModelPicker({
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{targets.length > 1 ? `批量管理模型 · ${targets.length} 个认证` : `管理模型 · ${providerName}`}</DialogTitle>
-          <DialogDescription>{targets.length > 1 ? "从首个认证识别模型，并将勾选结果应用到所有选中的同平台认证。" : "勾选即启用，取消勾选即关闭。已启用的模型排在上方。"}</DialogDescription>
+          <DialogDescription>
+            {bulk
+              ? "所选认证来自不同平台，模型清单无法互通；可为每个认证各自识别并启用全部模型。"
+              : targets.length > 1
+                ? "从首个认证识别模型，并将勾选结果应用到所有选中的同平台认证。「全部启用」再保存即等同于一键识别。"
+                : "勾选即启用，取消勾选即关闭。已启用的模型排在上方。"}
+          </DialogDescription>
         </DialogHeader>
 
-        {loading ? (
+        {bulk ? (
+          <div className="space-y-3">
+            {error && <div className="text-sm text-destructive">{error}</div>}
+            {result && <div className="rounded-md bg-primary/10 px-3 py-2 text-xs text-primary">{result}</div>}
+            {!result && (
+              <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                将对 {targets.length} 个认证分别向上游查询可用模型，并把发现的模型全部加入路由。已有的路由不会被删除。
+              </div>
+            )}
+          </div>
+        ) : loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">正在识别模型…</div>
         ) : error ? (
           <div className="py-8 text-center text-sm text-destructive">{error}</div>
@@ -157,9 +196,15 @@ export function ModelPicker({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
-          <Button onClick={() => save.mutate()} disabled={loading || save.isPending}>
-            {save.isPending ? "保存中…" : "保存模型设置"}
-          </Button>
+          {bulk ? (
+            <Button onClick={() => syncAll.mutate()} disabled={syncAll.isPending || !!result}>
+              {syncAll.isPending ? "识别中…" : `识别并启用全部模型（${targets.length} 个认证）`}
+            </Button>
+          ) : (
+            <Button onClick={() => save.mutate()} disabled={loading || save.isPending}>
+              {save.isPending ? "保存中…" : "保存模型设置"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

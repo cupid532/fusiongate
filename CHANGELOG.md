@@ -1,5 +1,14 @@
 # Changelog
 
+## V2.84
+
+- Make manual health checks (检活) resilient and legible instead of failing whole. A route whose upstream model no enabled Key can serve — switched off in that Key's inventory, absent from every Key, or with no Key that has health checks on — used to abort the entire job with one English line (`no enabled key/model combinations`); on this deployment that made channel *Fast* impossible to check at all. Such routes are now carried through the job as **已跳过** items with the exact reason attached, while the probeable routes still run. New `GET /api/admin/providers/{id}/health-check-targets` reports, before starting, every route and every Key with a per-item verdict, and the dialog is built from it so what it offers is exactly what the job will do.
+- Treat the single manual-check slot as a state, not an error. The server runs one manual job at a time; while a 100-credential batch was running every other 检活 click came back as a red `already running`. The dialog now detects the running job, shows its progress, and offers 查看进度 / 取消它, with the start buttons reading 等待中… until the slot frees.
+- Give batch health checks a results view. 批量测活 on 认证文件 only raised a toast pointing at the 质量检测 page, which never listed these jobs, so the outcome was invisible. Both 认证文件 and the new 批量检活 on 上游渠道 multi-select now open the same dialog and show live per-route results, with a 仅看问题 filter.
+- Translate every health-check status and reason into Chinese in the console (statuses like `content_mismatch`, skip reasons, start-rejection messages); unknown text still passes through unchanged.
+- Merge 识别模型 into 模型设置 on the 认证文件 multi-select toolbar. The picker already discovers models on open, so the separate button repeated its first step without letting you choose. 模型设置 is now always enabled; for a selection spanning platforms (Codex + Grok) it offers the one bulk action that makes sense there — 识别并启用全部模型 — instead of being greyed out.
+- Disable the per-row 检活 button, with a reason in the tooltip, for archived, disabled, or health-check-off channels rather than letting the server refuse the request.
+
 ## V2.83
 
 - Remove the standalone 缓存分析 tab from the request ledger. The per-model group cards already carry cache rate, and the per-request column gives the row-level detail, so the channel-grouped view was redundant.

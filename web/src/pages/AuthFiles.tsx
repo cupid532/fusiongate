@@ -22,8 +22,8 @@ import { CodexCard } from "@/components/CodexCard"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { ModelPicker } from "@/components/ModelPicker"
 import { AuthEgressDialog } from "@/components/AuthEgressDialog"
+import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 import { useConfirmDelete } from "@/components/ui/confirm"
-import { notify } from "@/lib/notify"
 
 const platformLabels: Record<string, string> = {
   codex: "Codex (ChatGPT)",
@@ -55,6 +55,7 @@ export function AuthFiles() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
   const [egressOpen, setEgressOpen] = useState(false)
+  const [healthOpen, setHealthOpen] = useState(false)
 
   const { data: providers = [], isLoading } = useQuery({
     queryKey: ["providers"],
@@ -74,20 +75,6 @@ export function AuthFiles() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["providers"] })
       qc.invalidateQueries({ queryKey: ["routes"] })
-    },
-  })
-
-  const batchModelSync = useMutation({
-    mutationFn: async (ids: number[]) => api<{ providers: number; succeeded: number; failed: number; models: number }>("/api/admin/auth/models/sync", { method: "POST", body: JSON.stringify({ provider_ids: ids }) }),
-    onSuccess: (r) => { qc.invalidateQueries({ queryKey: ["providers"] }); notify({ tone: r.failed ? "error" : "success", title: "模型识别完成", description: `${r.succeeded}/${r.providers} 个认证成功，发现 ${r.models} 个模型${r.failed ? `，${r.failed} 个失败` : ""}`, duration: 10_000 }) },
-  })
-
-  const batchHealthCheck = useMutation({
-    mutationFn: async (ids: number[]) =>
-      api<{ total: number }>("/api/admin/health-checks", { method: "POST", body: JSON.stringify({ provider_ids: ids, model_scope: "all" }) }),
-    onSuccess: (j) => {
-      setSelected(new Set())
-      notify({ tone: "success", title: "检活任务已启动", description: `共 ${j.total} 个模型，可在「质量检测」页查看结果。`, duration: 8_000 })
     },
   })
 
@@ -140,19 +127,20 @@ export function AuthFiles() {
         <div className="flex flex-wrap gap-2">
           {multiSelect && selected.size > 0 && (
             <>
-              <Button variant="outline" onClick={() => { setModelPickerProvider(oauth.find((p) => selected.has(p.id)) ?? null); setModelPickerOpen(true) }} disabled={new Set(oauth.filter((p) => selected.has(p.id)).map((p) => p.type)).size !== 1}>
+              {/* 模型设置 opens the picker, which discovers models itself —
+                  so the separate 识别模型 button was the same first step with
+                  no way to choose what to keep. Its one extra ability (bulk
+                  "enable everything", across mixed platforms) lives inside
+                  the picker now. */}
+              <Button variant="outline" onClick={() => { setModelPickerProvider(oauth.find((p) => selected.has(p.id)) ?? null); setModelPickerOpen(true) }}>
                 <ScanSearch className="h-4 w-4" />
                 模型设置（{selected.size}）
-              </Button>
-              <Button variant="outline" onClick={() => batchModelSync.mutate([...selected])} disabled={batchModelSync.isPending}>
-                <ScanSearch className="h-4 w-4" />
-                识别模型
               </Button>
               <Button variant="outline" onClick={() => setEgressOpen(true)}>
                 <Network className="h-4 w-4" />
                 指定出口
               </Button>
-              <Button variant="outline" onClick={() => batchHealthCheck.mutate([...selected])}>
+              <Button variant="outline" onClick={() => setHealthOpen(true)}>
                 <HeartPulse className="h-4 w-4" />
                 批量测活（{selected.size}）
               </Button>
@@ -262,7 +250,25 @@ export function AuthFiles() {
 
       <AuthImportDialog open={importOpen} onOpenChange={setImportOpen} />
       <AuthOAuthDialog open={oauthOpen} onOpenChange={setOauthOpen} />
-      {modelPickerProvider && <ModelPicker open={modelPickerOpen} onOpenChange={setModelPickerOpen} providerId={modelPickerProvider.id} providerName={modelPickerProvider.name} providerIds={selected.size > 1 ? [...selected] : undefined} />}
+      {modelPickerProvider && (
+        <ModelPicker
+          open={modelPickerOpen}
+          onOpenChange={setModelPickerOpen}
+          providerId={modelPickerProvider.id}
+          providerName={modelPickerProvider.name}
+          providerIds={selected.size > 1 ? [...selected] : undefined}
+          mixedTypes={new Set(oauth.filter((p) => selected.has(p.id)).map((p) => p.type)).size > 1}
+        />
+      )}
+      {healthOpen && (
+        <HealthCheckDialog
+          open={healthOpen}
+          onOpenChange={setHealthOpen}
+          providerIds={[...selected]}
+          title={`批量测活 · ${selected.size} 个认证`}
+          autoStart
+        />
+      )}
       <AuthEgressDialog open={egressOpen} onOpenChange={setEgressOpen} providerIds={[...selected]} />
     </motion.div>
   )
