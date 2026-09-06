@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network, ListChecks, CloudUpload, FileText } from "lucide-react"
+import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network, ListChecks, CloudUpload, FileText, Power, PowerOff } from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -114,6 +114,14 @@ export function AuthFiles() {
     },
   })
 
+  const batchToggle = useMutation({
+    mutationFn: async ({ ids, action }: { ids: number[]; action: "enable" | "disable" }) =>
+      api("/api/admin/providers/batch", { method: "POST", body: JSON.stringify({ provider_ids: ids, action }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["providers"] })
+    },
+  })
+
   // 按平台分组
   const groups = useMemo(() => {
     const order = ["codex", "grok", "claude"]
@@ -144,11 +152,14 @@ export function AuthFiles() {
         <div className="flex flex-wrap gap-2">
           {multiSelect && selected.size > 0 && (
             <>
-              {/* 模型设置 opens the picker, which discovers models itself —
-                  so the separate 识别模型 button was the same first step with
-                  no way to choose what to keep. Its one extra ability (bulk
-                  "enable everything", across mixed platforms) lives inside
-                  the picker now. */}
+              <Button variant="outline" onClick={() => batchToggle.mutate({ ids: [...selected], action: "enable" })}>
+                <Power className="h-4 w-4" />
+                批量启用
+              </Button>
+              <Button variant="outline" onClick={() => batchToggle.mutate({ ids: [...selected], action: "disable" })}>
+                <PowerOff className="h-4 w-4" />
+                批量停用
+              </Button>
               <Button variant="outline" onClick={() => { setModelPickerProvider(oauth.find((p) => selected.has(p.id)) ?? null); setModelPickerOpen(true) }}>
                 <ScanSearch className="h-4 w-4" />
                 模型设置（{selected.size}）

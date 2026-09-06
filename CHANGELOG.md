@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.92
+
+- Add batch enable/disable buttons to the auth files page. The backend batch endpoint already supported `enable` and `disable` actions, but the console had no UI for it — only model settings, health check, export, and delete were exposed. With 100+ Grok credentials this was the only practical way to toggle them.
+
 ## V2.91
 
 - Let imported Grok OAuth credentials participate in dispatch. Previously `sharedGrokImport` force-disabled every externally imported Grok credential, while Codex and Claude imports from the same sources were enabled normally. The `externalOAuthOwner` check already prevents FusionGate from rotating imported refresh tokens, so the extra Grok-only disable was redundant. All platforms now share the same rule: enabled when not expired, with a note when the credential is externally managed.
