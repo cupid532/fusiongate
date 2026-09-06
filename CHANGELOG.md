@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.88
+
+- Fix batch credential export naming a ZIP file as `.json`. The multi-account export (2+ accounts) returns a ZIP archive, but the frontend hardcoded `fusiongate-auth-export.json` as the download name regardless of Content-Type. The downloaded file was a ZIP with a `.json` extension — unrecognisable to the import dialog, and binary garbage to `FileReader.readAsText`. The filename is now derived from the server's Content-Disposition header, falling back to `.zip` when the response is not JSON.
+
 ## V2.87
 
 - Accept ZIP files in the credential import dialog. The multi-account export produces a ZIP (one JSON per account), but the import only accepted `.json` files — making a batch export impossible to reimport without manual extraction. The file picker now takes `.json` and `.zip`; ZIP contents are extracted in the browser using the native DecompressionStream API (no library), concatenated into a JSON array, and sent to the existing preview endpoint.

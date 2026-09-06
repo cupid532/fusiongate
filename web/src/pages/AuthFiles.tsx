@@ -88,10 +88,15 @@ export function AuthFiles() {
       })
       if (!res.ok) throw new Error("导出失败")
       const blob = await res.blob()
+      const ct = res.headers.get("content-type") ?? ""
+      const isZip = ct.includes("zip") || ct.includes("octet-stream")
+      const cd = res.headers.get("content-disposition") ?? ""
+      const fnMatch = cd.match(/filename="?([^";\s]+)"?/)
+      const filename = fnMatch?.[1] ?? (isZip ? `fusiongate-auth-export-${new Date().toISOString().slice(0, 10)}.zip` : "fusiongate-auth-export.json")
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = "fusiongate-auth-export.json"
+      a.download = filename
       a.click()
       URL.revokeObjectURL(url)
       setSelected(new Set())
