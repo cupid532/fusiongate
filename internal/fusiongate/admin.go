@@ -624,20 +624,16 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		return
 	}
 	if len(found) != len(ids) {
-		fail(w, http.StatusBadRequest, "invalid_provider_selection", "one or more authentication files no longer exist")
+		fail(w, http.StatusBadRequest, "invalid_provider_selection", "one or more providers no longer exist")
 		return
 	}
-	for _, id := range ids {
-		if found[id] != "oauth" {
-			fail(w, http.StatusBadRequest, "invalid_provider_selection", "batch actions only support OAuth authentication files")
-			return
-		}
-	}
+	// Mixed auth_kind is fine for enable/disable/delete/egress.
+	// Only the models action needs same-type validation (below).
 	if in.Action == "models" {
 		canonical := types[ids[0]]
 		for _, id := range ids[1:] {
 			if types[id] != canonical {
-				fail(w, http.StatusBadRequest, "invalid_provider_selection", "batch model selection requires authentication files of the same type")
+				fail(w, http.StatusBadRequest, "invalid_provider_selection", "batch model selection requires providers of the same type")
 				return
 			}
 		}
@@ -658,6 +654,13 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"action": "models", "affected": len(ids), "selected": result.Selected, "added": result.Added, "existing": result.Existing, "removed": result.Removed})
 		return
+	}
+
+	var deleteKeyIDs []int64
+	if in.Action == "delete" {
+		for _, id := range ids {
+			deleteKeyIDs = append(deleteKeyIDs, a.providerKeyIDs(id)...)
+		}
 	}
 
 	var res sql.Result
@@ -696,9 +699,14 @@ func (a *App) providerBatch(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	}
 	for _, id := range ids {
 		a.resetProviderRuntime(id)
-		if in.Action == "egress" {
+	}
+	if in.Action == "egress" {
+		for _, id := range ids {
 			a.resetProviderKeysRuntime(a.providerKeyIDs(id))
 		}
+	}
+	if in.Action == "delete" {
+		a.resetProviderKeysRuntime(deleteKeyIDs)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"action": in.Action, "affected": affected})
 }
