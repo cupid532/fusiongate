@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.86
+
+- Bump the emulated Codex CLI version from 0.147.0 to 0.153.4. The ChatGPT backend gates the model list on `client_version`; the old value predates GPT-6-Astra (shipped with CLI v0.153.1), so it was never offered during model discovery. The new default picks up `gpt-6-astra` and any other model introduced since v0.147.
+
 ## V2.85
 
 - Send `x-opencode-session` on every request to an OpenCode channel. OpenCode Go requires one stable ID per conversation and may reject requests without it from 2026-09-06. A header the client already sends is forwarded untouched; otherwise the gateway derives one — from another vendor's session header (Codex CLI `session_id`, `x-session-id`), from the body (OpenAI `prompt_cache_key`, Claude Code's `metadata.user_id` session segment), or as a fingerprint of gateway credential + system prompt + first user message, which every later turn of the same conversation reproduces. Health-check probes and model discovery identify themselves as `fusiongate-probe-<provider id>`.
