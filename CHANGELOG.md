@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.91
+
+- Let imported Grok OAuth credentials participate in dispatch. Previously `sharedGrokImport` force-disabled every externally imported Grok credential, while Codex and Claude imports from the same sources were enabled normally. The `externalOAuthOwner` check already prevents FusionGate from rotating imported refresh tokens, so the extra Grok-only disable was redundant. All platforms now share the same rule: enabled when not expired, with a note when the credential is externally managed.
+
 ## V2.88
 
 - Fix batch credential export naming a ZIP file as `.json`. The multi-account export (2+ accounts) returns a ZIP archive, but the frontend hardcoded `fusiongate-auth-export.json` as the download name regardless of Content-Type. The downloaded file was a ZIP with a `.json` extension — unrecognisable to the import dialog, and binary garbage to `FileReader.readAsText`. The filename is now derived from the server's Content-Disposition header, falling back to `.zip` when the response is not JSON.

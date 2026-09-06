@@ -1200,10 +1200,9 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		return 0, "", err
 	}
 	status := credentialStatus(c)
-	sharedRisk := sharedGrokImport(c)
-	sharedNote := ""
-	if sharedRisk {
-		sharedNote = "shared_import_risk: 导入的 Grok refresh token 可能仍被其他运行实例使用，已默认停用且禁止 FusionGate 续期；请用设备授权获取独立凭证"
+	externalNote := ""
+	if externalOAuthOwner(c) {
+		externalNote = "external_import: 此凭证来自外部系统，FusionGate 不会自动续期 refresh token；到期后需从来源重新导入"
 	}
 	if duplicateID > 0 {
 		if !updateExisting {
@@ -1214,9 +1213,8 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		if err != nil {
 			return 0, "", err
 		}
-		// Shared Grok imports stay disabled so proactive refresh never revokes the source side.
-		enabledVal := map[bool]int{true: 1, false: 0}[status != "expired" && !sharedRisk]
-		_, err = a.db.ExecContext(ctx, `UPDATE providers SET type=?,base_url=?,credential=?,auth_kind='oauth',auth_source=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status=?,auth_fingerprint=?,auth_has_refresh=?,status=?,enabled=?,notes=CASE WHEN ?!='' THEN ? ELSE notes END,last_error='',health_check_status='',health_check_error='',updated_at=? WHERE id=?`, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), map[bool]string{true: "unknown", false: "auth_expired"}[status != "expired"], enabledVal, sharedNote, sharedNote, now(), duplicateID)
+		enabledVal := map[bool]int{true: 1, false: 0}[status != "expired"]
+		_, err = a.db.ExecContext(ctx, `UPDATE providers SET type=?,base_url=?,credential=?,auth_kind='oauth',auth_source=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status=?,auth_fingerprint=?,auth_has_refresh=?,status=?,enabled=?,notes=CASE WHEN ?!='' THEN ? ELSE notes END,last_error='',health_check_status='',health_check_error='',updated_at=? WHERE id=?`, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), map[bool]string{true: "unknown", false: "auth_expired"}[status != "expired"], enabledVal, externalNote, externalNote, now(), duplicateID)
 		return duplicateID, currentName, err
 	}
 	name := strings.TrimSpace(requestedName)
@@ -1227,8 +1225,8 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 	if err != nil {
 		return 0, "", err
 	}
-	enabled := status != "expired" && !sharedRisk
-	res, err := a.db.ExecContext(ctx, `INSERT INTO providers(name,type,base_url,credential,enabled,archived,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_account_id,auth_email,auth_expires_at,auth_last_refresh_at,auth_status,auth_fingerprint,auth_has_refresh,created_at,updated_at) SELECT ?,?,?,?,?,0,?,COALESCE(MAX(sort_order),-1)+1,100,'unknown',?,'normalized','any',0,120000,5,30,'oauth',?,?,?,?,?,?,?,?,?,? FROM providers`, name, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, boolInt(enabled), priority, sharedNote, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), now())
+	enabled := status != "expired"
+	res, err := a.db.ExecContext(ctx, `INSERT INTO providers(name,type,base_url,credential,enabled,archived,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_account_id,auth_email,auth_expires_at,auth_last_refresh_at,auth_status,auth_fingerprint,auth_has_refresh,created_at,updated_at) SELECT ?,?,?,?,?,0,?,COALESCE(MAX(sort_order),-1)+1,100,'unknown',?,'normalized','any',0,120000,5,30,'oauth',?,?,?,?,?,?,?,?,?,? FROM providers`, name, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, boolInt(enabled), priority, externalNote, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), now())
 	if err != nil {
 		return 0, "", err
 	}
@@ -1840,11 +1838,6 @@ func externalOAuthOwner(c ProviderCredential) bool {
 	default:
 		return false
 	}
-}
-
-// sharedGrokImport is kept as a narrow alias for Grok-specific import UX/notes.
-func sharedGrokImport(c ProviderCredential) bool {
-	return normalizeOAuthPlatform(c.Platform) == "grok" && externalOAuthOwner(c)
 }
 
 func oauthRefreshLeadTime() time.Duration {
