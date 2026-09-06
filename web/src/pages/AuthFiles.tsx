@@ -24,6 +24,7 @@ import { ModelPicker } from "@/components/ModelPicker"
 import { AuthEgressDialog } from "@/components/AuthEgressDialog"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 import { useConfirmDelete } from "@/components/ui/confirm"
+import { extractJsonFromZip } from "@/lib/zip-extract"
 
 const platformLabels: Record<string, string> = {
   codex: "Codex (ChatGPT)",
@@ -291,9 +292,28 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     // 允许重复选择同一个文件
     e.target.value = ""
     if (!file) return
-    if (!/\.(json)$/i.test(file.name)) {
-      setFileError("请选择 .json 格式的凭据文件")
+    if (!/\.(json|zip)$/i.test(file.name)) {
+      setFileError("请选择 .json 或 .zip 格式的凭据文件")
       setFileName("")
+      return
+    }
+    if (/\.zip$/i.test(file.name)) {
+      file.arrayBuffer().then(async (buf) => {
+        try {
+          const entries = await extractJsonFromZip(buf)
+          if (entries.length === 0) {
+            setFileError("ZIP 中没有找到 .json 文件")
+            setFileName("")
+            return
+          }
+          setContent("[" + entries.join(",") + "]")
+          setFileName(file.name)
+          setFileError("")
+        } catch {
+          setFileError("读取 ZIP 失败，请确认文件完整")
+          setFileName("")
+        }
+      })
       return
     }
     const reader = new FileReader()
@@ -349,13 +369,13 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".json,application/json"
+                accept=".json,.zip,application/json,application/zip"
                 onChange={onPickFile}
                 className="hidden"
               />
               <Button variant="outline" type="button" onClick={() => fileInputRef.current?.click()} className="w-full">
                 <CloudUpload className="h-4 w-4" />
-                {fileName ? `已选择：${fileName}` : "选择本地 .json 文件"}
+                {fileName ? `已选择：${fileName}` : "选择本地 .json / .zip 文件"}
               </Button>
               {fileError && <p className="mt-1.5 text-xs text-destructive">{fileError}</p>}
               {fileName && (
@@ -368,7 +388,7 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
             <Textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder='粘贴凭证 JSON（例如 {"version":1,"kind":"oauth","platform":"codex",...}），或点击上方选择本地 .json 文件'
+              placeholder='粘贴凭证 JSON（例如 {"version":1,"kind":"oauth","platform":"codex",...}），或点击上方选择本地 .json / .zip 文件'
               className="min-h-[180px] font-mono text-xs"
             />
           </div>

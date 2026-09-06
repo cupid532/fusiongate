@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.87
+
+- Accept ZIP files in the credential import dialog. The multi-account export produces a ZIP (one JSON per account), but the import only accepted `.json` files — making a batch export impossible to reimport without manual extraction. The file picker now takes `.json` and `.zip`; ZIP contents are extracted in the browser using the native DecompressionStream API (no library), concatenated into a JSON array, and sent to the existing preview endpoint.
+
 ## V2.86
 
 - Bump the emulated Codex CLI version from 0.147.0 to 0.153.4. The ChatGPT backend gates the model list on `client_version`; the old value predates GPT-6-Astra (shipped with CLI v0.153.1), so it was never offered during model discovery. The new default picks up `gpt-6-astra` and any other model introduced since v0.147.
