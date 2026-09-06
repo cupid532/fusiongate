@@ -23,7 +23,7 @@ import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { ModelPicker } from "@/components/ModelPicker"
 import { AuthEgressDialog } from "@/components/AuthEgressDialog"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
-import { useConfirmDelete } from "@/components/ui/confirm"
+import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { extractJsonFromZip } from "@/lib/zip-extract"
 
 const platformLabels: Record<string, string> = {
@@ -49,6 +49,7 @@ function statusBadge(p: Provider) {
 export function AuthFiles() {
   const qc = useQueryClient()
   const confirmDelete = useConfirmDelete()
+  const confirm = useConfirm()
   const [importOpen, setImportOpen] = useState(false)
   const [oauthOpen, setOauthOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -103,6 +104,16 @@ export function AuthFiles() {
     },
   })
 
+  const batchDelete = useMutation({
+    mutationFn: async (ids: number[]) =>
+      api("/api/admin/providers/batch", { method: "POST", body: JSON.stringify({ provider_ids: ids, action: "delete" }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["providers"] })
+      qc.invalidateQueries({ queryKey: ["routes"] })
+      setSelected(new Set())
+    },
+  })
+
   // 按平台分组
   const groups = useMemo(() => {
     const order = ["codex", "grok", "claude"]
@@ -152,6 +163,29 @@ export function AuthFiles() {
               </Button>
               <Button variant="outline" onClick={() => batchExport.mutate([...selected])}>
                 批量导出
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={async () => {
+                  const names = [...selected]
+                    .map((id) => oauth.find((p) => p.id === id)?.name)
+                    .filter(Boolean)
+                    .slice(0, 5)
+                    .join("、")
+                  if (
+                    await confirm({
+                      title: `删除选中的 ${selected.size} 个认证文件？`,
+                      description: `${names}${selected.size > 5 ? " 等" : ""}。此操作不可恢复，相关的模型路由也会一并失效。`,
+                      destructive: true,
+                      confirmLabel: `删除 ${selected.size} 个`,
+                    })
+                  ) {
+                    batchDelete.mutate([...selected])
+                  }
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                批量删除
               </Button>
             </>
           )}
