@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.95
+
+- Update Grok CLI client version from 0.2.93 to 1.0.4 and add `x-grok-client-mode: headless` header to match the current official Grok shell client. The outdated version caused the upstream to return a truncated model catalog. Inject grok-4.5 and grok-composer-25-fast into the discovery results when grok-4.6 is present, matching grok2api's catalog enrichment.
+
 ## V2.94
 
 - Fix Grok model discovery to try `/models` before `/v1/models` for grok_oauth providers, matching the CLI proxy's actual endpoint. Parse `modelId` and `_meta` fields from the upstream catalog and skip hidden models, so discovery returns the full model set instead of only grok-4.6.

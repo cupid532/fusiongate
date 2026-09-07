@@ -12,7 +12,7 @@ import (
 //
 // Keep these defaults aligned with the official Grok shell client. Mismatched
 // client metadata can cause upstream auth failures even with a valid token.
-const defaultGrokCLIVersion = "0.2.93"
+const defaultGrokCLIVersion = "1.0.4"
 const defaultGrokClientIdentifier = "grok-shell"
 
 func grokCLIVersion() string {
@@ -34,5 +34,6 @@ func setGrokClientHeaders(header http.Header) {
 	header.Set("X-XAI-Token-Auth", "xai-grok-cli")
 	header.Set("x-grok-client-version", version)
 	header.Set("x-grok-client-identifier", grokClientIdentifier())
-	header.Set("User-Agent", "xai-grok-workspace/"+version)
+	header.Set("x-grok-client-mode", "headless")
+	header.Set("User-Agent", "grok-shell/"+version+" (linux; x86_64)")
 }

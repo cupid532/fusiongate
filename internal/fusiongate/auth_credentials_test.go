@@ -955,7 +955,7 @@ func TestGrokOAuthProxyUsesBearerAndSingleV1Prefix(t *testing.T) {
 	if got := req.Header.Get("X-Grok-Client-Version"); got != defaultGrokCLIVersion {
 		t.Fatalf("X-Grok-Client-Version=%q", got)
 	}
-	if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/"+defaultGrokCLIVersion {
+	if got := req.Header.Get("User-Agent"); got != "grok-shell/"+defaultGrokCLIVersion+" (linux; x86_64)" {
 		t.Fatalf("User-Agent=%q", got)
 	}
 }
@@ -967,7 +967,7 @@ func TestGrokClientVersionCanBeOverridden(t *testing.T) {
 	if got := req.Header.Get("X-Grok-Client-Version"); got != "0.3.1" {
 		t.Fatalf("X-Grok-Client-Version=%q", got)
 	}
-	if got := req.Header.Get("User-Agent"); got != "xai-grok-workspace/0.3.1" {
+	if got := req.Header.Get("User-Agent"); got != "grok-shell/0.3.1 (linux; x86_64)" {
 		t.Fatalf("User-Agent=%q", got)
 	}
 }

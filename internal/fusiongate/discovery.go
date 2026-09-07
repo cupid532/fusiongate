@@ -765,6 +765,27 @@ func addCodexImageModel(models []discoveredModel) []discoveredModel {
 	return models
 }
 
+func enrichGrokModels(models []discoveredModel) []discoveredModel {
+	existing := make(map[string]bool, len(models))
+	for _, m := range models {
+		existing[m.ID] = true
+	}
+	hasGrok46 := existing["grok-4.6"]
+	inject := func(id, displayName, caps string) {
+		if !existing[id] {
+			models = append(models, discoveredModel{ID: id, UpstreamID: id, DisplayName: displayName, Capabilities: caps})
+			existing[id] = true
+		}
+	}
+	if hasGrok46 {
+		inject("grok-4.5", "Grok 4.5", "chat,stream")
+		inject("grok-4.5-mini", "Grok 4.5 Mini", "chat,stream")
+	}
+	inject("grok-composer-25-fast", "Grok Composer 2.5 Fast", "chat,stream")
+	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	return models
+}
+
 func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([]discoveredModel, error) {
 	urls, err := discoveryURLs(p)
 	if err != nil {
@@ -857,6 +878,9 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		sort.Slice(allModels, func(i, j int) bool { return allModels[i].ID < allModels[j].ID })
 		if p.Type == "codex_oauth" {
 			allModels = addCodexImageModel(allModels)
+		}
+		if p.Type == "grok_oauth" {
+			allModels = enrichGrokModels(allModels)
 		}
 		return allModels, nil
 	}
