@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.94
+
+- Fix Grok model discovery to try `/models` before `/v1/models` for grok_oauth providers, matching the CLI proxy's actual endpoint. Parse `modelId` and `_meta` fields from the upstream catalog and skip hidden models, so discovery returns the full model set instead of only grok-4.6.
+
 ## V2.93
 
 - Add `grok_console` and `grok_web` provider types to access Grok models beyond the CLI proxy. Console uses DPoP authentication against console.x.ai and supports the full Responses API, unlocking grok-4.3, grok-4.5, grok-4.20 variants, image/video generation, and voice models. Web connects via WebSocket to grok.com with SSO cookie authentication, providing access to grok-chat-fast/auto/expert/heavy and image generation through the web tier.

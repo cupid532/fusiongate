@@ -107,7 +107,9 @@ type discoveryModelEntry struct {
 	ID                         string   `json:"id"`
 	Name                       string   `json:"name"`
 	Model                      string   `json:"model"`
+	ModelID                    string   `json:"modelId"`
 	Slug                       string   `json:"slug"`
+	Hidden                     bool     `json:"hidden"`
 	DisplayName                string   `json:"display_name"`
 	DisplayNameCamel           string   `json:"displayName"`
 	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
@@ -118,6 +120,11 @@ type discoveryModelEntry struct {
 	DefaultReasoningEffort string   `json:"default_reasoning_effort"`
 	DefaultReasoningLevel  string   `json:"default_reasoning_level"`
 	InputModalities        []string `json:"input_modalities"`
+	Meta                   struct {
+		Model   string `json:"model"`
+		ModelID string `json:"modelId"`
+		Hidden  bool   `json:"hidden"`
+	} `json:"_meta"`
 }
 
 type discoveryCandidate struct {
@@ -370,11 +377,17 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		paths = []string{basePath + "/models"}
 	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic":
 		paths = compatibleDiscoveryPaths(basePath)
-	case "claude_oauth", "grok_oauth":
+	case "claude_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
 			paths = []string{basePath + "/models"}
 		} else {
 			paths = []string{basePath + "/v1/models"}
+		}
+	case "grok_oauth":
+		if strings.HasSuffix(basePath, "/v1") {
+			paths = []string{basePath + "/models"}
+		} else {
+			paths = []string{basePath + "/models", basePath + "/v1/models"}
 		}
 	case "grok_console":
 		paths = []string{"/v1/models"}
@@ -535,12 +548,24 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 			if err := json.Unmarshal(rawEntry, &entry); err != nil {
 				continue
 			}
+			if entry.Hidden || entry.Meta.Hidden {
+				continue
+			}
 			upstreamID = entry.ID
 			if upstreamID == "" {
 				upstreamID = entry.Name
 			}
 			if upstreamID == "" {
 				upstreamID = entry.Model
+			}
+			if upstreamID == "" {
+				upstreamID = entry.ModelID
+			}
+			if upstreamID == "" {
+				upstreamID = entry.Meta.Model
+			}
+			if upstreamID == "" {
+				upstreamID = entry.Meta.ModelID
 			}
 			if upstreamID == "" {
 				upstreamID = entry.Slug
