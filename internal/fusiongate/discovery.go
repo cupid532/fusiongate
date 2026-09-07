@@ -376,6 +376,10 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		} else {
 			paths = []string{basePath + "/v1/models"}
 		}
+	case "grok_console":
+		paths = []string{"/v1/models"}
+	case "grok_web":
+		return nil, fmt.Errorf("grok_web uses a static model catalog and does not support discovery")
 	case "gemini":
 		if strings.HasSuffix(basePath, "/v1beta") {
 			paths = []string{basePath + "/models"}
@@ -462,6 +466,8 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 	case "grok_oauth":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
 		setGrokClientHeaders(req.Header)
+	case "grok_console":
+		req.Header.Set("Authorization", "Bearer "+p.Credential)
 	case "anthropic":
 		req.Header.Set("x-api-key", p.Credential)
 		req.Header.Set("anthropic-version", "2023-06-01")

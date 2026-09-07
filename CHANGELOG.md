@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.93
+
+- Add `grok_console` and `grok_web` provider types to access Grok models beyond the CLI proxy. Console uses DPoP authentication against console.x.ai and supports the full Responses API, unlocking grok-4.3, grok-4.5, grok-4.20 variants, image/video generation, and voice models. Web connects via WebSocket to grok.com with SSO cookie authentication, providing access to grok-chat-fast/auto/expert/heavy and image generation through the web tier.
+
 ## V2.92
 
 - Add batch enable/disable buttons to the auth files page. The backend batch endpoint already supported `enable` and `disable` actions, but the console had no UI for it — only model settings, health check, export, and delete were exposed. With 100+ Grok credentials this was the only practical way to toggle them.

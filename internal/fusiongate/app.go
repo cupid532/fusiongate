@@ -95,6 +95,7 @@ type App struct {
 	lastUsedMu               sync.Mutex
 	lastUsedAt               map[int64]time.Time
 	metrics                  gatewayMetrics
+	dpopCache                *dpopSessionCache
 }
 type rateWindow struct {
 	At    time.Time
@@ -315,6 +316,7 @@ func New(cfg Config) (*App, error) {
 		qualityDetectorRoutes: map[string]*qualityDetectorRouteSession{},
 		pricingSyncTrigger:    make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
 		lastUsedAt: map[int64]time.Time{}, metrics: newGatewayMetrics(),
+		dpopCache: newDPoPSessionCache(),
 	}
 	if strings.TrimSpace(cfg.QualityDetectorURL) != "" {
 		a.qualityDetectorClient, err = newQualityDetectorClient(cfg.QualityDetectorURL)

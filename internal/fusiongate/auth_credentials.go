@@ -190,7 +190,7 @@ func normalizeOAuthPlatform(value string) string {
 		return "codex"
 	case "claude", "anthropic", "claude_oauth", "claude-code", "claude_code":
 		return "claude"
-	case "grok", "xai", "x.ai", "grok_oauth", "xai_oauth":
+	case "grok", "xai", "x.ai", "grok_oauth", "xai_oauth", "grok_console", "grok_web":
 		return "grok"
 	default:
 		return ""

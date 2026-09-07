@@ -1178,6 +1178,10 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		switch z.Provider.Type {
 		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
+		case "grok_console":
+			return a.consoleChatProxy(w, r, raw, z, rid, stream, onFirstByte)
+		case "grok_web":
+			return a.webChatProxy(w, r, raw, z, rid, stream, onFirstByte)
 		case "opencode":
 			switch opencodeRouteProtocol(z) {
 			case opencodeProtocolResponses:
@@ -1455,7 +1459,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
-		eligible := z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth"
+		eligible := z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth" || z.Provider.Type == "grok_console" || z.Provider.Type == "grok_web"
 		if z.Provider.Type == "anthropic" {
 			// Some Anthropic-compatible aggregators expose a native OpenAI
 			// Responses endpoint alongside Messages. Opt in per route so a
@@ -1475,6 +1479,12 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	stream, _ := body["stream"].(bool)
 	a.runRoutes(w, r, key, compatible, protocol, requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		if z.Provider.Type == "grok_console" {
+			return a.consoleProxy(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte)
+		}
+		if protocol == "openai_images" && z.Provider.Type == "grok_web" {
+			return a.webImageProxy(w, r, raw, z, rid, onFirstByte)
+		}
 		if protocol == "openai_images" && z.Provider.Type == "codex_oauth" {
 			return a.codexImageProxy(w, r, raw, z, rid, onFirstByte)
 		}
@@ -1558,7 +1568,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 			if opencodeRouteProtocol(z) == opencodeProtocolAnthropic || opencodeRouteProtocol(z) == opencodeProtocolChat && z.Provider.PassthroughMode != "transparent" {
 				compatible = append(compatible, z)
 			}
-		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
+		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth", "grok_console", "grok_web":
 			if z.Provider.PassthroughMode != "transparent" {
 				compatible = append(compatible, z)
 			}
@@ -1570,6 +1580,12 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 	stream, _ := body["stream"].(bool)
 	a.runRoutes(w, r, key, compatible, "anthropic_messages", requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		if z.Provider.Type == "grok_console" {
+			return a.consoleChatProxy(w, r, raw, z, rid, stream, onFirstByte)
+		}
+		if z.Provider.Type == "grok_web" {
+			return a.webChatProxy(w, r, raw, z, rid, stream, onFirstByte)
+		}
 		if z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "grok_oauth" || z.Provider.Type == "opencode" && opencodeRouteProtocol(z) == opencodeProtocolChat {
 			return a.anthropicMessagesOpenAI(w, r, body, z, rid, stream, onFirstByte)
 		}

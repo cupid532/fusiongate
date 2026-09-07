@@ -553,6 +553,10 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 	switch p.Type {
 	case "grok_oauth":
 		return "grok-2-mini"
+	case "grok_console":
+		return "grok-build-0.1"
+	case "grok_web":
+		return "grok-chat-fast"
 	case "codex_oauth":
 		return "gpt-5.4"
 	case "claude_oauth":
@@ -575,6 +579,10 @@ func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider, model string) st
 		endpoint = "/v1/messages"
 	case "grok_oauth":
 		endpoint = "/v1/responses"
+	case "grok_console":
+		endpoint = "/v1/responses"
+	case "grok_web":
+		endpoint = ""
 	case "codex_oauth":
 		endpoint = "/responses"
 	case "opencode":

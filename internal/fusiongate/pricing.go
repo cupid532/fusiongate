@@ -341,7 +341,7 @@ func officialPricingCatalogName(providerType, upstreamModel string) string {
 		return "openai"
 	case "opencode":
 		return ""
-	case "grok", "grok_oauth":
+	case "grok", "grok_oauth", "grok_console", "grok_web":
 		return "grok"
 	case "gemini", "gemini_cli":
 		return "gemini"

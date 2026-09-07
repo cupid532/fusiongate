@@ -234,7 +234,7 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 
 func validProviderType(t string) bool {
 	switch t {
-	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "gemini_cli":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "grok_console", "grok_web", "gemini_cli":
 		return true
 	}
 	return false

@@ -684,6 +684,13 @@ func setProviderAuth(req *http.Request, z resolvedRoute) error {
 		if req.Header.Get("X-App") == "" {
 			req.Header.Set("X-App", "cli")
 		}
+	case "grok_console":
+		// Console uses DPoP auth set by the dedicated consoleProxy handler.
+		// If this code path is reached, set bearer as a fallback.
+		req.Header.Set("Authorization", "Bearer "+z.Credential)
+	case "grok_web":
+		// Web uses SSO cookie auth set by the dedicated webChatProxy handler.
+		req.Header.Set("Cookie", "sso="+z.Credential+"; sso-rw="+z.Credential)
 	case "gemini":
 		query := req.URL.Query()
 		query.Set("key", z.Credential)
