@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.97
+
+- Inject grok-4.3, grok-4.20 reasoning/non-reasoning/multi-agent, grok-3, grok-3-fast, grok-imagine-video-1.5, and grok-composer-2.5-fast into discovery results for grok_oauth providers. These models are accepted by cli-chat-proxy.grok.com but not listed in its /models endpoint; accounts with sufficient subscription tiers can use them.
+
 ## V2.96
 
 - Add `refraction-networking/utls` dependency to bypass Cloudflare TLS fingerprinting on console.x.ai and grok.com. The grok_console and grok_web provider channels now use a Chrome-fingerprint TLS handshake over HTTP/2, allowing requests to reach the upstream API instead of being blocked by Cloudflare's bot detection. The WebSocket dialer for grok_web also uses the same TLS fingerprint. Remove non-functional grok-composer-25-fast and grok-4.5-mini from the enriched model catalog.
