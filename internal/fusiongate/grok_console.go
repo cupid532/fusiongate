@@ -37,12 +37,15 @@ func (a *App) consoleProxy(w http.ResponseWriter, r *http.Request, raw []byte, z
 	if stream {
 		req.Header.Set("Accept", "text/event-stream")
 	}
+	req.Header.Set("Origin", "https://console.x.ai")
+	req.Header.Set("Referer", "https://console.x.ai/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36")
 
 	if err := setConsoleDPoPAuth(req, session); err != nil {
 		return attemptResult{Status: http.StatusInternalServerError, Reason: "dpop_proof_failed", Err: err}
 	}
 
-	resp, err := a.doProviderRequest(req, ipPoolNodePtr(z.Provider))
+	resp, err := cloudflareBypassClient().Do(req)
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_connect_failed", Err: err}
 	}
@@ -99,12 +102,15 @@ func (a *App) consoleChatProxy(w http.ResponseWriter, r *http.Request, raw []byt
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
+	req.Header.Set("Origin", "https://console.x.ai")
+	req.Header.Set("Referer", "https://console.x.ai/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36")
 
 	if err := setConsoleDPoPAuth(req, session); err != nil {
 		return attemptResult{Status: http.StatusInternalServerError, Reason: "dpop_proof_failed", Err: err}
 	}
 
-	resp, err := a.doProviderRequest(req, ipPoolNodePtr(z.Provider))
+	resp, err := cloudflareBypassClient().Do(req)
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_connect_failed", Err: err}
 	}

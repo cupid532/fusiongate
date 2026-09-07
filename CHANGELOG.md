@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.96
+
+- Add `refraction-networking/utls` dependency to bypass Cloudflare TLS fingerprinting on console.x.ai and grok.com. The grok_console and grok_web provider channels now use a Chrome-fingerprint TLS handshake over HTTP/2, allowing requests to reach the upstream API instead of being blocked by Cloudflare's bot detection. The WebSocket dialer for grok_web also uses the same TLS fingerprint. Remove non-functional grok-composer-25-fast and grok-4.5-mini from the enriched model catalog.
+
 ## V2.95
 
 - Update Grok CLI client version from 0.2.93 to 1.0.4 and add `x-grok-client-mode: headless` header to match the current official Grok shell client. The outdated version caused the upstream to return a truncated model catalog. Inject grok-4.5 and grok-composer-25-fast into the discovery results when grok-4.6 is present, matching grok2api's catalog enrichment.

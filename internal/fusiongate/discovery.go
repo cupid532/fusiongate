@@ -779,9 +779,7 @@ func enrichGrokModels(models []discoveredModel) []discoveredModel {
 	}
 	if hasGrok46 {
 		inject("grok-4.5", "Grok 4.5", "chat,stream")
-		inject("grok-4.5-mini", "Grok 4.5 Mini", "chat,stream")
 	}
-	inject("grok-composer-25-fast", "Grok Composer 2.5 Fast", "chat,stream")
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models
 }

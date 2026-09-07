@@ -406,7 +406,7 @@ func (a *App) webImageProxy(w http.ResponseWriter, r *http.Request, raw []byte, 
 		}
 	}
 
-	resp, err := a.doProviderRequest(httpReq, ipPoolNodePtr(z.Provider))
+	resp, err := cloudflareBypassClient().Do(httpReq)
 	if err != nil {
 		return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_connect_failed", Err: err}
 	}

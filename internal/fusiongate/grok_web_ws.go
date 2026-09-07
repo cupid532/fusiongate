@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 const (
@@ -67,7 +68,16 @@ func wsDialContext(ctx context.Context, rawURL string, headers http.Header) (*ws
 	}
 
 	if scheme == "wss" {
-		conn, err = tls.DialWithDialer(&dialer, "tcp", hostPort, &tls.Config{ServerName: u.Hostname()})
+		rawConn, dialErr := dialer.DialContext(ctx, "tcp", hostPort)
+		if dialErr != nil {
+			return nil, nil, fmt.Errorf("websocket tcp dial failed: %w", dialErr)
+		}
+		uconn := utls.UClient(rawConn, &utls.Config{ServerName: u.Hostname()}, utls.HelloChrome_Auto)
+		if handshakeErr := uconn.HandshakeContext(ctx); handshakeErr != nil {
+			rawConn.Close()
+			return nil, nil, fmt.Errorf("websocket tls handshake failed: %w", handshakeErr)
+		}
+		conn = uconn
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", hostPort)
 	}

@@ -192,8 +192,12 @@ func (a *App) exchangeDPoPToken(ctx context.Context, ssoToken string, key *ecdsa
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("DPoP", proof)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Origin", "https://console.x.ai")
+	req.Header.Set("Referer", "https://console.x.ai/")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36")
+	req.Header.Set("Cookie", "sso="+ssoToken+"; sso-rw="+ssoToken)
 
-	resp, err := a.doProviderRequest(req, nodeID)
+	resp, err := cloudflareBypassClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("dpop token exchange failed: %w", err)
 	}
