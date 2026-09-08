@@ -47,6 +47,7 @@ export function Dashboard() {
     queryKey: ["dashboard"],
     queryFn: () => api<DashboardData>("/api/admin/dashboard"),
     staleTime: 30_000,
+    refetchInterval: 30_000,
   })
   const { data: providers = [] } = useQuery({
     queryKey: ["providers"],
@@ -69,7 +70,19 @@ export function Dashboard() {
   const baseUrl = `${location.origin}/v1`
 
   if (isLoading || !data) {
-    return <div className="animate-pulse text-sm text-muted-foreground">加载中…</div>
+    return (
+      <div>
+        <div className="mb-6"><div className="h-7 w-40 animate-pulse rounded-md bg-muted/60" /><div className="mt-2 h-4 w-64 animate-pulse rounded-md bg-muted/40" /></div>
+        <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Card key={i} className="overflow-hidden"><CardContent className="p-4">
+              <div className="flex items-center justify-between"><div className="h-3 w-14 animate-pulse rounded bg-muted/60" /><div className="h-8 w-8 animate-pulse rounded-lg bg-muted/40" /></div>
+              <div className="mt-3 h-7 w-16 animate-pulse rounded bg-muted/60" />
+            </CardContent></Card>
+          ))}
+        </div>
+      </div>
+    )
   }
 
   return (

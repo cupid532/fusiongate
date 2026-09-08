@@ -1,4 +1,5 @@
 import * as React from "react"
+import { AnimatePresence, motion } from "motion/react"
 import { Check, Copy } from "lucide-react"
 
 import { Button, type ButtonProps } from "@/components/ui/button"
@@ -11,11 +12,6 @@ export interface CopyButtonProps extends Omit<ButtonProps, "onClick"> {
   onCopyError?: (error: unknown) => void
 }
 
-/**
- * CopyButton centralizes clipboard behavior and gives every copy action a clear,
- * accessible success state. The fallback covers non-secure/local deployments
- * where navigator.clipboard may not be available.
- */
 export function CopyButton({
   value,
   label = "复制",
@@ -61,7 +57,31 @@ export function CopyButton({
       title={title ?? accessibleLabel}
       {...props}
     >
-      {copied ? <Check className="text-primary" /> : <Copy />}
+      <AnimatePresence mode="wait" initial={false}>
+        {copied ? (
+          <motion.span
+            key="check"
+            initial={{ scale: 0.5, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.5, opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="inline-flex"
+          >
+            <Check className="text-primary" />
+          </motion.span>
+        ) : (
+          <motion.span
+            key="copy"
+            initial={{ scale: 0.5, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.5, opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="inline-flex"
+          >
+            <Copy />
+          </motion.span>
+        )}
+      </AnimatePresence>
       {!iconOnly && (copied ? copiedLabel : label)}
       {iconOnly && <span className="sr-only">{accessibleLabel}</span>}
     </Button>

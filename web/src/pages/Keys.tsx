@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
+import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { Plus, Trash2, Eye, KeyRound } from "lucide-react"
 import { api } from "@/lib/api"
 import type { APIKey } from "@/lib/types"
@@ -38,6 +39,7 @@ const emptyForm: KeyForm = {
 export function Keys() {
   const qc = useQueryClient()
   const confirmDelete = useConfirmDelete()
+  const [animateParent] = useAutoAnimate({ duration: 200 })
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState<KeyForm>(emptyForm)
   const [revealed, setRevealed] = useState("")
@@ -171,7 +173,7 @@ export function Keys() {
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
+            <div className="space-y-2 p-4">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />)}</div>
           ) : keys.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">还没有密钥</div>
           ) : (
@@ -187,7 +189,7 @@ export function Keys() {
                     <th className="px-4 py-3 text-right font-medium">操作</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody ref={animateParent}>
                   {keys.map((k) => (
                     <tr key={k.id} className="border-b last:border-0 hover:bg-muted/40">
                       <td className="px-4 py-3 font-medium">{k.name}</td>

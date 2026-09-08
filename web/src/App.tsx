@@ -16,7 +16,42 @@ const Quality = lazy(() => import("./pages/Quality").then((m) => ({ default: m.Q
 const AuthFiles = lazy(() => import("./pages/AuthFiles").then((m) => ({ default: m.AuthFiles })))
 
 function PageFallback() {
-  return <div className="py-16 text-center text-sm text-muted-foreground">加载中…</div>
+  return <PageSkeleton />
+}
+
+function PageSkeleton() {
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <div className="h-7 w-48 animate-pulse rounded-md bg-muted/60" />
+        <div className="h-4 w-72 animate-pulse rounded-md bg-muted/40" />
+      </div>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="rounded-xl border bg-card p-4">
+            <div className="flex items-center justify-between">
+              <div className="h-3 w-14 animate-pulse rounded bg-muted/60" />
+              <div className="h-8 w-8 animate-pulse rounded-lg bg-muted/40" />
+            </div>
+            <div className="mt-3 h-7 w-16 animate-pulse rounded bg-muted/60" />
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {Array.from({ length: 2 }).map((_, i) => (
+          <div key={i} className="rounded-xl border bg-card p-5">
+            <div className="h-4 w-32 animate-pulse rounded bg-muted/60" />
+            <div className="mt-2 h-3 w-48 animate-pulse rounded bg-muted/40" />
+            <div className="mt-5 space-y-3">
+              {Array.from({ length: 3 }).map((_, j) => (
+                <div key={j} className="h-12 animate-pulse rounded-lg bg-muted/40" />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 // Resolves the location hash to a real page. Anything unrecognised — a stale
@@ -50,6 +85,24 @@ function pageContent(page: Page) {
     case "quality":
       return <Quality />
   }
+}
+
+function NavProgress({ page }: { page: string }) {
+  const [visible, setVisible] = useState(false)
+  useEffect(() => {
+    setVisible(true)
+    const t = setTimeout(() => setVisible(false), 500)
+    return () => clearTimeout(t)
+  }, [page])
+  if (!visible) return null
+  return (
+    <motion.div
+      className="fixed left-0 right-0 top-0 z-[60] h-[2px] origin-left bg-primary"
+      initial={{ scaleX: 0, opacity: 1 }}
+      animate={{ scaleX: 1, opacity: 0 }}
+      transition={{ scaleX: { duration: 0.45, ease: [0.16, 1, 0.3, 1] }, opacity: { duration: 0.2, delay: 0.35 } }}
+    />
+  )
 }
 
 export default function App() {
@@ -89,12 +142,17 @@ export default function App() {
   }, [sidebarOpen])
 
   if (loading) {
-    return <div className="grid min-h-screen place-items-center text-sm text-muted-foreground">加载中…</div>
+    return (
+      <div className="grid min-h-screen place-items-center">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+      </div>
+    )
   }
   if (!authenticated) return <Login />
 
   return (
     <div className="min-h-screen">
+      <NavProgress page={page} />
       <Sidebar page={page} onNavigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="md:ml-[248px]">
         <Topbar page={page} onMenu={() => setSidebarOpen(true)} />
@@ -102,10 +160,9 @@ export default function App() {
           <AnimatePresence mode="wait">
             <motion.div
               key={page}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.2 }}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0, transition: { duration: 0.35, ease: [0.16, 1, 0.3, 1] } }}
+              exit={{ opacity: 0, y: -6, transition: { duration: 0.18, ease: [0.4, 0, 1, 1] } }}
             >
               <Suspense fallback={<PageFallback />}>{pageContent(page)}</Suspense>
             </motion.div>

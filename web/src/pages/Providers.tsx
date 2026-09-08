@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
+import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink } from "lucide-react"
 import { api } from "@/lib/api"
 import { remainingBarTone } from "@/lib/codex-windows"
@@ -54,6 +55,7 @@ export function Providers() {
   const qc = useQueryClient()
   const confirm = useConfirm()
   const confirmDelete = useConfirmDelete()
+  const [animateParent] = useAutoAnimate({ duration: 200 })
   const [filter, setFilter] = useState<Filter>("all")
   const [q, setQ] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -313,7 +315,7 @@ export function Providers() {
           </div>
 
           {isLoading ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
+            <div className="space-y-2 p-4">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />)}</div>
           ) : isError ? (
             <QueryError
               title="无法加载渠道列表"
@@ -340,7 +342,7 @@ export function Providers() {
                     <th className="px-4 py-3 text-right font-medium">开关 / 操作</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody ref={animateParent}>
                   {filtered.map((p) => (
                     <tr
                       key={p.id}

@@ -1,4 +1,5 @@
 import * as React from "react"
+import { motion, type HTMLMotionProps } from "motion/react"
 import { cva, type VariantProps } from "class-variance-authority"
 
 import { cn } from "@/lib/utils"
@@ -29,15 +30,22 @@ const buttonVariants = cva(
   }
 )
 
-export type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> &
-  VariantProps<typeof buttonVariants>
+const noMotionVariants = new Set<string>(["ghost", "link"])
+
+export type ButtonProps = Omit<HTMLMotionProps<"button">, "size"> &
+  VariantProps<typeof buttonVariants> & { size?: "default" | "sm" | "lg" | "icon" }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, ...props }, ref) => {
+  ({ className, variant, size, disabled, ...props }, ref) => {
+    const skip = disabled || noMotionVariants.has(variant ?? "")
     return (
-      <button
+      <motion.button
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
+        disabled={disabled}
+        whileHover={skip ? undefined : { scale: 1.02 }}
+        whileTap={skip ? undefined : { scale: 0.97 }}
+        transition={{ type: "spring", stiffness: 500, damping: 30 }}
         {...props}
       />
     )
@@ -45,8 +53,5 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
 )
 Button.displayName = "Button"
 
-// buttonVariants is shared so a real <a> can be styled as a button without
-// pulling in Radix Slot just for asChild. The warning is about hot-reload
-// boundaries only, not runtime correctness.
 // oxlint-disable-next-line react/only-export-components
 export { Button, buttonVariants }

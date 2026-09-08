@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
+import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { RefreshCw, Search, Trash2, Download, HardDrive, Save } from "lucide-react"
 import { api, apiDownload, saveBlob } from "@/lib/api"
 import { notifySuccess } from "@/lib/notify"
@@ -113,6 +114,7 @@ const PAGE_LIMIT = 100
 
 export function Requests() {
   const confirm = useConfirm()
+  const [animateParent] = useAutoAnimate({ duration: 200 })
   const [status, setStatus] = useState<StatusFilter>("all")
   const [q, setQ] = useState("")
   // The query keys off the debounced value; the input stays fully responsive.
@@ -445,7 +447,7 @@ export function Requests() {
           </div>
 
           {isLoading ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
+            <div className="space-y-2 p-4">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />)}</div>
           ) : requestsQuery.isError ? (
             <QueryError
               title="无法加载请求账本"
@@ -499,7 +501,7 @@ export function Requests() {
                     <th className="px-4 py-3 font-medium">费用</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody ref={animateParent}>
                   {rows.map((r) => (
                     <tr key={r.id} className="border-b last:border-0 hover:bg-muted/40">
                       <td className="px-4 py-3 text-xs text-muted-foreground">{timeAgo(r.created_at)}</td>

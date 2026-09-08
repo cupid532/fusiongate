@@ -13,7 +13,12 @@ const DialogOverlay = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Overlay
     ref={ref}
-    className={cn("fixed inset-0 z-50 bg-black/40 backdrop-blur-sm", className)}
+    className={cn(
+      "fixed inset-0 z-50 bg-black/40 backdrop-blur-sm",
+      "data-[state=open]:animate-in data-[state=open]:fade-in-0",
+      "data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
+      className
+    )}
     {...props}
   />
 ))
@@ -29,30 +34,13 @@ const DialogContent = React.forwardRef<
       ref={ref}
       className={cn(
         "fixed left-1/2 top-1/2 z-50 grid max-h-[90vh] w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto border bg-background p-5 shadow-lg sm:w-full sm:rounded-xl sm:p-6",
+        "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-[0.96] data-[state=open]:slide-in-from-bottom-2",
+        "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-[0.98] data-[state=closed]:slide-out-to-bottom-1",
+        "duration-200",
         className
       )}
       {...props}
     >
-      {/*
-        The close button, pinned to the top-right in every dialog.
-
-        Two constraints make this fiddlier than `absolute right-4 top-4`:
-
-        1. By default this content box is itself the scroll container (max-h +
-           overflow-y-auto). An absolutely positioned child of a scroll
-           container scrolls away with the content, so in a tall dialog — the
-           provider editor, say — the button used to vanish off the top.
-           `sticky top-0` pins it to the visible edge instead.
-        2. Consumers may override the layout: ProviderModelManagementDialog
-           passes `flex flex-col overflow-hidden` and scrolls an inner panel.
-           So this cannot rely on grid-only properties (an earlier version used
-           `justify-self-end`, which is inert in a flex column and dropped the
-           button to the bottom-left), and it must come FIRST in DOM order so
-           it lands at the top of a flex column rather than after the footer.
-
-        `h-0` plus the negative bottom margin cancel the parent's `gap`, so a
-        zero-height row does not push the header down.
-      */}
       <div className="pointer-events-none sticky top-0 z-20 -mb-4 flex h-0 justify-end">
         <DialogPrimitive.Close className="pointer-events-auto -mr-1 -mt-1 grid h-7 w-7 place-items-center rounded-md bg-background/80 text-muted-foreground opacity-70 backdrop-blur-sm transition-opacity hover:bg-muted hover:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none">
           <X className="h-4 w-4" />
@@ -71,9 +59,6 @@ const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 DialogHeader.displayName = "DialogHeader"
 
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
-  // `gap-2` instead of `sm:space-x-2`: space-x contributes nothing on the
-  // mobile `flex-col-reverse` axis, so stacked buttons sat flush against each
-  // other. gap applies on whichever axis is active.
   <div className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)} {...props} />
 )
 DialogFooter.displayName = "DialogFooter"
