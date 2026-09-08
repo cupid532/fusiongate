@@ -190,8 +190,10 @@ func normalizeOAuthPlatform(value string) string {
 		return "codex"
 	case "claude", "anthropic", "claude_oauth", "claude-code", "claude_code":
 		return "claude"
-	case "grok", "xai", "x.ai", "grok_oauth", "xai_oauth", "grok_console", "grok_web":
+	case "grok", "xai", "x.ai", "grok_oauth", "xai_oauth", "grok_web":
 		return "grok"
+	case "grok_console", "console":
+		return "grok_console"
 	default:
 		return ""
 	}
@@ -203,6 +205,8 @@ func oauthProviderType(platform string) string {
 		return "codex_oauth"
 	case "grok":
 		return "grok_oauth"
+	case "grok_console":
+		return "grok_console"
 	default:
 		return "claude_oauth"
 	}
@@ -213,8 +217,9 @@ func oauthProviderBaseURL(platform string) string {
 	case "codex":
 		return "https://chatgpt.com/backend-api/codex"
 	case "grok":
-		// FusionGate appends /v1 endpoints, so keep the base URL free of /v1.
 		return "https://cli-chat-proxy.grok.com"
+	case "grok_console":
+		return "https://console.x.ai"
 	default:
 		return "https://api.anthropic.com"
 	}
@@ -745,6 +750,9 @@ func oauthExportType(platform string) string {
 	if platform == "grok" {
 		return "xai"
 	}
+	if platform == "grok_console" {
+		return "grok_console"
+	}
 	return platform
 }
 
@@ -1185,7 +1193,10 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		return 0, "", errors.New("invalid OAuth credential")
 	}
 	c.Platform = normalizeOAuthPlatform(c.Platform)
-	c.Version, c.Kind = 1, "oauth"
+	c.Version = 1
+	if c.Kind != "sso" {
+		c.Kind = "oauth"
+	}
 	enrichCredentialFromJWT(&c)
 	fingerprint := credentialFingerprint(c)
 	if duplicateID == 0 {
@@ -1214,7 +1225,7 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 			return 0, "", err
 		}
 		enabledVal := map[bool]int{true: 1, false: 0}[status != "expired"]
-		_, err = a.db.ExecContext(ctx, `UPDATE providers SET type=?,base_url=?,credential=?,auth_kind='oauth',auth_source=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status=?,auth_fingerprint=?,auth_has_refresh=?,status=?,enabled=?,notes=CASE WHEN ?!='' THEN ? ELSE notes END,last_error='',health_check_status='',health_check_error='',updated_at=? WHERE id=?`, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), map[bool]string{true: "unknown", false: "auth_expired"}[status != "expired"], enabledVal, externalNote, externalNote, now(), duplicateID)
+		_, err = a.db.ExecContext(ctx, `UPDATE providers SET type=?,base_url=?,credential=?,auth_kind=?,auth_source=?,auth_account_id=?,auth_email=?,auth_expires_at=?,auth_last_refresh_at=?,auth_status=?,auth_fingerprint=?,auth_has_refresh=?,status=?,enabled=?,notes=CASE WHEN ?!='' THEN ? ELSE notes END,last_error='',health_check_status='',health_check_error='',updated_at=? WHERE id=?`, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, c.Kind, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), map[bool]string{true: "unknown", false: "auth_expired"}[status != "expired"], enabledVal, externalNote, externalNote, now(), duplicateID)
 		return duplicateID, currentName, err
 	}
 	name := strings.TrimSpace(requestedName)
@@ -1226,7 +1237,7 @@ func (a *App) saveOAuthProvider(ctx context.Context, requestedName string, prior
 		return 0, "", err
 	}
 	enabled := status != "expired"
-	res, err := a.db.ExecContext(ctx, `INSERT INTO providers(name,type,base_url,credential,enabled,archived,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_account_id,auth_email,auth_expires_at,auth_last_refresh_at,auth_status,auth_fingerprint,auth_has_refresh,created_at,updated_at) SELECT ?,?,?,?,?,0,?,COALESCE(MAX(sort_order),-1)+1,100,'unknown',?,'normalized','any',0,120000,5,30,'oauth',?,?,?,?,?,?,?,?,?,? FROM providers`, name, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, boolInt(enabled), priority, externalNote, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), now())
+	res, err := a.db.ExecContext(ctx, `INSERT INTO providers(name,type,base_url,credential,enabled,archived,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_account_id,auth_email,auth_expires_at,auth_last_refresh_at,auth_status,auth_fingerprint,auth_has_refresh,created_at,updated_at) SELECT ?,?,?,?,?,0,?,COALESCE(MAX(sort_order),-1)+1,100,'unknown',?,'normalized','any',0,120000,5,30,?,?,?,?,?,?,?,?,?,?,? FROM providers`, name, oauthProviderType(c.Platform), oauthProviderBaseURL(c.Platform), encrypted, boolInt(enabled), priority, externalNote, c.Kind, c.Source, c.AccountID, strings.ToLower(c.Email), nullableString(c.ExpiresAt), nullableString(c.LastRefresh), status, fingerprint, boolInt(c.RefreshToken != ""), now(), now())
 	if err != nil {
 		return 0, "", err
 	}
@@ -1380,8 +1391,27 @@ func normalizeImportedCredential(raw map[string]any) (ProviderCredential, string
 	if platform == "" {
 		platform = normalizeOAuthPlatform(explicitType)
 	}
+	ssoToken := firstStringMaps(allMaps, []string{"sso_token"}, []string{"ssoToken"})
+	authKind := strings.ToLower(firstStringMaps(allMaps, []string{"auth_kind"}, []string{"authKind"}, []string{"kind"}))
+	if ssoToken != "" || authKind == "sso" || platform == "grok_console" {
+		if ssoToken == "" {
+			ssoToken = firstStringMaps(tokenMaps, []string{"access_token"}, []string{"accessToken"}, []string{"token"})
+		}
+		if ssoToken == "" {
+			return ProviderCredential{}, "", errors.New("SSO credential is missing sso_token")
+		}
+		if platform == "" {
+			platform = "grok_console"
+		}
+		c := ProviderCredential{
+			Version: 1, Kind: "sso", Platform: platform, Source: "json", AccessToken: ssoToken,
+			AccountID: firstStringMaps(allMaps, []string{"user_id"}, []string{"userId"}, []string{"sub"}),
+			Email:     firstStringMaps(allMaps, []string{"email"}),
+		}
+		return c, firstStringMaps([]map[string]any{raw}, []string{"name"}), nil
+	}
 	_, sub2apiShape := raw["credentials"]
-	if sub2apiShape && explicitType != "" && explicitType != "oauth" && explicitType != "codex" && explicitType != "claude" && explicitType != "grok" && explicitType != "xai" && explicitType != "openai_oauth" && explicitType != "claude_oauth" && explicitType != "grok_oauth" && explicitType != "xai_oauth" {
+	if sub2apiShape && explicitType != "" && explicitType != "oauth" && explicitType != "codex" && explicitType != "claude" && explicitType != "grok" && explicitType != "xai" && explicitType != "openai_oauth" && explicitType != "claude_oauth" && explicitType != "grok_oauth" && explicitType != "xai_oauth" && explicitType != "grok_console" {
 		return ProviderCredential{}, "", errUnsupportedCredential
 	}
 	access := firstStringMaps(tokenMaps, []string{"access_token"}, []string{"accessToken"})
@@ -1600,6 +1630,8 @@ func suggestedCredentialName(c ProviderCredential, index int) string {
 		label = "Claude"
 	case "grok":
 		label = "Grok"
+	case "grok_console":
+		label = "Console"
 	}
 	identity := maskEmail(c.Email)
 	if identity == "" {
@@ -1766,6 +1798,8 @@ func (a *App) refreshOAuthCredentialViaNode(ctx context.Context, current Provide
 	defer cancel()
 	var req *http.Request
 	switch current.Platform {
+	case "grok_console":
+		return current, errors.New("SSO credentials cannot be refreshed")
 	case "codex":
 		form := url.Values{"client_id": {codexOAuthClientID}, "grant_type": {"refresh_token"}, "refresh_token": {current.RefreshToken}, "scope": {"openid profile email"}}
 		req, _ = http.NewRequestWithContext(ctx, http.MethodPost, codexOAuthTokenURL, strings.NewReader(form.Encode()))

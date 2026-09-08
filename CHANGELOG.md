@@ -1,5 +1,9 @@
 # Changelog
 
+## V2.98
+
+- Support `grok_console` SSO credentials in the auth import system. JSON files with a `sso_token` field, `kind: sso`, or `platform: grok_console` are now imported as Console providers with `console.x.ai` as the base URL, appearing in the Auth Files page alongside existing Grok OAuth credentials. The grok2api console export format is directly importable.
+
 ## V2.97
 
 - Inject grok-4.3, grok-4.20 reasoning/non-reasoning/multi-agent, grok-3, grok-3-fast, grok-imagine-video-1.5, and grok-composer-2.5-fast into discovery results for grok_oauth providers. These models are accepted by cli-chat-proxy.grok.com but not listed in its /models endpoint; accounts with sufficient subscription tiers can use them.
