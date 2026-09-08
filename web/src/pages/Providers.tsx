@@ -26,7 +26,7 @@ import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { QueryError } from "@/components/ui/query-error"
 
-type Filter = "all" | "enabled" | "disabled" | "archived"
+type Filter = "all" | "enabled" | "disabled" | "archived" | "unhealthy"
 
 const typeLabels: Record<string, string> = {
   openai: "OpenAI",
@@ -163,6 +163,7 @@ export function Providers() {
     if (filter === "enabled") list = list.filter((p) => p.enabled && !p.archived)
     else if (filter === "disabled") list = list.filter((p) => !p.enabled && !p.archived)
     else if (filter === "archived") list = list.filter((p) => p.archived)
+    else if (filter === "unhealthy") list = list.filter((p) => !p.archived && (p.health_check_status === "unhealthy" || (p.circuit_open_until && new Date(p.circuit_open_until) > new Date())))
     else list = list.filter((p) => !p.archived)
     if (q.trim()) {
       const kw = q.trim().toLowerCase()
@@ -183,6 +184,7 @@ export function Providers() {
       all: visibleProviders.filter((p) => !p.archived).length,
       enabled: visibleProviders.filter((p) => p.enabled && !p.archived).length,
       disabled: visibleProviders.filter((p) => !p.enabled && !p.archived).length,
+      unhealthy: visibleProviders.filter((p) => !p.archived && (p.health_check_status === "unhealthy" || (p.circuit_open_until && new Date(p.circuit_open_until) > new Date()))).length,
       archived: visibleProviders.filter((p) => p.archived).length,
     }),
     [visibleProviders]
@@ -237,6 +239,7 @@ export function Providers() {
                   ["all", "全部", counts.all],
                   ["enabled", "参与调度", counts.enabled],
                   ["disabled", "已停用", counts.disabled],
+                  ["unhealthy", "不健康", counts.unhealthy],
                   ["archived", "归档", counts.archived],
                 ] as [Filter, string, number][]
               ).map(([f, label, n]) => (

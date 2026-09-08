@@ -25,6 +25,18 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
   const queryClient = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
   const [version, setVersion] = useState("")
+  const [lastRefresh, setLastRefresh] = useState(Date.now())
+  const [ago, setAgo] = useState("")
+
+  useEffect(() => {
+    const tick = () => {
+      const s = Math.floor((Date.now() - lastRefresh) / 1000)
+      setAgo(s < 5 ? "" : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m`)
+    }
+    tick()
+    const id = setInterval(tick, 5000)
+    return () => clearInterval(id)
+  }, [lastRefresh])
 
   useEffect(() => {
     setVersion(document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
@@ -39,6 +51,7 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
       await queryClient.invalidateQueries()
     } finally {
       setRefreshing(false)
+      setLastRefresh(Date.now())
     }
   }
 
@@ -59,6 +72,7 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
         <Button variant="ghost" size="icon" onClick={() => void refreshAll()} aria-label="刷新全部" title="刷新全部数据">
           <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
         </Button>
+        {ago && <span className="hidden text-[10px] tabular-nums text-muted-foreground/60 sm:inline">{ago}</span>}
         {/* An anchor rather than window.open: it gets middle-click and
             "open in new window" for free, and rel=noopener stops the opened
             page from holding a reference back to this one via window.opener. */}

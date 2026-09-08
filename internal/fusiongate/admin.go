@@ -1832,21 +1832,32 @@ func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, map[string]string{"key": raw})
 		return
 	}
-	if len(parts) != 1 || !isID(parts[0]) || r.Method != http.MethodDelete {
-		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "DELETE /api/admin/keys/{id} or POST /api/admin/keys/{id}/reveal required")
+	if len(parts) != 1 || !isID(parts[0]) {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE /api/admin/keys/{id} required")
 		return
 	}
+	switch r.Method {
+	case http.MethodPatch:
+		a.keyUpdate(w, r, parts[0])
+	case http.MethodDelete:
+		a.keyDelete(w, r, parts[0])
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")
+	}
+}
+
+func (a *App) keyDelete(w http.ResponseWriter, r *http.Request, id string) {
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM request_ledger WHERE api_key_id=?`, parts[0]); err != nil {
+	if _, err := tx.Exec(`DELETE FROM request_ledger WHERE api_key_id=?`, id); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	res, err := tx.Exec(`DELETE FROM api_keys WHERE id=?`, parts[0])
+	res, err := tx.Exec(`DELETE FROM api_keys WHERE id=?`, id)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -1858,6 +1869,87 @@ func (a *App) keyByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 	if err := tx.Commit(); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (a *App) keyUpdate(w http.ResponseWriter, r *http.Request, id string) {
+	var in struct {
+		Name        *string  `json:"name"`
+		AllowAll    *bool    `json:"allow_all"`
+		AllowModels *string  `json:"allow_models"`
+		DenyModels  *string  `json:"deny_models"`
+		AllowImages *bool    `json:"allow_images"`
+		AllowAudio  *bool    `json:"allow_audio"`
+		Revoked     *bool    `json:"revoked"`
+		RPMLimit    *int     `json:"rpm_limit"`
+		BudgetUSD   *float64 `json:"budget_usd"`
+		ExpiresAt   *string  `json:"expires_at"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	sets := []string{}
+	args := []any{}
+	if in.Name != nil {
+		sets = append(sets, "name=?")
+		args = append(args, *in.Name)
+	}
+	if in.AllowAll != nil {
+		sets = append(sets, "allow_all=?")
+		args = append(args, boolInt(*in.AllowAll))
+	}
+	if in.AllowModels != nil {
+		sets = append(sets, "allow_models=?")
+		args = append(args, *in.AllowModels)
+	}
+	if in.DenyModels != nil {
+		sets = append(sets, "deny_models=?")
+		args = append(args, *in.DenyModels)
+	}
+	if in.AllowImages != nil {
+		sets = append(sets, "allow_images=?")
+		args = append(args, boolInt(*in.AllowImages))
+	}
+	if in.AllowAudio != nil {
+		sets = append(sets, "allow_audio=?")
+		args = append(args, boolInt(*in.AllowAudio))
+	}
+	if in.Revoked != nil {
+		sets = append(sets, "revoked=?")
+		args = append(args, boolInt(*in.Revoked))
+	}
+	if in.RPMLimit != nil {
+		sets = append(sets, "rpm_limit=?")
+		args = append(args, *in.RPMLimit)
+	}
+	if in.BudgetUSD != nil {
+		sets = append(sets, "budget_micros=?")
+		args = append(args, int64(*in.BudgetUSD*1_000_000))
+	}
+	if in.ExpiresAt != nil {
+		if *in.ExpiresAt == "" {
+			sets = append(sets, "expires_at=NULL")
+		} else {
+			sets = append(sets, "expires_at=?")
+			args = append(args, *in.ExpiresAt)
+		}
+	}
+	if len(sets) == 0 {
+		fail(w, http.StatusBadRequest, "empty_update", "no fields to update")
+		return
+	}
+	args = append(args, id)
+	res, err := a.db.Exec(`UPDATE api_keys SET `+strings.Join(sets, ",")+` WHERE id=?`, args...)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		fail(w, http.StatusNotFound, "not_found", "key not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

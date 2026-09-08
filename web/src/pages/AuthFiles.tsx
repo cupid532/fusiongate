@@ -1,7 +1,11 @@
 import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { motion } from "motion/react"
-import { FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network, ListChecks, CloudUpload, FileText, Power, PowerOff } from "lucide-react"
+import {
+  FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network,
+  ListChecks, CloudUpload, FileText, Power, PowerOff, Search,
+} from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -9,7 +13,10 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { SegmentedTabs } from "@/components/ui/segmented-tabs"
+import { QueryError } from "@/components/ui/query-error"
 import {
   Dialog,
   DialogContent,
@@ -46,29 +53,137 @@ function statusBadge(p: Provider) {
   return <Badge variant="neutral">{p.auth_status || "未知"}</Badge>
 }
 
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return "从未"
+  const diff = Date.now() - new Date(iso).getTime()
+  if (diff < 60_000) return "刚刚"
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  return `${Math.floor(diff / 86_400_000)} 天前`
+}
+
+function healthDot(status: string) {
+  if (status === "healthy")
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs">
+        <span className="h-2 w-2 rounded-full bg-emerald-500" />
+        健康
+      </span>
+    )
+  if (status === "unhealthy")
+    return (
+      <span className="inline-flex items-center gap-1.5 text-xs">
+        <span className="h-2 w-2 rounded-full bg-red-500" />
+        不健康
+      </span>
+    )
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span className="h-2 w-2 rounded-full bg-muted-foreground/40" />
+      待检
+    </span>
+  )
+}
+
+type FilterTab = "all" | "enabled" | "disabled" | "unhealthy" | "expiring"
+
 export function AuthFiles() {
   const qc = useQueryClient()
   const confirmDelete = useConfirmDelete()
   const confirm = useConfirm()
+  const [animateRef] = useAutoAnimate({ duration: 200 })
+
+  // Dialog states
   const [importOpen, setImportOpen] = useState(false)
   const [oauthOpen, setOauthOpen] = useState(false)
-  const [selected, setSelected] = useState<Set<number>>(new Set())
-  const [multiSelect, setMultiSelect] = useState(false)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
-  const [egressOpen, setEgressOpen] = useState(false)
-  const [healthOpen, setHealthOpen] = useState(false)
 
-  const { data: providers = [], isLoading } = useQuery({
+  // Health check & egress: track IDs for both single-row and batch
+  const [healthCheckIds, setHealthCheckIds] = useState<number[]>([])
+  const [healthOpen, setHealthOpen] = useState(false)
+  const [egressIds, setEgressIds] = useState<number[]>([])
+  const [egressOpen, setEgressOpen] = useState(false)
+
+  // Multi-select
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [multiSelect, setMultiSelect] = useState(false)
+
+  // Search & filter
+  const [searchQ, setSearchQ] = useState("")
+  const [filterTab, setFilterTab] = useState<FilterTab>("all")
+
+  const { data: providers = [], isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["providers"],
     queryFn: () => api<Provider[]>("/api/admin/providers"),
   })
 
   const oauth = providers.filter((p) => p.auth_kind === "oauth")
 
+  // Split codex vs non-codex
+  const codexProviders = useMemo(() => oauth.filter((p) => platformOf(p) === "codex"), [oauth])
+  const nonCodexProviders = useMemo(() => oauth.filter((p) => platformOf(p) !== "codex"), [oauth])
+
+  // Search-filtered non-codex providers (used for tab counts)
+  const searched = useMemo(() => {
+    if (!searchQ) return nonCodexProviders
+    const q = searchQ.toLowerCase()
+    return nonCodexProviders.filter(
+      (p) => p.name.toLowerCase().includes(q) || (p.auth_email || "").toLowerCase().includes(q),
+    )
+  }, [nonCodexProviders, searchQ])
+
+  // Tab counts from search-filtered list
+  const counts = useMemo(
+    () => ({
+      all: searched.length,
+      enabled: searched.filter((p) => p.enabled && !p.archived).length,
+      disabled: searched.filter((p) => !p.enabled || p.archived).length,
+      unhealthy: searched.filter((p) => p.health_check_status === "unhealthy").length,
+      expiring: searched.filter(
+        (p) => p.auth_expires_at && new Date(p.auth_expires_at) < new Date(Date.now() + 86_400_000),
+      ).length,
+    }),
+    [searched],
+  )
+
+  // Apply tab filter on top of search
+  const filtered = useMemo(() => {
+    if (filterTab === "enabled") return searched.filter((p) => p.enabled && !p.archived)
+    if (filterTab === "disabled") return searched.filter((p) => !p.enabled || p.archived)
+    if (filterTab === "unhealthy") return searched.filter((p) => p.health_check_status === "unhealthy")
+    if (filterTab === "expiring")
+      return searched.filter(
+        (p) => p.auth_expires_at && new Date(p.auth_expires_at) < new Date(Date.now() + 86_400_000),
+      )
+    return searched
+  }, [searched, filterTab])
+
+  // Group filtered non-codex providers by platform
+  const nonCodexGroups = useMemo(() => {
+    const order = ["grok", "claude"]
+    const map = new Map<string, Provider[]>()
+    for (const p of filtered) {
+      const key = platformOf(p)
+      const list = map.get(key) ?? []
+      list.push(p)
+      map.set(key, list)
+    }
+    return order
+      .map((k) => ({ platform: k, items: map.get(k) ?? [] }))
+      .filter((g) => g.items.length > 0)
+      .concat(
+        [...map.entries()]
+          .filter(([k]) => !order.includes(k))
+          .map(([k, items]) => ({ platform: k, items })),
+      )
+  }, [filtered])
+
+  // --- Mutations ---
+
   const update = useMutation({
-    mutationFn: async ({ id, priority }: { id: number; priority: number }) =>
-      api(`/api/admin/providers/${id}`, { method: "PATCH", body: JSON.stringify({ priority }) }),
+    mutationFn: async ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
+      api(`/api/admin/providers/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
   })
 
@@ -122,28 +237,9 @@ export function AuthFiles() {
     },
   })
 
-  // 按平台分组
-  const groups = useMemo(() => {
-    const order = ["codex", "grok", "claude"]
-    const map = new Map<string, Provider[]>()
-    for (const p of oauth) {
-      const key = platformOf(p)
-      const list = map.get(key) ?? []
-      list.push(p)
-      map.set(key, list)
-    }
-    return order
-      .map((k) => ({ platform: k, items: map.get(k) ?? [] }))
-      .filter((g) => g.items.length > 0)
-      .concat(
-        [...map.entries()]
-          .filter(([k]) => !order.includes(k))
-          .map(([k, items]) => ({ platform: k, items }))
-      )
-  }, [oauth])
-
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+      {/* ---- Header + batch action bar ---- */}
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">认证文件</h1>
@@ -164,11 +260,11 @@ export function AuthFiles() {
                 <ScanSearch className="h-4 w-4" />
                 模型设置（{selected.size}）
               </Button>
-              <Button variant="outline" onClick={() => setEgressOpen(true)}>
+              <Button variant="outline" onClick={() => { setEgressIds([...selected]); setEgressOpen(true) }}>
                 <Network className="h-4 w-4" />
                 指定出口
               </Button>
-              <Button variant="outline" onClick={() => setHealthOpen(true)}>
+              <Button variant="outline" onClick={() => { setHealthCheckIds([...selected]); setHealthOpen(true) }}>
                 <HeartPulse className="h-4 w-4" />
                 批量测活（{selected.size}）
               </Button>
@@ -200,7 +296,7 @@ export function AuthFiles() {
               </Button>
             </>
           )}
-          <Button variant={multiSelect ? "default" : "outline"} onClick={() => { setMultiSelect((value) => !value); setSelected(new Set()) }}>
+          <Button variant={multiSelect ? "default" : "outline"} onClick={() => { setMultiSelect((v) => !v); setSelected(new Set()) }}>
             <ListChecks className="h-4 w-4" />
             {multiSelect ? "退出多选" : "多选"}
           </Button>
@@ -215,31 +311,90 @@ export function AuthFiles() {
         </div>
       </div>
 
+      {/* ---- Content area ---- */}
       {isLoading ? (
-        <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
+        <div className="space-y-2">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />
+          ))}
+        </div>
+      ) : isError ? (
+        <QueryError
+          title="无法加载认证文件"
+          error={error}
+          onRetry={() => void refetch()}
+          retrying={isFetching}
+        />
       ) : oauth.length === 0 ? (
         <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
           还没有认证文件，点击「导入文件」或「添加授权」。
         </div>
       ) : (
         <div className="space-y-6">
-          {groups.map((g) =>
-            g.platform === "codex" ? (
-              <div key={g.platform}>
-                <div className="mb-3 flex items-center gap-2">
-                  <h2 className="text-base font-semibold">{platformLabels[g.platform] ?? g.platform}</h2>
-                  <Badge variant="neutral">{g.items.length} 个</Badge>
-                </div>
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-                  {g.items.map((p) => (
-                    <div key={p.id} className="relative">
-                      {multiSelect && <input type="checkbox" className="absolute left-3 top-3 z-10 h-4 w-4" aria-label={`选择 ${p.name}`} checked={selected.has(p.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(p.id); else next.delete(p.id); setSelected(next) }} />}
-                      <CodexCard provider={p} />
-                    </div>
-                  ))}
-                </div>
+          {/* ---- Codex section (unchanged) ---- */}
+          {codexProviders.length > 0 && (
+            <div>
+              <div className="mb-3 flex items-center gap-2">
+                <h2 className="text-base font-semibold">{platformLabels.codex}</h2>
+                <Badge variant="neutral">{codexProviders.length} 个</Badge>
               </div>
-            ) : (
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {codexProviders.map((p) => (
+                  <div key={p.id} className="relative">
+                    {multiSelect && (
+                      <input
+                        type="checkbox"
+                        className="absolute left-3 top-3 z-10 h-4 w-4"
+                        aria-label={`选择 ${p.name}`}
+                        checked={selected.has(p.id)}
+                        onChange={(e) => {
+                          const next = new Set(selected)
+                          if (e.target.checked) next.add(p.id); else next.delete(p.id)
+                          setSelected(next)
+                        }}
+                      />
+                    )}
+                    <CodexCard provider={p} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ---- Search + Filter bar (non-codex) ---- */}
+          {nonCodexProviders.length > 0 && (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={searchQ}
+                  onChange={(e) => setSearchQ(e.target.value)}
+                  placeholder="搜索名称或账号"
+                  className="h-8 w-52 pl-8 text-xs"
+                />
+              </div>
+              <SegmentedTabs<FilterTab>
+                tabs={[
+                  { value: "all", label: "全部", count: counts.all },
+                  { value: "enabled", label: "启用", count: counts.enabled },
+                  { value: "disabled", label: "禁用", count: counts.disabled },
+                  { value: "unhealthy", label: "不健康", count: counts.unhealthy },
+                  { value: "expiring", label: "过期", count: counts.expiring },
+                ]}
+                value={filterTab}
+                onChange={setFilterTab}
+              />
+            </div>
+          )}
+
+          {/* ---- Non-codex platform group tables ---- */}
+          <div ref={animateRef} className="space-y-4">
+            {nonCodexGroups.length === 0 && nonCodexProviders.length > 0 && (
+              <div className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">
+                没有符合筛选条件的认证文件
+              </div>
+            )}
+            {nonCodexGroups.map((g) => (
               <Card key={g.platform}>
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-base">
@@ -252,10 +407,28 @@ export function AuthFiles() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b text-left text-xs text-muted-foreground">
-                          {multiSelect && <th className="w-10 px-3 py-2.5"><input type="checkbox" aria-label={`选择全部 ${platformLabels[g.platform] ?? g.platform} 认证`} checked={g.items.length > 0 && g.items.every((p) => selected.has(p.id))} onChange={(e) => { const next = new Set(selected); if (e.target.checked) g.items.forEach((p) => next.add(p.id)); else g.items.forEach((p) => next.delete(p.id)); setSelected(next) }} /></th>}
+                          {multiSelect && (
+                            <th className="w-10 px-3 py-2.5">
+                              <input
+                                type="checkbox"
+                                aria-label={`选择全部 ${platformLabels[g.platform] ?? g.platform} 认证`}
+                                checked={g.items.length > 0 && g.items.every((p) => selected.has(p.id))}
+                                onChange={(e) => {
+                                  const next = new Set(selected)
+                                  if (e.target.checked) g.items.forEach((p) => next.add(p.id))
+                                  else g.items.forEach((p) => next.delete(p.id))
+                                  setSelected(next)
+                                }}
+                              />
+                            </th>
+                          )}
                           <th className="px-4 py-2.5 font-medium">名称</th>
                           <th className="px-4 py-2.5 font-medium">账号</th>
                           <th className="px-4 py-2.5 font-medium">状态</th>
+                          <th className="px-4 py-2.5 font-medium">健康</th>
+                          <th className="px-4 py-2.5 font-medium">延迟</th>
+                          <th className="px-4 py-2.5 font-medium">最后活跃</th>
+                          <th className="px-4 py-2.5 font-medium">过期</th>
                           <th className="w-24 px-4 py-2.5 font-medium">优先级</th>
                           <th className="px-4 py-2.5 font-medium">模型</th>
                           <th className="px-4 py-2.5 text-right font-medium">操作</th>
@@ -264,15 +437,77 @@ export function AuthFiles() {
                       <tbody>
                         {g.items.map((p) => (
                           <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
-                            {multiSelect && <td className="px-3 py-3"><input type="checkbox" aria-label={`选择 ${p.name}`} checked={selected.has(p.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(p.id); else next.delete(p.id); setSelected(next) }} /></td>}
+                            {multiSelect && (
+                              <td className="px-3 py-3">
+                                <input
+                                  type="checkbox"
+                                  aria-label={`选择 ${p.name}`}
+                                  checked={selected.has(p.id)}
+                                  onChange={(e) => {
+                                    const next = new Set(selected)
+                                    if (e.target.checked) next.add(p.id); else next.delete(p.id)
+                                    setSelected(next)
+                                  }}
+                                />
+                              </td>
+                            )}
                             <td className="px-4 py-3 font-medium">{p.name}</td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
                             <td className="px-4 py-3">{statusBadge(p)}</td>
-                            <td className="px-4 py-3"><InlinePriorityEditor value={p.priority} disabled={update.isPending} onSave={async (priority) => { await update.mutateAsync({ id: p.id, priority }) }} /></td>
+                            <td className="px-4 py-3">{healthDot(p.health_check_status)}</td>
+                            <td className="px-4 py-3 text-xs tabular-nums text-muted-foreground">
+                              {p.last_latency_ms ? `${p.last_latency_ms}ms` : "—"}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-xs text-muted-foreground">
+                              {timeAgo(p.last_success_at)}
+                            </td>
+                            <td className="whitespace-nowrap px-4 py-3 text-xs">
+                              {p.auth_expires_at
+                                ? new Date(p.auth_expires_at) < new Date(Date.now() + 86_400_000)
+                                  ? <Badge variant="danger">即将过期</Badge>
+                                  : <span className="text-muted-foreground">{new Date(p.auth_expires_at).toLocaleDateString()}</span>
+                                : <span className="text-muted-foreground">—</span>}
+                            </td>
+                            <td className="px-4 py-3">
+                              <InlinePriorityEditor
+                                value={p.priority}
+                                disabled={update.isPending}
+                                onSave={async (priority) => { await update.mutateAsync({ id: p.id, patch: { priority } }) }}
+                              />
+                            </td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                             <td className="px-4 py-3">
-                              <div className="flex justify-end">
-                                <Button variant="ghost" size="icon" onClick={() => { setModelPickerProvider(p); setModelPickerOpen(true) }} aria-label={`管理模型 ${p.name}`} title="识别并勾选模型">
+                              <div className="flex items-center justify-end gap-1">
+                                <Switch
+                                  checked={p.enabled}
+                                  onCheckedChange={(v) => update.mutate({ id: p.id, patch: { enabled: v } })}
+                                  aria-label={p.enabled ? `停用 ${p.name}` : `启用 ${p.name}`}
+                                />
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => { setHealthCheckIds([p.id]); setHealthOpen(true) }}
+                                  aria-label={`测活 ${p.name}`}
+                                  title="模型检活"
+                                >
+                                  <HeartPulse className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => { setEgressIds([p.id]); setEgressOpen(true) }}
+                                  aria-label={`指定出口 ${p.name}`}
+                                  title="指定出口"
+                                >
+                                  <Network className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={() => { setModelPickerProvider(p); setModelPickerOpen(true) }}
+                                  aria-label={`管理模型 ${p.name}`}
+                                  title="识别并勾选模型"
+                                >
                                   <ScanSearch className="h-4 w-4" />
                                 </Button>
                                 <Button
@@ -282,6 +517,7 @@ export function AuthFiles() {
                                     if (await confirmDelete(`认证文件「${p.name}」`, "使用该认证的模型路由会同时失效。")) remove.mutate(p.id)
                                   }}
                                   aria-label={`删除 ${p.name}`}
+                                  title="删除"
                                 >
                                   <Trash2 className="h-4 w-4 text-destructive" />
                                 </Button>
@@ -294,11 +530,12 @@ export function AuthFiles() {
                   </div>
                 </CardContent>
               </Card>
-            )
-          )}
+            ))}
+          </div>
         </div>
       )}
 
+      {/* ---- Dialogs ---- */}
       <AuthImportDialog open={importOpen} onOpenChange={setImportOpen} />
       <AuthOAuthDialog open={oauthOpen} onOpenChange={setOauthOpen} />
       {modelPickerProvider && (
@@ -311,16 +548,24 @@ export function AuthFiles() {
           mixedTypes={new Set(oauth.filter((p) => selected.has(p.id)).map((p) => p.type)).size > 1}
         />
       )}
-      {healthOpen && (
+      {healthOpen && healthCheckIds.length > 0 && (
         <HealthCheckDialog
           open={healthOpen}
-          onOpenChange={setHealthOpen}
-          providerIds={[...selected]}
-          title={`批量测活 · ${selected.size} 个认证`}
+          onOpenChange={(v) => { setHealthOpen(v); if (!v) setHealthCheckIds([]) }}
+          providerIds={healthCheckIds}
+          title={
+            healthCheckIds.length === 1
+              ? `测活 · ${oauth.find((p) => p.id === healthCheckIds[0])?.name ?? ""}`
+              : `批量测活 · ${healthCheckIds.length} 个认证`
+          }
           autoStart
         />
       )}
-      <AuthEgressDialog open={egressOpen} onOpenChange={setEgressOpen} providerIds={[...selected]} />
+      <AuthEgressDialog
+        open={egressOpen}
+        onOpenChange={(v) => { setEgressOpen(v); if (!v) setEgressIds([]) }}
+        providerIds={egressIds}
+      />
     </motion.div>
   )
 }

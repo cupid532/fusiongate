@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { animate, motion, useMotionValue } from "motion/react"
-import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, ShieldCheck, HardHat } from "lucide-react"
+import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, ShieldCheck, HardHat, ChevronDown } from "lucide-react"
 import { api } from "@/lib/api"
 import { formatCost, formatTokens, cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { CopyButton } from "@/components/ui/copy-button"
 import { EmptyState } from "@/components/ui/empty-state"
-import type { DashboardData, Provider } from "@/lib/types"
+import { QueryError } from "@/components/ui/query-error"
+import type { DashboardData, Provider, TokenUsageResponse } from "@/lib/types"
 
 function CountUp({ value, format }: { value: number; format?: (n: number) => string }) {
   const mv = useMotionValue(0)
@@ -33,17 +34,65 @@ const statItems: {
   icon: typeof Server
   tone: string
   format?: (n: number) => string
+  target: string
 }[] = [
-  { key: "providers", label: "启用渠道", icon: Server, tone: "text-primary bg-primary/10" },
-  { key: "models", label: "公开模型", icon: Boxes, tone: "text-blue-500 bg-blue-500/10" },
-  { key: "keys", label: "活跃密钥", icon: KeyRound, tone: "text-violet-500 bg-violet-500/10" },
-  { key: "today_requests", label: "今日请求", icon: Activity, tone: "text-cyan-500 bg-cyan-500/10" },
-  { key: "failures_24h", label: "24h 失败", icon: AlertTriangle, tone: "text-destructive bg-destructive/10" },
-  { key: "cost_micros", label: "近一年费用", icon: Coins, tone: "text-amber-500 bg-amber-500/10", format: formatCost },
+  { key: "providers", label: "启用渠道", icon: Server, tone: "text-primary bg-primary/10", target: "providers" },
+  { key: "models", label: "公开模型", icon: Boxes, tone: "text-blue-500 bg-blue-500/10", target: "routes" },
+  { key: "keys", label: "活跃密钥", icon: KeyRound, tone: "text-violet-500 bg-violet-500/10", target: "keys" },
+  { key: "today_requests", label: "今日请求", icon: Activity, tone: "text-cyan-500 bg-cyan-500/10", target: "requests" },
+  { key: "failures_24h", label: "24h 失败", icon: AlertTriangle, tone: "text-destructive bg-destructive/10", target: "requests" },
+  { key: "cost_micros", label: "近一年费用", icon: Coins, tone: "text-amber-500 bg-amber-500/10", format: formatCost, target: "usage" },
 ]
 
+function MiniTrend({ series }: { series: { date: string; requests: number }[] }) {
+  if (!series.length) return null
+  const max = Math.max(...series.map((d) => d.requests), 1)
+  return (
+    <div className="flex items-end gap-[3px]" style={{ height: 40 }}>
+      {series.map((d, i) => (
+        <motion.div
+          key={d.date}
+          className="flex-1 rounded-sm bg-primary/70"
+          title={`${d.date}: ${d.requests} 请求`}
+          initial={{ height: 0 }}
+          animate={{ height: `${Math.max((d.requests / max) * 100, 4)}%` }}
+          transition={{ duration: 0.5, delay: i * 0.03, ease: [0.16, 1, 0.3, 1] }}
+        />
+      ))}
+    </div>
+  )
+}
+
+function TokenBar({ data }: { data: DashboardData }) {
+  const total = data.total_tokens || 1
+  const segments = [
+    { label: "输入", value: data.input_tokens, color: "bg-blue-500" },
+    { label: "输出", value: data.output_tokens, color: "bg-emerald-500" },
+    { label: "缓存", value: data.cached_tokens, color: "bg-amber-500" },
+    { label: "推理", value: data.reasoning_tokens, color: "bg-violet-500" },
+  ].filter((s) => s.value > 0)
+  if (!segments.length) return null
+  return (
+    <div className="mt-3 space-y-1.5">
+      <div className="flex h-2 overflow-hidden rounded-full">
+        {segments.map((s) => (
+          <div key={s.label} className={cn("h-full transition-all", s.color)} style={{ width: `${(s.value / total) * 100}%` }} title={`${s.label}: ${formatTokens(s.value)}`} />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+        {segments.map((s) => (
+          <span key={s.label} className="flex items-center gap-1">
+            <span className={cn("inline-block h-1.5 w-1.5 rounded-full", s.color)} />
+            {s.label} {formatTokens(s.value)} ({Math.round((s.value / total) * 100)}%)
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function Dashboard() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => api<DashboardData>("/api/admin/dashboard"),
     staleTime: 30_000,
@@ -54,6 +103,15 @@ export function Dashboard() {
     queryFn: () => api<Provider[]>("/api/admin/providers"),
     staleTime: 30_000,
   })
+  const { data: trend } = useQuery({
+    queryKey: ["dashboard-trend"],
+    queryFn: () => api<TokenUsageResponse>("/api/admin/token-usage?days=7"),
+    staleTime: 60_000,
+  })
+
+  const navigate = useCallback((page: string) => { location.hash = page }, [])
+
+  const [guideOpen, setGuideOpen] = useState(false)
 
   const health = useMemo(() => {
     const enabled = providers.filter((p) => p.enabled && !p.archived)
@@ -67,6 +125,7 @@ export function Dashboard() {
     return { ...totals, healthyPct }
   }, [providers])
 
+  const setupDone = data && data.providers > 0 && data.models > 0 && data.keys > 0
   const baseUrl = `${location.origin}/v1`
 
   if (isLoading || !data) {
@@ -83,6 +142,10 @@ export function Dashboard() {
         </div>
       </div>
     )
+  }
+
+  if (isError) {
+    return <QueryError title="无法加载仪表盘数据" error={error} onRetry={() => void refetch()} />
   }
 
   return (
@@ -106,7 +169,10 @@ export function Dashboard() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: i * 0.05 }}
             >
-              <Card className="overflow-hidden">
+              <Card
+                className="cursor-pointer overflow-hidden transition-colors hover:border-primary/30"
+                onClick={() => navigate(item.target)}
+              >
                 <CardContent className="p-4">
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
                     <span>{item.label}</span>
@@ -127,6 +193,18 @@ export function Dashboard() {
           )
         })}
       </div>
+
+      {trend?.series && trend.series.length > 1 && (
+        <Card className="mb-5">
+          <CardContent className="p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">近 7 日请求趋势</span>
+              <span className="text-xs tabular-nums text-muted-foreground">{trend.series.length} 天</span>
+            </div>
+            <MiniTrend series={trend.series} />
+          </CardContent>
+        </Card>
+      )}
 
       <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-[0.65fr_1.35fr]">
         <Card>
@@ -187,27 +265,32 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.35fr_0.65fr]">
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">开始使用</CardTitle>
-            <CardDescription>完成三步即可从客户端调用统一模型。</CardDescription>
+          <CardHeader className="cursor-pointer" onClick={() => setGuideOpen((o) => !o)}>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">{setupDone ? "✓ 设置已完成" : "开始使用"}</CardTitle>
+              <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", (guideOpen || !setupDone) ? "rotate-180" : "")} />
+            </div>
+            {!setupDone && <CardDescription>完成三步即可从客户端调用统一模型。</CardDescription>}
           </CardHeader>
-          <CardContent className="space-y-3">
-            {[
-              { n: "01", t: "连接上游 Provider", d: "添加 OpenAI、Anthropic、Gemini 或兼容渠道" },
-              { n: "02", t: "建立统一模型路由", d: "把不同渠道的真实模型合并为统一故障转移组" },
-              { n: "03", t: "签发下游 API Key", d: "一把 Key 按权限访问多个渠道和模型" },
-            ].map((s) => (
-              <div key={s.n} className="flex items-center gap-4 rounded-lg border p-3">
-                <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-sm font-bold text-primary">
-                  {s.n}
+          {(guideOpen || !setupDone) && (
+            <CardContent className="space-y-3">
+              {[
+                { n: "01", t: "连接上游 Provider", d: "添加 OpenAI、Anthropic、Gemini 或兼容渠道" },
+                { n: "02", t: "建立统一模型路由", d: "把不同渠道的真实模型合并为统一故障转移组" },
+                { n: "03", t: "签发下游 API Key", d: "一把 Key 按权限访问多个渠道和模型" },
+              ].map((s) => (
+                <div key={s.n} className="flex items-center gap-4 rounded-lg border p-3">
+                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-sm font-bold text-primary">
+                    {s.n}
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">{s.t}</div>
+                    <div className="text-xs text-muted-foreground">{s.d}</div>
+                  </div>
                 </div>
-                <div>
-                  <div className="text-sm font-medium">{s.t}</div>
-                  <div className="text-xs text-muted-foreground">{s.d}</div>
-                </div>
-              </div>
-            ))}
-          </CardContent>
+              ))}
+            </CardContent>
+          )}
         </Card>
 
         <Card>
@@ -235,6 +318,7 @@ export function Dashboard() {
               近一年累计 <span className="font-semibold text-foreground">{formatTokens(data.total_tokens)}</span> token ·{" "}
               <span className="font-semibold text-foreground">{formatCost(data.cost_micros)}</span> 费用
             </div>
+            <TokenBar data={data} />
           </CardContent>
         </Card>
       </div>

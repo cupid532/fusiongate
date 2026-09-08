@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, Plug } from "lucide-react"
+import { Plus, Trash2, Plug, Settings2 } from "lucide-react"
 import { api } from "@/lib/api"
 import type { IPPoolNode } from "@/lib/types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,8 +10,19 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { QueryError } from "@/components/ui/query-error"
 import { useConfirmDelete } from "@/components/ui/confirm"
-import { notify } from "@/lib/notify"
+import { notify, notifySuccess } from "@/lib/notify"
+
+function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return "—"
+  const diff = Date.now() - new Date(iso).getTime()
+  if (diff < 60_000) return "刚刚"
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
+  return `${Math.floor(diff / 86_400_000)}d ago`
+}
 
 export function IPPool() {
   const qc = useQueryClient()
@@ -19,8 +30,10 @@ export function IPPool() {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState("")
   const [link, setLink] = useState("")
+  const [editing, setEditing] = useState<IPPoolNode | null>(null)
+  const [editName, setEditName] = useState("")
 
-  const { data: nodes = [], isLoading } = useQuery({
+  const { data: nodes = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ["ippool"],
     queryFn: () => api<IPPoolNode[]>("/api/admin/ip-pool"),
   })
@@ -33,6 +46,16 @@ export function IPPool() {
       setName("")
       setLink("")
       setCreating(false)
+    },
+  })
+
+  const update = useMutation({
+    mutationFn: async ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
+      api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ippool"] })
+      setEditing(null)
+      notifySuccess("节点已更新")
     },
   })
 
@@ -80,12 +103,8 @@ export function IPPool() {
               <Input value={link} onChange={(e) => setLink(e.target.value)} placeholder="vless://… 或 ss://…" className="font-mono text-xs" />
             </div>
             <div className="flex gap-2">
-              <Button onClick={() => create.mutate()} disabled={!name.trim() || !link.trim() || create.isPending}>
-                添加
-              </Button>
-              <Button variant="ghost" onClick={() => setCreating(false)}>
-                取消
-              </Button>
+              <Button onClick={() => create.mutate()} disabled={!name.trim() || !link.trim() || create.isPending}>添加</Button>
+              <Button variant="ghost" onClick={() => setCreating(false)}>取消</Button>
             </div>
           </CardContent>
         </Card>
@@ -94,7 +113,9 @@ export function IPPool() {
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
+            <div className="space-y-2 p-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />)}</div>
+          ) : isError ? (
+            <QueryError title="无法加载节点列表" error={error} onRetry={() => void refetch()} />
           ) : nodes.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">还没有节点</div>
           ) : (
@@ -106,6 +127,8 @@ export function IPPool() {
                     <th className="px-4 py-3 font-medium">协议</th>
                     <th className="px-4 py-3 font-medium">服务器</th>
                     <th className="px-4 py-3 font-medium">状态</th>
+                    <th className="px-4 py-3 font-medium">延迟</th>
+                    <th className="px-4 py-3 font-medium">最后检测</th>
                     <th className="px-4 py-3 font-medium">出口 IP</th>
                     <th className="px-4 py-3 font-medium">渠道数</th>
                     <th className="px-4 py-3 text-right font-medium">操作</th>
@@ -115,18 +138,31 @@ export function IPPool() {
                   {nodes.map((n) => (
                     <tr key={n.id} className="border-b last:border-0 hover:bg-muted/40">
                       <td className="px-4 py-3 font-medium">{n.name}</td>
-                      <td className="px-4 py-3">
-                        <Badge variant="neutral">{n.protocol}</Badge>
-                      </td>
+                      <td className="px-4 py-3"><Badge variant="neutral">{n.protocol}</Badge></td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{n.server}</td>
                       <td className="px-4 py-3">
-                        {n.status === "healthy" ? <Badge variant="success">正常</Badge> : n.status === "config_error" ? <Badge variant="danger">配置错误</Badge> : <Badge variant="neutral">{n.status || "待检测"}</Badge>}
+                        {n.status === "healthy" ? (
+                          <Badge variant="success">正常</Badge>
+                        ) : n.status === "config_error" ? (
+                          <Badge variant="danger">配置错误</Badge>
+                        ) : n.last_error ? (
+                          <Badge variant="danger" title={n.last_error}>错误</Badge>
+                        ) : (
+                          <Badge variant="neutral">{n.status || "待检测"}</Badge>
+                        )}
                       </td>
+                      <td className="px-4 py-3 text-xs tabular-nums text-muted-foreground">
+                        {n.last_latency_ms > 0 ? `${n.last_latency_ms}ms` : "—"}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">{timeAgo(n.last_checked_at)}</td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{n.exit_ip || "—"}</td>
                       <td className="px-4 py-3 text-xs">{n.provider_count}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
                           <Switch checked={n.enabled} onCheckedChange={(v) => toggle.mutate({ id: n.id, enabled: v })} aria-label={`${n.name} 开关`} />
+                          <Button variant="ghost" size="icon" onClick={() => { setEditing(n); setEditName(n.name) }} aria-label={`编辑 ${n.name}`}>
+                            <Settings2 className="h-4 w-4" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -159,6 +195,22 @@ export function IPPool() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null) }}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>编辑节点</DialogTitle></DialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <Label>名称</Label>
+            <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEditing(null)}>取消</Button>
+            <Button onClick={() => editing && update.mutate({ id: editing.id, patch: { name: editName } })} disabled={!editName.trim() || update.isPending}>
+              {update.isPending ? "保存中…" : "保存"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </motion.div>
   )
 }

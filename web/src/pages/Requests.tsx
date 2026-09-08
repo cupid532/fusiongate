@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
+import { Fragment, useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { motion } from "motion/react"
+import { AnimatePresence, motion } from "motion/react"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { RefreshCw, Search, Trash2, Download, HardDrive, Save } from "lucide-react"
 import { api, apiDownload, saveBlob } from "@/lib/api"
@@ -110,6 +110,21 @@ function CacheRateBadge({ cached, input }: { cached: number; input: number }) {
   )
 }
 
+const ERROR_TYPE_STYLE: Record<string, string> = {
+  timeout: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400",
+  rate_limit: "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400",
+  auth_error: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
+}
+
+function ErrorTypeBadge({ type }: { type: string }) {
+  const cls = ERROR_TYPE_STYLE[type] ?? "bg-muted text-muted-foreground"
+  return (
+    <span className={cn("inline-block rounded px-1.5 py-0.5 text-[10px] font-medium", cls)}>
+      {type}
+    </span>
+  )
+}
+
 const PAGE_LIMIT = 100
 
 export function Requests() {
@@ -122,6 +137,8 @@ export function Requests() {
   const [providerId, setProviderId] = useState("")
   const [range, setRange] = useState("")
   const [view, setView] = useState<"list" | "group">("list")
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [modelFilter, setModelFilter] = useState("")
 
   const { data: providers = [] } = useQuery({
     queryKey: ["providers"],
@@ -211,6 +228,12 @@ export function Requests() {
     const rest = pages.flatMap((p) => p.items)
     return [...first, ...rest]
   }, [firstPage, pages])
+  const models = useMemo(() => [...new Set(rows.map((r) => r.model))].sort(), [rows])
+  const filteredRows = useMemo(() => {
+    if (!modelFilter) return rows
+    return rows.filter((r) => r.model === modelFilter)
+  }, [rows, modelFilter])
+
   const isLoading = requestsQuery.isLoading
   const isFetching = requestsQuery.isFetching
   const refetch = () => { setPages([]); return requestsQuery.refetch() }
@@ -233,7 +256,7 @@ export function Requests() {
 
   const groupByModel = useMemo(() => {
     const map = new Map<string, { model: string; count: number; success: number; failed: number; tokens: number; input_tokens: number; cached_tokens: number; cost_micros: number; avg_latency: number }>()
-    for (const r of rows) {
+    for (const r of filteredRows) {
       const g = map.get(r.model) ?? { model: r.model, count: 0, success: 0, failed: 0, tokens: 0, input_tokens: 0, cached_tokens: 0, cost_micros: 0, avg_latency: 0 }
       g.count++
       if (r.success) g.success++
@@ -249,7 +272,7 @@ export function Requests() {
       .map((g) => ({ ...g, avg_latency: g.count ? Math.round(g.avg_latency / g.count) : 0 }))
       .sort((a, b) => b.tokens - a.tokens)
     return { list, maxTokens: Math.max(1, ...list.map((g) => g.tokens)) }
-  }, [rows])
+  }, [filteredRows])
 
   // Comes straight from the server's aggregate over the whole filtered range.
   // Summing the returned page here instead — which is what this did before —
@@ -419,6 +442,17 @@ export function Requests() {
                 <Input aria-label="搜索请求账本" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / IP / 错误" className="h-8 w-full pl-8 text-xs sm:w-56" />
               </div>
               <select
+                aria-label="按模型筛选请求"
+                value={modelFilter}
+                onChange={(e) => { setModelFilter(e.target.value); setExpandedId(null) }}
+                className="h-8 rounded-md border bg-background px-2 text-xs"
+              >
+                <option value="">全部模型</option>
+                {models.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <select
                 aria-label="按渠道筛选请求"
                 value={providerId}
                 onChange={(e) => setProviderId(e.target.value)}
@@ -458,6 +492,8 @@ export function Requests() {
             />
           ) : rows.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">当前筛选范围还没有请求</div>
+          ) : filteredRows.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">没有匹配所选模型的请求</div>
           ) : view === "group" ? (
             <div className="p-4">
               <div className="space-y-2">
@@ -502,35 +538,42 @@ export function Requests() {
                   </tr>
                 </thead>
                 <tbody ref={animateParent}>
-                  {rows.map((r) => (
-                    <tr key={r.id} className="border-b last:border-0 hover:bg-muted/40">
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{timeAgo(r.created_at)}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{r.model}</div>
-                        <div className="text-xs text-muted-foreground">{r.protocol}</div>
-                      </td>
-                      <td className="px-4 py-3 text-xs">
-                        <div>{r.provider_name || "—"}</div>
-                        {(r.provider_key_name || r.provider_key_hint) && (
-                          <div className="mt-0.5 text-[11px] text-muted-foreground">
-                            {[r.provider_key_name, r.provider_key_hint].filter(Boolean).join(" · ")}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {r.running && r.first_byte_ms == null ? (
-                          <LiveClock startIso={r.created_at} phase="first" stale={!!r.stale} />
-                        ) : r.running ? (
-                          <LiveClock startIso={r.created_at} phase="stream" stale={!!r.stale} />
-                        ) : r.success ? (
-                          <Badge variant="success">成功</Badge>
-                        ) : (
-                          <Badge variant="danger">失败</Badge>
-                        )}
-                      </td>
-                      <td className="px-4 py-3"><ReasoningEffort value={r.reasoning_effort} /></td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{duration(r.first_byte_ms)}</td>
-                      <td className="px-4 py-3 text-xs">
+                  {filteredRows.map((r) => (
+                    <Fragment key={r.id}>
+                      <tr
+                        className="cursor-pointer border-b last:border-0 hover:bg-muted/40"
+                        onClick={() => setExpandedId(expandedId === r.request_id ? null : r.request_id)}
+                      >
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{timeAgo(r.created_at)}</td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium">{r.model}</div>
+                          <div className="text-xs text-muted-foreground">{r.protocol}</div>
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          <div>{r.provider_name || "---"}</div>
+                          {(r.provider_key_name || r.provider_key_hint) && (
+                            <div className="mt-0.5 text-[11px] text-muted-foreground">
+                              {[r.provider_key_name, r.provider_key_hint].filter(Boolean).join(" · ")}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {r.running && r.first_byte_ms == null ? (
+                            <LiveClock startIso={r.created_at} phase="first" stale={!!r.stale} />
+                          ) : r.running ? (
+                            <LiveClock startIso={r.created_at} phase="stream" stale={!!r.stale} />
+                          ) : r.success ? (
+                            <Badge variant="success">成功</Badge>
+                          ) : (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Badge variant="danger">失败</Badge>
+                              {r.error_type && <ErrorTypeBadge type={r.error_type} />}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3"><ReasoningEffort value={r.reasoning_effort} /></td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{duration(r.first_byte_ms)}</td>
+                        <td className="px-4 py-3 text-xs">
                           {(() => {
                             const parts: string[] = []
                             if (r.input_tokens > 0) parts.push(`入 ${formatTokens(r.input_tokens)}`)
@@ -542,9 +585,47 @@ export function Requests() {
                             return r.usage_reported ? "0" : "未采集"
                           })()}
                         </td>
-                      <td className="px-4 py-3"><CacheRateBadge cached={r.cached_tokens} input={r.input_tokens} /></td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{formatCost(r.cost_micros)}</td>
-                    </tr>
+                        <td className="px-4 py-3"><CacheRateBadge cached={r.cached_tokens} input={r.input_tokens} /></td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatCost(r.cost_micros)}</td>
+                      </tr>
+                      <AnimatePresence initial={false}>
+                        {expandedId === r.request_id && (
+                          <tr key={`detail-${r.id}`}>
+                            <td colSpan={99}>
+                              <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: "auto" }}
+                                exit={{ opacity: 0, height: 0 }}
+                                transition={{ duration: 0.2 }}
+                                className="overflow-hidden"
+                              >
+                                <div className="bg-muted/30 px-4 py-3">
+                                  <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs md:grid-cols-4">
+                                    <div><div className="text-muted-foreground">Request ID</div><div className="break-all font-mono">{r.request_id}</div></div>
+                                    <div><div className="text-muted-foreground">Gateway Request ID</div><div className="break-all font-mono">{r.gateway_request_id}</div></div>
+                                    <div><div className="text-muted-foreground">Client IP</div><div className="font-mono">{r.client_ip}</div></div>
+                                    {!r.success && !r.running && r.error_type && (
+                                      <div><div className="text-muted-foreground">Error Type</div><div className="font-mono text-destructive">{r.error_type}</div></div>
+                                    )}
+                                    {r.retry_reason && (
+                                      <div><div className="text-muted-foreground">Retry Reason</div><div className="font-mono">{r.retry_reason}</div></div>
+                                    )}
+                                    <div><div className="text-muted-foreground">Attempt</div><div className="font-mono">{r.attempt}</div></div>
+                                    <div><div className="text-muted-foreground">Total Latency</div><div className="font-mono">{duration(r.latency_ms)}</div></div>
+                                    <div><div className="text-muted-foreground">Input Tokens</div><div className="font-mono">{formatTokens(r.input_tokens)}</div></div>
+                                    <div><div className="text-muted-foreground">Output Tokens</div><div className="font-mono">{formatTokens(r.output_tokens)}</div></div>
+                                    <div><div className="text-muted-foreground">Cached Tokens</div><div className="font-mono">{formatTokens(r.cached_tokens)}</div></div>
+                                    <div><div className="text-muted-foreground">Reasoning Tokens</div><div className="font-mono">{formatTokens(r.reasoning_tokens)}</div></div>
+                                    <div><div className="text-muted-foreground">Stream</div><div className="font-mono">{r.stream ? "Yes" : "No"}</div></div>
+                                    <div><div className="text-muted-foreground">Protocol</div><div className="font-mono">{r.protocol}</div></div>
+                                  </div>
+                                </div>
+                              </motion.div>
+                            </td>
+                          </tr>
+                        )}
+                      </AnimatePresence>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -555,6 +636,9 @@ export function Requests() {
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground">
               <span>
                 已加载 <span className="font-medium tabular-nums text-foreground">{rows.length}</span> 条
+                {modelFilter && filteredRows.length < rows.length && (
+                  <>（显示 <span className="font-medium tabular-nums text-foreground">{filteredRows.length}</span> 条）</>
+                )}
                 {totalRows > rows.length && (
                   <>，当前筛选共 <span className="font-medium tabular-nums text-foreground">{totalRows.toLocaleString()}</span> 条</>
                 )}
