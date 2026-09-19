@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { ShieldCheck, Play, Square, ListChecks, ChevronDown, ChevronRight } from "lucide-react"
-import { api } from "@/lib/api"
+import { ShieldCheck, Play, Square, ListChecks, ChevronDown, ChevronRight, Download } from "lucide-react"
+import { api, saveBlob } from "@/lib/api"
 import type { QualityDetectorData, QualityDetectorTarget, QualityJob, QualityJobItem, QualityJobListResponse } from "@/lib/types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -461,13 +461,21 @@ export function Quality() {
                     </div>
                     {item.error && <div className="mt-1 text-xs text-destructive">{item.error}</div>}
                     {item.report && (
-                      <button
-                        className="mt-1 flex items-center gap-1 text-xs text-primary hover:underline"
-                        onClick={() => setExpandedItem(expandedItem === item.id ? null : item.id)}
-                      >
-                        {expandedItem === item.id ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-                        查看报告
-                      </button>
+                      <div className="mt-1 flex items-center gap-3">
+                        <button
+                          className="flex items-center gap-1 text-xs text-primary hover:underline"
+                          onClick={() => setExpandedItem(expandedItem === item.id ? null : item.id)}
+                        >
+                          {expandedItem === item.id ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                          查看报告
+                        </button>
+                        {item.status === "completed" && (
+                          <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => exportReport(item, activeJobId)}>
+                            <Download className="h-3 w-3" />
+                            导出报告
+                          </button>
+                        )}
+                      </div>
                     )}
                     {expandedItem === item.id && item.report && (
                       <pre className="mt-2 max-h-64 overflow-auto rounded bg-muted p-2 text-xs">{prettyReport(item.report)}</pre>
@@ -561,6 +569,34 @@ export function Quality() {
   )
 }
 
+function exportReport(item: QualityJobItem, jobId: string) {
+  const date = new Date().toISOString().slice(0, 10)
+  const data = {
+    job_id: jobId,
+    item_id: item.id,
+    model: item.model,
+    provider_name: item.provider_name,
+    provider_key_name: item.provider_key_name,
+    provider_key_hint: item.provider_key_hint,
+    status: item.status,
+    verdict: item.verdict,
+    error: item.error,
+    report: tryParseJSON(item.report),
+    exported_at: new Date().toISOString(),
+  }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })
+  saveBlob(blob, `quality-report-${jobId.slice(0, 8)}-${date}.json`)
+}
+
+function tryParseJSON(raw: string | undefined | null): unknown {
+  if (!raw) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return raw
+  }
+}
+
 function prettyReport(raw: string): string {
   try {
     return JSON.stringify(JSON.parse(raw), null, 2)
@@ -592,13 +628,21 @@ function HistoryItems({ jobId }: { jobId: string }) {
           </div>
           {item.error && <div className="mt-1 text-xs text-destructive">{item.error}</div>}
           {item.report && (
-            <button
-              className="mt-1 flex items-center gap-1 text-xs text-primary hover:underline"
-              onClick={() => setOpenItem(openItem === item.id ? null : item.id)}
-            >
-              {openItem === item.id ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-              查看报告
-            </button>
+            <div className="mt-1 flex items-center gap-3">
+              <button
+                className="flex items-center gap-1 text-xs text-primary hover:underline"
+                onClick={() => setOpenItem(openItem === item.id ? null : item.id)}
+              >
+                {openItem === item.id ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                查看报告
+              </button>
+              {item.status === "completed" && (
+                <button className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" onClick={() => exportReport(item, jobId)}>
+                  <Download className="h-3 w-3" />
+                  导出报告
+                </button>
+              )}
+            </div>
           )}
           {openItem === item.id && item.report && (
             <pre className="mt-2 max-h-64 overflow-auto rounded bg-muted p-2 text-xs">{prettyReport(item.report)}</pre>

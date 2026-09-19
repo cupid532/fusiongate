@@ -19,6 +19,32 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { notifySuccess } from "@/lib/notify"
 
+function expiresLabel(iso: string | undefined): { text: string; expired: boolean } | null {
+  if (!iso) return null
+  const diff = new Date(iso).getTime() - Date.now()
+  if (diff <= 0) return { text: "已过期", expired: true }
+  const days = Math.floor(diff / 86_400_000)
+  if (days > 0) return { text: `${days}天后过期`, expired: false }
+  const hours = Math.floor(diff / 3_600_000)
+  if (hours > 0) return { text: `${hours}小时后过期`, expired: false }
+  const mins = Math.floor(diff / 60_000)
+  return { text: `${mins}分钟后过期`, expired: false }
+}
+
+/** Convert a local datetime-local value to an ISO 8601 UTC string. */
+function localToISO(v: string): string {
+  if (!v) return ""
+  return new Date(v).toISOString()
+}
+
+/** Convert an ISO 8601 UTC string to the local datetime-local value format. */
+function isoToLocal(iso: string): string {
+  if (!iso) return ""
+  const d = new Date(iso)
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 type KeyForm = {
   name: string
   allow_models: string
@@ -28,6 +54,8 @@ type KeyForm = {
   allow_audio: boolean
   rpm_limit: number
   budget_usd: string
+  expires_at: string
+  never_expires: boolean
 }
 
 const emptyForm: KeyForm = {
@@ -39,6 +67,8 @@ const emptyForm: KeyForm = {
   allow_audio: false,
   rpm_limit: 120,
   budget_usd: "",
+  expires_at: "",
+  never_expires: true,
 }
 
 type Filter = "all" | "active" | "revoked" | "over_budget"
@@ -92,6 +122,7 @@ export function Keys() {
       if (f.allow_models.trim()) body.allow_models = f.allow_models
       if (f.deny_models.trim()) body.deny_models = f.deny_models
       if (f.budget_usd.trim()) body.budget_micros = Math.round(Number(f.budget_usd) * 1_000_000)
+      if (!f.never_expires && f.expires_at) body.expires_at = localToISO(f.expires_at)
       return api<{ id: number; key: string }>("/api/admin/keys", { method: "POST", body: JSON.stringify(body) })
     },
     onSuccess: (res) => {
@@ -145,6 +176,8 @@ export function Keys() {
       allow_audio: k.allow_audio,
       rpm_limit: k.rpm_limit,
       budget_usd: k.budget_micros > 0 ? String(k.budget_micros / 1_000_000) : "",
+      expires_at: k.expires_at ? isoToLocal(k.expires_at) : "",
+      never_expires: !k.expires_at,
     })
   }
 
@@ -160,6 +193,11 @@ export function Keys() {
       rpm_limit: editForm.rpm_limit,
     }
     if (editForm.budget_usd.trim()) patch.budget_usd = Number(editForm.budget_usd)
+    if (editForm.never_expires) {
+      patch.expires_at = null
+    } else if (editForm.expires_at) {
+      patch.expires_at = localToISO(editForm.expires_at)
+    }
     update.mutate({ id: editing.id, patch })
   }
 
@@ -202,6 +240,22 @@ export function Keys() {
             <div className="flex flex-col gap-1.5">
               <Label>预算（USD，留空无限制）</Label>
               <Input value={form.budget_usd} onChange={(e) => set("budget_usd", e.target.value)} placeholder="0.00" type="number" step="0.01" />
+            </div>
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
+              <Label>过期时间</Label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="datetime-local"
+                  value={form.expires_at}
+                  onChange={(e) => { set("expires_at", e.target.value); if (e.target.value) set("never_expires", false) }}
+                  disabled={form.never_expires}
+                  className={cn("flex-1", form.never_expires && "opacity-50")}
+                />
+                <label className="flex shrink-0 items-center gap-1.5 text-sm">
+                  <input type="checkbox" checked={form.never_expires} onChange={(e) => { set("never_expires", e.target.checked); if (e.target.checked) set("expires_at", "") }} />
+                  永不过期
+                </label>
+              </div>
             </div>
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={form.allow_all} onChange={(e) => set("allow_all", e.target.checked)} />
@@ -285,6 +339,7 @@ export function Keys() {
                     <th className="px-4 py-3 font-medium">权限</th>
                     <th className="px-4 py-3 font-medium">预算</th>
                     <th className="px-4 py-3 font-medium">RPM</th>
+                    <th className="px-4 py-3 font-medium">有效期</th>
                     <th className="px-4 py-3 text-right font-medium">操作</th>
                   </tr>
                 </thead>
@@ -310,6 +365,13 @@ export function Keys() {
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs">{k.rpm_limit}</td>
+                      <td className="whitespace-nowrap px-4 py-3 text-xs">
+                        {(() => {
+                          const info = expiresLabel(k.expires_at)
+                          if (!info) return <span className="text-muted-foreground">永不过期</span>
+                          return <span className={info.expired ? "font-semibold text-destructive" : "text-muted-foreground"}>{info.text}</span>
+                        })()}
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
                           <Button variant="ghost" size="icon" onClick={() => openEdit(k)} aria-label={`编辑 ${k.name}`}>
@@ -377,6 +439,22 @@ export function Keys() {
             <div className="flex flex-col gap-1.5">
               <Label>预算（USD）</Label>
               <Input value={editForm.budget_usd} onChange={(e) => setEdit("budget_usd", e.target.value)} placeholder="留空无限制" type="number" step="0.01" />
+            </div>
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
+              <Label>过期时间</Label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="datetime-local"
+                  value={editForm.expires_at}
+                  onChange={(e) => { setEdit("expires_at", e.target.value); if (e.target.value) setEdit("never_expires", false) }}
+                  disabled={editForm.never_expires}
+                  className={cn("flex-1", editForm.never_expires && "opacity-50")}
+                />
+                <label className="flex shrink-0 items-center gap-1.5 text-sm">
+                  <input type="checkbox" checked={editForm.never_expires} onChange={(e) => { setEdit("never_expires", e.target.checked); if (e.target.checked) setEdit("expires_at", "") }} />
+                  永不过期
+                </label>
+              </div>
             </div>
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={editForm.allow_all} onChange={(e) => setEdit("allow_all", e.target.checked)} />

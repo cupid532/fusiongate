@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { api } from "@/lib/api"
-import type { Provider, Route } from "@/lib/types"
+import { api, providerKeysApi } from "@/lib/api"
+import type { Provider, ProviderKey, Route } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -16,6 +16,19 @@ export function RouteDialog({ open, onOpenChange }: { open: boolean; onOpenChang
   const activeProviders = providers.filter((provider) => provider.enabled && !provider.archived)
   const modelGroups = [...new Set(routes.map((route) => route.public_name))].sort()
   const firstProviderID = activeProviders[0]?.id ?? 0
+
+  const { data: providerKeys = [] } = useQuery({
+    queryKey: ["provider-keys", form.provider_id],
+    queryFn: () => providerKeysApi.list(form.provider_id),
+    enabled: open && form.provider_id > 0,
+  })
+  const discoveredModels = useMemo(() => {
+    const set = new Set<string>()
+    for (const key of providerKeys) {
+      if (key.models) for (const m of key.models) set.add(m.model)
+    }
+    return [...set].sort()
+  }, [providerKeys])
 
   useEffect(() => {
     if (!open) return
@@ -54,7 +67,11 @@ export function RouteDialog({ open, onOpenChange }: { open: boolean; onOpenChang
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>上游模型名</Label>
-            <Input value={form.upstream_model} onChange={(event) => setForm((value) => ({ ...value, upstream_model: event.target.value }))} placeholder="glm-5.2" className="font-mono" />
+            <Input list="route-upstream-models" value={form.upstream_model} onChange={(event) => setForm((value) => ({ ...value, upstream_model: event.target.value }))} placeholder="glm-5.2" className="font-mono" />
+            {discoveredModels.length > 0 && (
+              <datalist id="route-upstream-models">{discoveredModels.map((m) => <option key={m} value={m} />)}</datalist>
+            )}
+            {discoveredModels.length > 0 && <span className="text-xs text-muted-foreground">已从渠道 Key 发现 {discoveredModels.length} 个可用模型。</span>}
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>能力</Label>

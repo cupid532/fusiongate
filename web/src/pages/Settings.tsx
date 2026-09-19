@@ -6,12 +6,16 @@ import {
   Route,
   DollarSign,
   Info,
+  Shield,
   RefreshCw,
   CheckCircle2,
   AlertCircle,
   ExternalLink,
   Copy,
   Check,
+  Eye,
+  EyeOff,
+  Lock,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import {
@@ -20,14 +24,17 @@ import {
   ROUTING_STRATEGY_HELP,
 } from "@/lib/types"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
-import { notifySuccess } from "@/lib/notify"
+import { notifySuccess, notifyError } from "@/lib/notify"
 
-type SettingsTab = "routing" | "pricing" | "info"
+type SettingsTab = "routing" | "pricing" | "security" | "info"
 
 const tabs: { value: SettingsTab; label: string; icon: typeof Route }[] = [
   { value: "routing", label: "路由策略", icon: Route },
   { value: "pricing", label: "模型定价", icon: DollarSign },
+  { value: "security", label: "安全", icon: Shield },
   { value: "info", label: "网关信息", icon: Info },
 ]
 
@@ -60,7 +67,7 @@ export function Settings() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">系统设置</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          管理路由策略、模型定价与网关运行状态。
+          管理路由策略、模型定价、安全与网关运行状态。
         </p>
       </div>
 
@@ -90,6 +97,7 @@ export function Settings() {
       >
         {tab === "routing" && <RoutingTab />}
         {tab === "pricing" && <PricingTab />}
+        {tab === "security" && <SecurityTab />}
         {tab === "info" && <InfoTab />}
       </motion.div>
     </div>
@@ -257,6 +265,117 @@ function PricingTab() {
   )
 }
 
+function SecurityTab() {
+  const [currentPw, setCurrentPw] = useState("")
+  const [newPw, setNewPw] = useState("")
+  const [confirmPw, setConfirmPw] = useState("")
+  const [showCurrent, setShowCurrent] = useState(false)
+  const [showNew, setShowNew] = useState(false)
+
+  const changePw = useMutation({
+    mutationFn: () =>
+      api("/api/admin/password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPw, new_password: newPw }),
+      }),
+    onSuccess: () => {
+      notifySuccess("管理员密码已更新", "下次登录请使用新密码。")
+      setCurrentPw("")
+      setNewPw("")
+      setConfirmPw("")
+    },
+    onError: (err: Error) => {
+      notifyError("密码修改失败", err.message)
+    },
+  })
+
+  const mismatch = confirmPw.length > 0 && newPw !== confirmPw
+  const tooShort = newPw.length > 0 && newPw.length < 8
+  const canSubmit = currentPw.length > 0 && newPw.length >= 8 && newPw === confirmPw && !changePw.isPending
+
+  return (
+    <div className="space-y-6">
+      <div className="rounded-xl bg-card p-6 shadow-sm">
+        <div className="mb-1 flex items-center gap-2">
+          <Lock className="h-5 w-5 text-primary" />
+          <h2 className="text-lg font-semibold">修改管理员密码</h2>
+        </div>
+        <p className="mb-6 text-sm text-muted-foreground">
+          更改后需重新登录。密码至少 8 个字符。
+        </p>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (canSubmit) changePw.mutate()
+          }}
+          className="max-w-md space-y-4"
+        >
+          <div className="space-y-2">
+            <Label htmlFor="current-pw">当前密码</Label>
+            <div className="relative">
+              <Input
+                id="current-pw"
+                type={showCurrent ? "text" : "password"}
+                autoComplete="current-password"
+                value={currentPw}
+                onChange={(e) => setCurrentPw(e.target.value)}
+                className="h-10 pr-10"
+              />
+              <button
+                type="button"
+                onClick={() => setShowCurrent(!showCurrent)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground"
+              >
+                {showCurrent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="new-pw">新密码</Label>
+            <div className="relative">
+              <Input
+                id="new-pw"
+                type={showNew ? "text" : "password"}
+                autoComplete="new-password"
+                value={newPw}
+                onChange={(e) => setNewPw(e.target.value)}
+                className={cn("h-10 pr-10", tooShort && "ring-2 ring-destructive/50")}
+              />
+              <button
+                type="button"
+                onClick={() => setShowNew(!showNew)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground hover:text-foreground"
+              >
+                {showNew ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            {tooShort && <p className="text-xs text-destructive">密码至少 8 个字符</p>}
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="confirm-pw">确认新密码</Label>
+            <Input
+              id="confirm-pw"
+              type="password"
+              autoComplete="new-password"
+              value={confirmPw}
+              onChange={(e) => setConfirmPw(e.target.value)}
+              className={cn("h-10", mismatch && "ring-2 ring-destructive/50")}
+            />
+            {mismatch && <p className="text-xs text-destructive">两次输入的密码不一致</p>}
+          </div>
+
+          <Button type="submit" disabled={!canSubmit} className="mt-2">
+            {changePw.isPending ? "提交中…" : "修改密码"}
+          </Button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function InfoTab() {
   const [copied, setCopied] = useState(false)
   const { data: metrics } = useQuery({
@@ -301,9 +420,7 @@ function InfoTab() {
       </div>
 
       <div className="rounded-xl bg-card p-6 shadow-sm">
-        <div className="mb-4 flex items-center gap-2">
-          <h2 className="text-lg font-semibold">连接信息</h2>
-        </div>
+        <h2 className="mb-2 text-lg font-semibold">连接信息</h2>
         <p className="mb-3 text-sm text-muted-foreground">兼容 OpenAI SDK 与常用客户端。</p>
         <div className="flex items-center gap-2 rounded-lg bg-muted/40 px-4 py-3">
           <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Base URL</span>

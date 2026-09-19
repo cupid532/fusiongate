@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, Plug, Settings2, Server, Wifi, WifiOff, Link2 } from "lucide-react"
+import { Plus, Trash2, Plug, Settings2, Server, Wifi, WifiOff, Link2, Search, ListChecks } from "lucide-react"
 import { api } from "@/lib/api"
 import type { IPPoolNode } from "@/lib/types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { QueryError } from "@/components/ui/query-error"
 import { StatCard } from "@/components/ui/stat-card"
-import { useConfirmDelete } from "@/components/ui/confirm"
+import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { notify, notifySuccess } from "@/lib/notify"
 
 function timeAgo(iso: string | null | undefined): string {
@@ -27,17 +27,29 @@ function timeAgo(iso: string | null | undefined): string {
 
 export function IPPool() {
   const qc = useQueryClient()
+  const confirm = useConfirm()
   const confirmDelete = useConfirmDelete()
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState("")
   const [link, setLink] = useState("")
   const [editing, setEditing] = useState<IPPoolNode | null>(null)
   const [editName, setEditName] = useState("")
+  const [editLink, setEditLink] = useState("")
+  const [editEnabled, setEditEnabled] = useState(true)
+  const [q, setQ] = useState("")
+  const [multiSelect, setMultiSelect] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const { data: nodes = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ["ippool"],
     queryFn: () => api<IPPoolNode[]>("/api/admin/ip-pool"),
   })
+
+  const filtered = useMemo(() => {
+    if (!q.trim()) return nodes
+    const term = q.trim().toLowerCase()
+    return nodes.filter((n) => n.name.toLowerCase().includes(term) || (n.server && n.server.toLowerCase().includes(term)) || (n.exit_ip && n.exit_ip.toLowerCase().includes(term)))
+  }, [nodes, q])
 
   const nodeCounts = useMemo(() => ({
     total: nodes.length,
@@ -80,6 +92,27 @@ export function IPPool() {
 
   const test = useMutation({
     mutationFn: async (id: number) => api<{ status: string; exit_ip: string; latency_ms: number }>(`/api/admin/ip-pool/${id}/test`, { method: "POST" }),
+  })
+
+  const batchToggle = useMutation({
+    mutationFn: async ({ ids, enabled }: { ids: number[]; enabled: boolean }) => {
+      for (const id of ids) await api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) })
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ippool"] })
+      setSelected(new Set())
+      notifySuccess(selected.size + " 个节点已更新")
+    },
+  })
+
+  const batchDelete = useMutation({
+    mutationFn: async (ids: number[]) => {
+      for (const id of ids) await api(`/api/admin/ip-pool/${id}`, { method: "DELETE" })
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ippool"] })
+      setSelected(new Set())
+    },
   })
 
   return (
@@ -127,17 +160,55 @@ export function IPPool() {
 
       <Card>
         <CardContent className="p-0">
+          <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
+            {multiSelect && selected.size > 0 && (
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">已选 {selected.size}</span>
+                <Button size="sm" variant="outline" onClick={() => batchToggle.mutate({ ids: [...selected], enabled: true })}>
+                  启用
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => batchToggle.mutate({ ids: [...selected], enabled: false })}>
+                  停用
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  onClick={async () => {
+                    const names = [...selected].map((id) => nodes.find((n) => n.id === id)?.name).filter(Boolean).slice(0, 5).join("、")
+                    if (await confirm({ title: `删除选中的 ${selected.size} 个节点？`, description: `${names}${selected.size > 5 ? " 等" : ""}。此操作不可恢复。`, destructive: true, confirmLabel: `删除 ${selected.size} 个` })) {
+                      batchDelete.mutate([...selected])
+                    }
+                  }}
+                >
+                  删除
+                </Button>
+              </div>
+            )}
+            <Button size="sm" variant={multiSelect ? "default" : "outline"} onClick={() => { setMultiSelect((v) => !v); setSelected(new Set()) }}>
+              <ListChecks className="h-4 w-4" />
+              {multiSelect ? "退出多选" : "多选"}
+            </Button>
+            <div className="relative ml-auto">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索节点" className="h-8 w-52 pl-8 text-xs" />
+            </div>
+          </div>
           {isLoading ? (
             <div className="space-y-2 p-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />)}</div>
           ) : isError ? (
             <QueryError title="无法加载节点列表" error={error} onRetry={() => void refetch()} />
-          ) : nodes.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">还没有节点</div>
+          ) : filtered.length === 0 ? (
+            <div className="p-8 text-center text-sm text-muted-foreground">{nodes.length === 0 ? "还没有节点" : "没有匹配的节点"}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-left text-xs text-muted-foreground">
+                    {multiSelect && (
+                      <th className="w-10 px-3 py-3">
+                        <input type="checkbox" aria-label="选择全部节点" checked={filtered.length > 0 && filtered.every((n) => selected.has(n.id))} onChange={(e) => { if (e.target.checked) setSelected(new Set(filtered.map((n) => n.id))); else setSelected(new Set()) }} />
+                      </th>
+                    )}
                     <th className="px-4 py-3 font-medium">名称</th>
                     <th className="px-4 py-3 font-medium">协议</th>
                     <th className="px-4 py-3 font-medium">服务器</th>
@@ -150,8 +221,13 @@ export function IPPool() {
                   </tr>
                 </thead>
                 <tbody>
-                  {nodes.map((n) => (
+                  {filtered.map((n) => (
                     <tr key={n.id} className="border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150">
+                      {multiSelect && (
+                        <td className="px-3 py-3">
+                          <input type="checkbox" aria-label={`选择 ${n.name}`} checked={selected.has(n.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(n.id); else next.delete(n.id); setSelected(next) }} />
+                        </td>
+                      )}
                       <td className="px-4 py-3 font-medium">{n.name}</td>
                       <td className="px-4 py-3"><Badge variant="neutral">{n.protocol}</Badge></td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{n.server}</td>
@@ -175,7 +251,7 @@ export function IPPool() {
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
                           <Switch checked={n.enabled} onCheckedChange={(v) => toggle.mutate({ id: n.id, enabled: v })} aria-label={`${n.name} 开关`} />
-                          <Button variant="ghost" size="icon" onClick={() => { setEditing(n); setEditName(n.name) }} aria-label={`编辑 ${n.name}`}>
+                          <Button variant="ghost" size="icon" onClick={() => { setEditing(n); setEditName(n.name); setEditLink(""); setEditEnabled(n.enabled) }} aria-label={`编辑 ${n.name}`}>
                             <Settings2 className="h-4 w-4" />
                           </Button>
                           <Button
@@ -214,13 +290,31 @@ export function IPPool() {
       <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null) }}>
         <DialogContent>
           <DialogHeader><DialogTitle>编辑节点</DialogTitle></DialogHeader>
-          <div className="flex flex-col gap-1.5">
-            <Label>名称</Label>
-            <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
+          <div className="space-y-4">
+            <div className="flex flex-col gap-1.5">
+              <Label>名称</Label>
+              <Input value={editName} onChange={(e) => setEditName(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label>分享链接（留空不修改）</Label>
+              <Input value={editLink} onChange={(e) => setEditLink(e.target.value)} placeholder="vless://… 或 ss://…" className="font-mono text-xs" />
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <Switch checked={editEnabled} onCheckedChange={setEditEnabled} />
+              启用节点
+            </label>
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setEditing(null)}>取消</Button>
-            <Button onClick={() => editing && update.mutate({ id: editing.id, patch: { name: editName } })} disabled={!editName.trim() || update.isPending}>
+            <Button
+              onClick={() => {
+                if (!editing) return
+                const patch: Record<string, unknown> = { name: editName, enabled: editEnabled }
+                if (editLink.trim()) patch.share_link = editLink
+                update.mutate({ id: editing.id, patch })
+              }}
+              disabled={!editName.trim() || update.isPending}
+            >
               {update.isPending ? "保存中…" : "保存"}
             </Button>
           </DialogFooter>

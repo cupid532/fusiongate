@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Coins, Plus, RefreshCw, Search, Trash2, GitBranch, CheckCircle2, XCircle, Tag } from "lucide-react"
+import { Check, Coins, Pencil, Plus, RefreshCw, Search, Trash2, X, GitBranch, CheckCircle2, XCircle, Tag } from "lucide-react"
 import { api } from "@/lib/api"
 import type { ModelAlias, PricingStatus, PricingSyncResult, Route, RoutingStrategy } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
@@ -44,6 +44,43 @@ function sortRoutes(routes: Route[], strategy: RoutingStrategy) {
     if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
     return a.id - b.id
   })
+}
+
+function InlineModelEditor({ value, disabled, onSave }: { value: string; disabled?: boolean; onSave: (v: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+  const [saving, setSaving] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { if (!editing) setDraft(value) }, [editing, value])
+  useEffect(() => { if (editing) { inputRef.current?.focus(); inputRef.current?.select() } }, [editing])
+
+  function cancel() { setDraft(value); setEditing(false) }
+
+  async function save() {
+    const next = draft.trim()
+    if (!next) { setDraft(value); return }
+    if (next === value) { setEditing(false); return }
+    setSaving(true)
+    try { await onSave(next); setEditing(false) } finally { setSaving(false) }
+  }
+
+  if (!editing) {
+    return (
+      <button type="button" disabled={disabled} onClick={() => setEditing(true)} title="点击编辑上游模型" className="group inline-flex max-w-full items-center gap-1 truncate rounded bg-muted px-1.5 py-0.5 text-left font-mono text-xs transition-colors hover:bg-muted/80 disabled:cursor-not-allowed disabled:opacity-50">
+        <span className="truncate">{value}</span>
+        <Pencil className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-60" />
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex items-center gap-1">
+      <Input ref={inputRef} value={draft} disabled={saving} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void save(); if (e.key === "Escape") cancel() }} onBlur={() => void save()} aria-label="上游模型" className="h-7 w-48 px-2 font-mono text-xs" />
+      <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onMouseDown={(e) => e.preventDefault()} onClick={() => void save()} disabled={saving} aria-label="保存"><Check className="h-3.5 w-3.5 text-emerald-600" /></Button>
+      <Button type="button" variant="ghost" size="icon" className="h-7 w-7" onMouseDown={(e) => e.preventDefault()} onClick={cancel} disabled={saving} aria-label="取消"><X className="h-3.5 w-3.5 text-muted-foreground" /></Button>
+    </div>
+  )
 }
 
 export function Routes() {
@@ -151,7 +188,7 @@ export function Routes() {
                 <div className="flex h-7 w-7 items-center justify-center rounded-full border bg-muted/40 text-xs font-semibold tabular-nums text-muted-foreground" title="当前策略下的配置顺序">{index + 1}</div>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{item.provider_name || "—"}</span><Badge variant="outline">渠道优先级 {item.provider_priority}</Badge></div>
-                  <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><span>上游模型</span><code className="truncate rounded bg-muted px-1.5 py-0.5">{item.upstream_model}</code></div>
+                  <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"><span>上游模型</span><InlineModelEditor value={item.upstream_model} disabled={updateRoute.isPending} onSave={async (upstream_model) => { await updateRoute.mutateAsync({ id: item.id, patch: { upstream_model } }) }} /></div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5"><Badge variant="outline">{item.provider_type}</Badge><Badge variant="outline">{item.capabilities}</Badge><span className="text-xs text-muted-foreground">组内优先级</span><InlinePriorityEditor value={item.priority} disabled={updateRoute.isPending} onSave={async (priority) => { await updateRoute.mutateAsync({ id: item.id, patch: { priority } }) }} /></div>
                 </div>
                 <div>

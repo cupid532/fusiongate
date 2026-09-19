@@ -1,5 +1,6 @@
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
+import { FileUp } from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
 import {
   Dialog,
@@ -17,6 +18,19 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
   const [tab, setTab] = useState<"import" | "export">("import")
   const [content, setContent] = useState("")
   const [exporting, setExporting] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result === "string") setContent(reader.result)
+    }
+    reader.readAsText(file)
+    // Reset the input so the same file can be selected again if needed.
+    e.target.value = ""
+  }
 
   const doExport = async () => {
     setExporting(true)
@@ -76,12 +90,22 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
 
         {tab === "import" ? (
           <>
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="粘贴导出的渠道备份 JSON"
-              className="min-h-[200px] font-mono text-xs"
-            />
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+                  <FileUp className="h-4 w-4" />
+                  选择文件
+                </Button>
+                <span className="text-xs text-muted-foreground">或直接在下方粘贴 JSON</span>
+                <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleFileSelect} />
+              </div>
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="粘贴导出的渠道备份 JSON"
+                className="min-h-[200px] font-mono text-xs"
+              />
+            </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 取消

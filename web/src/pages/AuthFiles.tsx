@@ -1,10 +1,11 @@
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { motion } from "motion/react"
 import {
   FileKey, Plus, Trash2, HeartPulse, ScanSearch, Network,
   ListChecks, CloudUpload, FileText, Power, PowerOff, Search,
+  RefreshCw, KeyRound,
 } from "lucide-react"
 import { api, getCsrfToken } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
@@ -85,6 +86,11 @@ function healthDot(status: string) {
   )
 }
 
+function isExpiredOrExpiring(p: Provider): boolean {
+  if (!p.auth_expires_at) return false
+  return new Date(p.auth_expires_at) < new Date(Date.now() + 86_400_000)
+}
+
 type FilterTab = "all" | "enabled" | "disabled" | "unhealthy" | "expiring"
 
 export function AuthFiles() {
@@ -96,6 +102,7 @@ export function AuthFiles() {
   // Dialog states
   const [importOpen, setImportOpen] = useState(false)
   const [oauthOpen, setOauthOpen] = useState(false)
+  const [reauthPlatform, setReauthPlatform] = useState("")
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [modelPickerProvider, setModelPickerProvider] = useState<Provider | null>(null)
 
@@ -453,7 +460,16 @@ export function AuthFiles() {
                             )}
                             <td className="px-4 py-3 font-medium">{p.name}</td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
-                            <td className="px-4 py-3">{statusBadge(p)}</td>
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-1.5">
+                                {statusBadge(p)}
+                                {p.has_refresh_token && (
+                                  <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-600 dark:text-emerald-400" title="持有 refresh token，可自动续期">
+                                    <KeyRound className="h-3 w-3" />
+                                  </span>
+                                )}
+                              </div>
+                            </td>
                             <td className="px-4 py-3">{healthDot(p.health_check_status)}</td>
                             <td className="px-4 py-3 text-xs tabular-nums text-muted-foreground">
                               {p.last_latency_ms ? `${p.last_latency_ms}ms` : "—"}
@@ -510,6 +526,17 @@ export function AuthFiles() {
                                 >
                                   <ScanSearch className="h-4 w-4" />
                                 </Button>
+                                {isExpiredOrExpiring(p) && (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={() => { setReauthPlatform(platformOf(p)); setOauthOpen(true) }}
+                                    aria-label={`重新授权 ${p.name}`}
+                                    title="重新授权"
+                                  >
+                                    <RefreshCw className="h-4 w-4 text-amber-600" />
+                                  </Button>
+                                )}
                                 <Button
                                   variant="ghost"
                                   size="icon"
@@ -537,7 +564,7 @@ export function AuthFiles() {
 
       {/* ---- Dialogs ---- */}
       <AuthImportDialog open={importOpen} onOpenChange={setImportOpen} />
-      <AuthOAuthDialog open={oauthOpen} onOpenChange={setOauthOpen} />
+      <AuthOAuthDialog open={oauthOpen} onOpenChange={(v) => { setOauthOpen(v); if (!v) setReauthPlatform("") }} defaultPlatform={reauthPlatform || undefined} />
       {modelPickerProvider && (
         <ModelPicker
           open={modelPickerOpen}
@@ -740,9 +767,12 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   )
 }
 
-function AuthOAuthDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
+function AuthOAuthDialog({ open, onOpenChange, defaultPlatform }: { open: boolean; onOpenChange: (v: boolean) => void; defaultPlatform?: string }) {
   const qc = useQueryClient()
-  const [platform, setPlatform] = useState("codex")
+  const [platform, setPlatform] = useState(defaultPlatform || "codex")
+
+  // Sync platform when defaultPlatform changes (e.g. reauth from a specific provider)
+  useEffect(() => { if (defaultPlatform) setPlatform(defaultPlatform) }, [defaultPlatform])
   const [authUrl, setAuthUrl] = useState("")
   const [sessionId, setSessionId] = useState("")
   const [callback, setCallback] = useState("")

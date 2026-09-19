@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink, Server, CheckCircle2, Pause } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink, Server, CheckCircle2, Pause, MoreHorizontal } from "lucide-react"
 import { api } from "@/lib/api"
 import { remainingBarTone } from "@/lib/codex-windows"
 import { reorderProviderIDs } from "@/lib/provider-order"
@@ -50,6 +50,52 @@ function statusBadge(p: Provider) {
   if (p.health_check_status === "healthy") return <Badge variant="success">健康</Badge>
   if (p.consecutive_failures > 0) return <Badge variant="warning">不稳定</Badge>
   return <Badge variant="success">运行中</Badge>
+}
+
+function ActionMenu({ items }: { items: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean; disabledReason?: string; className?: string }[] }) {
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false) }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [open])
+
+  return (
+    <div className="relative">
+      <Button variant="ghost" size="icon" onClick={() => setOpen((v) => !v)} aria-label="更多操作">
+        <MoreHorizontal className="h-4 w-4" />
+      </Button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 w-48 rounded-lg bg-popover shadow-lg ring-1 ring-border/50 z-50 py-1">
+            {items.map((item, i) => (
+              <button
+                key={i}
+                disabled={item.disabled}
+                title={item.disabledReason}
+                onClick={() => {
+                  if (item.disabled) return
+                  setOpen(false)
+                  item.onClick()
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 px-3 py-2 text-sm rounded-md",
+                  item.disabled ? "opacity-40 cursor-not-allowed" : "hover:bg-muted cursor-pointer",
+                  item.className
+                )}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
 }
 
 export function Providers() {
@@ -437,69 +483,29 @@ export function Providers() {
                           <Button variant="ghost" size="icon" onClick={() => { setEditing(p); setDialogOpen(true) }} aria-label={`编辑 ${p.name}`} title="编辑渠道">
                             <Settings2 className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" onClick={() => setModelsProvider(p)} aria-label={`模型管理 ${p.name}`} title="模型管理">
-                            <ListChecks className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => { setHealthCheckProvider(p); setHealthCheckOpen(true) }}
-                            disabled={p.archived || !p.enabled || !p.health_check_enabled}
-                            aria-label={`检活 ${p.name}`}
-                            title={p.archived ? "已归档的渠道不能检活" : !p.enabled ? "渠道已停用，无法检活" : !p.health_check_enabled ? "该渠道已关闭检活，可在编辑中开启" : "模型检活"}
-                          >
-                            <HeartPulse className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setBalanceProvider(p)
-                              setBalanceOpen(true)
-                            }}
-                            aria-label={`余额设置 ${p.name}`}
-                          >
-                            <Wallet className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setKeysProvider(p)
-                              setKeysOpen(true)
-                            }}
-                            aria-label={`Key 管理 ${p.name}`}
-                          >
-                            <KeySquare className="h-4 w-4" />
-                          </Button>
                           <Switch
                             checked={p.enabled}
                             onCheckedChange={(v) => update.mutate({ id: p.id, patch: { enabled: v } })}
                             aria-label={`${p.name} 开关`}
                           />
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() =>
-                              update.mutate({ id: p.id, patch: { archived: !p.archived } })
-                            }
-                            aria-label={p.archived ? `取消归档 ${p.name}` : `归档 ${p.name}`}
-                            title={p.archived ? "取消归档" : "归档"}
-                          >
-                            <Archive className={cn("h-4 w-4", p.archived && "text-amber-500")} />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={async () => {
-                              if (await confirmDelete(`渠道「${p.name}」`, "该渠道下的 Key 与模型路由也会失效。")) {
-                                remove.mutate(p.id)
-                              }
-                            }}
-                            aria-label={`删除 ${p.name}`}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
+                          <ActionMenu
+                            items={[
+                              { icon: <ListChecks className="h-4 w-4" />, label: "模型管理", onClick: () => setModelsProvider(p) },
+                              {
+                                icon: <HeartPulse className="h-4 w-4" />, label: "模型检活",
+                                onClick: () => { setHealthCheckProvider(p); setHealthCheckOpen(true) },
+                                disabled: p.archived || !p.enabled || !p.health_check_enabled,
+                                disabledReason: p.archived ? "已归档的渠道不能检活" : !p.enabled ? "渠道已停用，无法检活" : !p.health_check_enabled ? "该渠道已关闭检活，可在编辑中开启" : undefined,
+                              },
+                              { icon: <Wallet className="h-4 w-4" />, label: "余额设置", onClick: () => { setBalanceProvider(p); setBalanceOpen(true) } },
+                              { icon: <KeySquare className="h-4 w-4" />, label: "Key 管理", onClick: () => { setKeysProvider(p); setKeysOpen(true) } },
+                              { icon: <Archive className={cn("h-4 w-4", p.archived && "text-amber-500")} />, label: p.archived ? "取消归档" : "归档", onClick: () => update.mutate({ id: p.id, patch: { archived: !p.archived } }) },
+                              {
+                                icon: <Trash2 className="h-4 w-4" />, label: "删除", className: "text-destructive",
+                                onClick: async () => { if (await confirmDelete(`渠道「${p.name}」`, "该渠道下的 Key 与模型路由也会失效。")) remove.mutate(p.id) },
+                              },
+                            ]}
+                          />
                         </div>
                       </td>
                     </tr>

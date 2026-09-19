@@ -217,7 +217,11 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             {health.total === 0 ? (
-              <EmptyState title="暂无启用渠道" description="启用上游 Provider 后即可查看健康概览。" />
+              <EmptyState
+                title="暂无启用渠道"
+                description="启用上游 Provider 后即可查看健康概览。"
+                action={<button onClick={() => navigate("providers")} className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors">添加渠道</button>}
+              />
             ) : (
               <div className="space-y-4">
                 <div className="flex items-end gap-3">
@@ -275,18 +279,23 @@ export function Dashboard() {
           {(guideOpen || !setupDone) && (
             <CardContent className="space-y-3">
               {[
-                { n: "01", t: "连接上游 Provider", d: "添加 OpenAI、Anthropic、Gemini 或兼容渠道" },
-                { n: "02", t: "建立统一模型路由", d: "把不同渠道的真实模型合并为统一故障转移组" },
-                { n: "03", t: "签发下游 API Key", d: "一把 Key 按权限访问多个渠道和模型" },
+                { n: "01", t: "连接上游 Provider", d: "添加 OpenAI、Anthropic、Gemini 或兼容渠道", page: "providers" },
+                { n: "02", t: "建立统一模型路由", d: "把不同渠道的真实模型合并为统一故障转移组", page: "routes" },
+                { n: "03", t: "签发下游 API Key", d: "一把 Key 按权限访问多个渠道和模型", page: "keys" },
               ].map((s) => (
-                <div key={s.n} className="flex items-center gap-4 rounded-lg border p-3">
+                <div
+                  key={s.n}
+                  onClick={() => { location.hash = s.page }}
+                  className="flex cursor-pointer items-center gap-4 rounded-lg border p-3 transition-colors hover:bg-muted/50"
+                >
                   <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-sm font-bold text-primary">
                     {s.n}
                   </div>
-                  <div>
+                  <div className="flex-1">
                     <div className="text-sm font-medium">{s.t}</div>
                     <div className="text-xs text-muted-foreground">{s.d}</div>
                   </div>
+                  <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                 </div>
               ))}
             </CardContent>

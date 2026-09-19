@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Coins, Boxes, KeyRound, Server, Activity, BarChart3, Flame, RefreshCw, Shield, Zap, TrendingUp } from "lucide-react"
+import { Coins, Boxes, KeyRound, Server, Activity, BarChart3, Flame, RefreshCw, Shield, Zap, TrendingUp, Clock } from "lucide-react"
 import { api } from "@/lib/api"
 import type { APIKey, Provider, TokenUsageHeatmapCell, TokenUsageMetrics, TokenUsageResponse } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
@@ -407,7 +407,6 @@ function RequestHealthCard({ totals }: { totals: TokenUsageMetrics }) {
 /* ---------- Section 3: Response Speed ---------- */
 
 function ResponseSpeedCard() {
-  const [tab, setTab] = useState<string>("total")
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -417,26 +416,11 @@ function ResponseSpeedCard() {
         </div>
       </CardHeader>
       <CardContent>
-        <MiniTabs
-          tabs={[
-            { value: "total", label: "总耗时" },
-            { value: "first_byte", label: "首字" },
-            { value: "throughput", label: "吞吐" },
-            { value: "schedule", label: "调度" },
-          ]}
-          value={tab}
-          onChange={setTab}
-        />
-        <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-          {["P50", "P95", "P99"].map((p) => (
-            <div key={p} className="rounded-lg border border-dashed p-3">
-              <div className="text-[11px] font-medium text-muted-foreground">{p}</div>
-              <div className="mt-1 text-xl font-bold tabular-nums text-muted-foreground/40">—</div>
-              <div className="text-[10px] text-muted-foreground">ms</div>
-            </div>
-          ))}
+        <div className="flex flex-col items-center justify-center py-8 text-center">
+          <Clock className="h-8 w-8 text-muted-foreground/40" />
+          <div className="mt-3 text-sm font-medium text-muted-foreground">响应速度分析</div>
+          <div className="mt-1 text-xs text-muted-foreground/60">延迟分位数据将在未来版本中启用</div>
         </div>
-        <p className="mt-3 text-center text-xs text-muted-foreground">需要更多数据</p>
       </CardContent>
     </Card>
   )
