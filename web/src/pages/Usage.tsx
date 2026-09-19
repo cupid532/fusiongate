@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Coins, Boxes, KeyRound, Server, Activity, BarChart3, Flame, RefreshCw } from "lucide-react"
+import { Coins, Boxes, KeyRound, Server, Activity, BarChart3, Flame, RefreshCw, Shield, Zap, TrendingUp } from "lucide-react"
 import { api } from "@/lib/api"
-import type { APIKey, Provider, TokenUsageHeatmapCell, TokenUsageResponse } from "@/lib/types"
+import type { APIKey, Provider, TokenUsageHeatmapCell, TokenUsageMetrics, TokenUsageResponse } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -89,12 +89,15 @@ export function Usage() {
     return heatmap.grid.map((row) => row.map((c) => (c ? c[heatmapMetric] : 0)))
   }, [heatmap, heatmapMetric])
 
+  const hasSpark = data && data.series.length > 1
+  const series = data?.series ?? []
+
   const stats = [
-    { label: "估算费用", value: formatCost(data?.totals.cost_micros ?? 0), tone: "text-amber-600", icon: <Coins className="h-4 w-4" /> },
-    { label: "总 Token", value: formatTokens(data?.totals.total_tokens ?? 0), tone: "text-primary", icon: <Boxes className="h-4 w-4" /> },
-    { label: "输入 Token", value: formatTokens(data?.totals.input_tokens ?? 0), tone: "text-blue-600", icon: <BarChart3 className="h-4 w-4" /> },
-    { label: "输出 Token", value: formatTokens(data?.totals.output_tokens ?? 0), tone: "text-orange-600", icon: <Activity className="h-4 w-4" /> },
-    { label: "请求数", value: String(data?.totals.requests ?? 0), tone: "text-foreground", icon: <Server className="h-4 w-4" /> },
+    { label: "估算费用", value: formatCost(data?.totals.cost_micros ?? 0), tone: "text-amber-600", icon: <Coins className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.cost_micros)} className="text-amber-400/60" /> : undefined },
+    { label: "总 Token", value: formatTokens(data?.totals.total_tokens ?? 0), tone: "text-primary", icon: <Boxes className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.total_tokens)} className="text-primary/40" /> : undefined },
+    { label: "输入 Token", value: formatTokens(data?.totals.input_tokens ?? 0), tone: "text-blue-600", icon: <BarChart3 className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.input_tokens)} className="text-blue-400/60" /> : undefined },
+    { label: "输出 Token", value: formatTokens(data?.totals.output_tokens ?? 0), tone: "text-orange-600", icon: <Activity className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.output_tokens)} className="text-orange-400/60" /> : undefined },
+    { label: "请求数", value: String(data?.totals.requests ?? 0), tone: "text-foreground", icon: <Server className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.requests)} /> : undefined },
     { label: "采集率", value: `${(data?.totals.usage_coverage ?? 0).toFixed(1)}%`, tone: "text-primary", icon: <Flame className="h-4 w-4" /> },
   ]
 
@@ -152,6 +155,14 @@ export function Usage() {
               <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
                 {stats.map((s) => <StatCard key={s.label} {...s} />)}
               </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                <RequestHealthCard totals={data.totals} />
+                <ResponseSpeedCard />
+              </div>
+
+              <CostEfficiencyCard totals={data.totals} />
+
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">每日 Token 趋势</CardTitle>
@@ -261,6 +272,260 @@ export function Usage() {
     </motion.div>
   )
 }
+
+/* ---------- helper: sparkline ---------- */
+
+function Sparkline({ data, className }: { data: number[]; className?: string }) {
+  if (data.length < 2) return null
+  const max = Math.max(...data)
+  if (max === 0) return null
+  let pts = data
+  if (pts.length > 30) {
+    const step = pts.length / 30
+    pts = Array.from({ length: 30 }, (_, i) => data[Math.min(Math.round(i * step), data.length - 1)])
+  }
+  const min = Math.min(...pts)
+  const range = max - min || 1
+  const w = 60, h = 16
+  const points = pts.map((v, i) =>
+    `${(i / (pts.length - 1)) * w},${h - 1 - ((v - min) / range) * (h - 2)}`
+  ).join(" ")
+  return (
+    <svg width={w} height={h} className={cn("inline-block", className)}>
+      <polyline fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" points={points} />
+    </svg>
+  )
+}
+
+/* ---------- helper: donut chart ---------- */
+
+function DonutChart({ segments, className }: { segments: { value: number; color: string }[]; className?: string }) {
+  const total = segments.reduce((sum, s) => sum + s.value, 0)
+  const r = 36, sw = 10
+  const c = 2 * Math.PI * r
+  let offset = 0
+  return (
+    <svg viewBox="0 0 100 100" className={cn("h-full w-full", className)}>
+      <circle cx="50" cy="50" r={r} fill="none" className="stroke-muted" strokeWidth={sw} />
+      {total > 0 && segments.map((seg, i) => {
+        if (seg.value <= 0) return null
+        const len = (seg.value / total) * c
+        const o = offset
+        offset += len
+        return (
+          <circle key={i} cx="50" cy="50" r={r} fill="none" stroke={seg.color} strokeWidth={sw}
+            strokeDasharray={`${len} ${c - len}`} strokeDashoffset={-o}
+            className="transition-all duration-700"
+            style={{ transform: "rotate(-90deg)", transformOrigin: "50% 50%" }} />
+        )
+      })}
+    </svg>
+  )
+}
+
+/* ---------- helper: section-internal mini-tabs ---------- */
+
+function MiniTabs({ tabs, value, onChange }: { tabs: { value: string; label: string }[]; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="inline-flex gap-0.5 rounded-lg bg-muted/60 p-0.5">
+      {tabs.map((t) => (
+        <button key={t.value} onClick={() => onChange(t.value)}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+            t.value === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          )}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/* ---------- Section 2: Request Health ---------- */
+
+function RequestHealthCard({ totals }: { totals: TokenUsageMetrics }) {
+  const reqs = totals.requests
+  const successRate = reqs > 0 ? (totals.successful_requests / reqs) * 100 : 0
+  const reportRate = reqs > 0 ? (totals.reported_requests / reqs) * 100 : 0
+  const abnormal = reqs - totals.successful_requests
+
+  const segments = [
+    { value: totals.successful_requests, color: "var(--color-primary)", label: "成功" },
+    { value: abnormal, color: "var(--color-destructive)", label: "服务失败" },
+  ]
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <div className="grid h-6 w-6 place-items-center rounded-md bg-primary/10"><Shield className="h-3.5 w-3.5 text-primary" /></div>
+          <CardTitle className="text-base">请求健康</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-start gap-6">
+          <div className="flex-1 space-y-3">
+            <div>
+              <div className="text-xs text-muted-foreground">服务成功率</div>
+              <div className="mt-0.5 text-2xl font-bold tabular-nums text-primary">{successRate.toFixed(1)}%</div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="text-xs text-muted-foreground">完成率</div>
+                <div className="mt-0.5 text-lg font-semibold tabular-nums">{reportRate.toFixed(1)}%</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">非正常结束</div>
+                <div className={cn("mt-0.5 text-lg font-semibold tabular-nums", abnormal > 0 && "text-destructive")}>{abnormal}</div>
+              </div>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-col items-center gap-2">
+            <div className="relative h-24 w-24">
+              <DonutChart segments={segments} />
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-base font-bold tabular-nums">{reqs > 0 ? successRate.toFixed(0) : "—"}%</span>
+                <span className="text-[9px] text-muted-foreground">成功</span>
+              </div>
+            </div>
+            <div className="flex flex-wrap justify-center gap-x-3 gap-y-0.5 text-[11px]">
+              {segments.filter(s => s.value > 0).map(s => (
+                <div key={s.label} className="flex items-center gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: s.color }} />
+                  <span className="text-muted-foreground">{s.label}</span>
+                  <span className="font-medium tabular-nums">{s.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+/* ---------- Section 3: Response Speed ---------- */
+
+function ResponseSpeedCard() {
+  const [tab, setTab] = useState<string>("total")
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <div className="grid h-6 w-6 place-items-center rounded-md bg-amber-500/10"><Zap className="h-3.5 w-3.5 text-amber-500" /></div>
+          <CardTitle className="text-base">响应速度</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <MiniTabs
+          tabs={[
+            { value: "total", label: "总耗时" },
+            { value: "first_byte", label: "首字" },
+            { value: "throughput", label: "吞吐" },
+            { value: "schedule", label: "调度" },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
+        <div className="mt-4 grid grid-cols-3 gap-3 text-center">
+          {["P50", "P95", "P99"].map((p) => (
+            <div key={p} className="rounded-lg border border-dashed p-3">
+              <div className="text-[11px] font-medium text-muted-foreground">{p}</div>
+              <div className="mt-1 text-xl font-bold tabular-nums text-muted-foreground/40">—</div>
+              <div className="text-[10px] text-muted-foreground">ms</div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-center text-xs text-muted-foreground">需要更多数据</p>
+      </CardContent>
+    </Card>
+  )
+}
+
+/* ---------- Section 4: Cost Efficiency ---------- */
+
+function CostEfficiencyCard({ totals }: { totals: TokenUsageMetrics }) {
+  const [tab, setTab] = useState<string>("cost")
+  const costPerReq = totals.successful_requests > 0 ? totals.cost_micros / totals.successful_requests : 0
+  const cacheRatio = totals.input_tokens > 0 ? (totals.cached_tokens / totals.input_tokens) * 100 : 0
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="grid h-6 w-6 place-items-center rounded-md bg-emerald-500/10"><TrendingUp className="h-3.5 w-3.5 text-emerald-500" /></div>
+            <CardTitle className="text-base">成本效率</CardTitle>
+          </div>
+          <MiniTabs
+            tabs={[
+              { value: "cost", label: "费用" },
+              { value: "savings", label: "节省" },
+              { value: "cache", label: "缓存" },
+            ]}
+            value={tab}
+            onChange={setTab}
+          />
+        </div>
+      </CardHeader>
+      <CardContent>
+        {tab === "cost" && (
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <div className="text-xs text-muted-foreground">实际费用</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-amber-600">{formatCost(totals.cost_micros)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">每成功请求成本</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums">{formatCost(costPerReq)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">计费覆盖率</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums">{totals.cost_coverage.toFixed(1)}%</div>
+            </div>
+          </div>
+        )}
+        {tab === "savings" && (
+          totals.cached_tokens > 0 ? (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs text-muted-foreground">输入缓存命中率</div>
+                <div className="mt-1 text-2xl font-bold tabular-nums text-emerald-600">{cacheRatio.toFixed(1)}%</div>
+                <div className="mt-0.5 text-[10px] text-muted-foreground">越高节省越多</div>
+              </div>
+              <div>
+                <div className="text-xs text-muted-foreground">缓存 Token 数</div>
+                <div className="mt-1 text-2xl font-bold tabular-nums text-violet-600">{formatTokens(totals.cached_tokens)}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed py-6 text-center text-sm text-muted-foreground">
+              当前时段暂无缓存节省数据
+            </div>
+          )
+        )}
+        {tab === "cache" && (
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <div className="text-xs text-muted-foreground">缓存 Token</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-violet-600">{formatTokens(totals.cached_tokens)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">缓存命中率</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums">{cacheRatio.toFixed(1)}%</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">计费次数</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums">{totals.priced_attempts}</div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+/* ---------- Rank panel (models / keys / providers) ---------- */
 
 function RankPanel({ tab, data, onSelectModel }: { tab: "models" | "keys" | "providers"; data: TokenUsageResponse; onSelectModel: (m: string) => void }) {
   type RankItem = (typeof data.by_models)[number] | (typeof data.by_keys)[number] | (typeof data.by_providers)[number]

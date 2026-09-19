@@ -16,7 +16,7 @@ export function StatCard({
   className?: string
 }) {
   return (
-    <div className={cn("rounded-xl border bg-card p-4", className)}>
+    <div className={cn("rounded-xl border border-border/40 bg-card p-4 shadow-[0_1px_3px_0_rgb(0_0_0/0.04)]", className)}>
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">{label}</div>
         {icon && <div className={cn("grid h-7 w-7 place-items-center rounded-lg", tone.split("text-")[1] ? `bg-${tone.replace("text-", "")}/10` : "bg-muted")}>{icon}</div>}

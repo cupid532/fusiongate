@@ -541,7 +541,7 @@ export function Requests() {
                   {filteredRows.map((r) => (
                     <Fragment key={r.id}>
                       <tr
-                        className="cursor-pointer border-b last:border-0 hover:bg-muted/40"
+                        className="cursor-pointer border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150"
                         onClick={() => setExpandedId(expandedId === r.request_id ? null : r.request_id)}
                       >
                         <td className="px-4 py-3 text-xs text-muted-foreground">{timeAgo(r.created_at)}</td>

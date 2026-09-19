@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
-import { Plus, Trash2, Eye, KeyRound, Settings2, Lock, Search } from "lucide-react"
+import { Plus, Trash2, Eye, KeyRound, Settings2, Lock, Search, CheckCircle2, AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import type { APIKey } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
 import { SegmentedTabs } from "@/components/ui/segmented-tabs"
 import { QueryError } from "@/components/ui/query-error"
+import { StatCard } from "@/components/ui/stat-card"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { notifySuccess } from "@/lib/notify"
@@ -242,6 +243,13 @@ export function Keys() {
         </Card>
       )}
 
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="总密钥" value={counts.all} icon={<KeyRound className="h-4 w-4" />} tone="text-foreground" sub="已签发密钥" />
+        <StatCard label="活跃" value={counts.active} icon={<CheckCircle2 className="h-4 w-4" />} tone="text-emerald-600" sub="正常使用" />
+        <StatCard label="已吊销" value={counts.revoked} icon={<Lock className="h-4 w-4" />} tone="text-destructive" sub="访问已终止" />
+        <StatCard label="超额" value={counts.over_budget} icon={<AlertTriangle className="h-4 w-4" />} tone="text-amber-500" sub="超出预算" />
+      </div>
+
       <Card>
         <CardContent className="p-0">
           <div className="flex flex-col gap-3 border-b p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -282,7 +290,7 @@ export function Keys() {
                 </thead>
                 <tbody ref={animateParent}>
                   {filtered.map((k) => (
-                    <tr key={k.id} className={cn("border-b last:border-0 hover:bg-muted/40", k.revoked && "opacity-60")}>
+                    <tr key={k.id} className={cn("border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150", k.revoked && "opacity-60")}>
                       <td className={cn("px-4 py-3 font-medium", k.revoked && "line-through")}>{k.name}</td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{k.prefix}••••</td>
                       <td className="px-4 py-3">

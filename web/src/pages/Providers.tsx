@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink } from "lucide-react"
+import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink, Server, CheckCircle2, Pause } from "lucide-react"
 import { api } from "@/lib/api"
 import { remainingBarTone } from "@/lib/codex-windows"
 import { reorderProviderIDs } from "@/lib/provider-order"
@@ -25,6 +25,7 @@ import { GroupManager } from "@/components/GroupManager"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { QueryError } from "@/components/ui/query-error"
+import { StatCard } from "@/components/ui/stat-card"
 
 type Filter = "all" | "enabled" | "disabled" | "archived" | "unhealthy"
 
@@ -230,6 +231,13 @@ export function Providers() {
         </div>
       </div>
 
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="总渠道" value={visibleProviders.length} icon={<Server className="h-4 w-4" />} tone="text-foreground" sub="全部非 OAuth 渠道" />
+        <StatCard label="正常运行" value={counts.enabled} icon={<CheckCircle2 className="h-4 w-4" />} tone="text-emerald-600" sub="参与调度" />
+        <StatCard label="已停用" value={counts.disabled} icon={<Pause className="h-4 w-4" />} tone="text-amber-500" sub="不参与调度" />
+        <StatCard label="已归档" value={counts.archived} icon={<Archive className="h-4 w-4" />} tone="text-muted-foreground" sub="隐藏保留" />
+      </div>
+
       <Card>
         <CardContent className="p-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b p-3">
@@ -356,7 +364,7 @@ export function Providers() {
                       onDragLeave={() => setDragOverId((current) => (current === p.id ? null : current))}
                       onDrop={(event) => { event.preventDefault(); if (draggingId && draggingId !== p.id) reorder.mutate({ sourceId: draggingId, targetId: p.id }); setDraggingId(null); setDragOverId(null) }}
                       className={cn(
-                        "border-b last:border-0 hover:bg-muted/40",
+                        "border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150",
                         draggingId === p.id && "opacity-40",
                         // The indicator sits on the edge the row will arrive at,
                         // which depends on drag direction.

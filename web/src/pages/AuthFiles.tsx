@@ -436,7 +436,7 @@ export function AuthFiles() {
                       </thead>
                       <tbody>
                         {g.items.map((p) => (
-                          <tr key={p.id} className="border-b last:border-0 hover:bg-muted/40">
+                          <tr key={p.id} className="border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150">
                             {multiSelect && (
                               <td className="px-3 py-3">
                                 <input

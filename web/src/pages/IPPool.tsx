@@ -1,7 +1,7 @@
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Plus, Trash2, Plug, Settings2 } from "lucide-react"
+import { Plus, Trash2, Plug, Settings2, Server, Wifi, WifiOff, Link2 } from "lucide-react"
 import { api } from "@/lib/api"
 import type { IPPoolNode } from "@/lib/types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Switch } from "@/components/ui/switch"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { QueryError } from "@/components/ui/query-error"
+import { StatCard } from "@/components/ui/stat-card"
 import { useConfirmDelete } from "@/components/ui/confirm"
 import { notify, notifySuccess } from "@/lib/notify"
 
@@ -37,6 +38,13 @@ export function IPPool() {
     queryKey: ["ippool"],
     queryFn: () => api<IPPoolNode[]>("/api/admin/ip-pool"),
   })
+
+  const nodeCounts = useMemo(() => ({
+    total: nodes.length,
+    online: nodes.filter((n) => n.enabled).length,
+    offline: nodes.filter((n) => !n.enabled).length,
+    providers: nodes.reduce((sum, n) => sum + n.provider_count, 0),
+  }), [nodes])
 
   const create = useMutation({
     mutationFn: async () =>
@@ -110,6 +118,13 @@ export function IPPool() {
         </Card>
       )}
 
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="总节点" value={nodeCounts.total} icon={<Server className="h-4 w-4" />} tone="text-foreground" sub="出站代理节点" />
+        <StatCard label="在线" value={nodeCounts.online} icon={<Wifi className="h-4 w-4" />} tone="text-emerald-600" sub="已启用" />
+        <StatCard label="离线" value={nodeCounts.offline} icon={<WifiOff className="h-4 w-4" />} tone="text-muted-foreground" sub="已停用" />
+        <StatCard label="关联渠道" value={nodeCounts.providers} icon={<Link2 className="h-4 w-4" />} tone="text-primary" sub="使用代理的渠道数" />
+      </div>
+
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
@@ -136,7 +151,7 @@ export function IPPool() {
                 </thead>
                 <tbody>
                   {nodes.map((n) => (
-                    <tr key={n.id} className="border-b last:border-0 hover:bg-muted/40">
+                    <tr key={n.id} className="border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150">
                       <td className="px-4 py-3 font-medium">{n.name}</td>
                       <td className="px-4 py-3"><Badge variant="neutral">{n.protocol}</Badge></td>
                       <td className="px-4 py-3 text-xs text-muted-foreground">{n.server}</td>

@@ -10,12 +10,16 @@ import {
   BarChart3,
   ScrollText,
   ShieldCheck,
+  Settings2,
   Octagon,
   X,
+  Sun,
+  Moon,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useTheme } from "@/providers/theme"
 
-export type Page = "dashboard" | "authfiles" | "providers" | "ippool" | "routes" | "keys" | "usage" | "requests" | "quality"
+export type Page = "dashboard" | "authfiles" | "providers" | "ippool" | "routes" | "keys" | "usage" | "requests" | "quality" | "settings"
 
 const navItems: { page: Page; label: string; icon: typeof LayoutDashboard }[] = [
   { page: "dashboard", label: "概览", icon: LayoutDashboard },
@@ -27,6 +31,7 @@ const navItems: { page: Page; label: string; icon: typeof LayoutDashboard }[] = 
   { page: "usage", label: "用量与费用", icon: BarChart3 },
   { page: "requests", label: "请求账本", icon: ScrollText },
   { page: "quality", label: "质量检测", icon: ShieldCheck },
+  { page: "settings", label: "系统设置", icon: Settings2 },
 ]
 
 const PAGES = new Set<string>(navItems.map((item) => item.page))
@@ -53,6 +58,7 @@ export function Sidebar({
   onClose: () => void
 }) {
   const [version, setVersion] = useState("")
+  const { theme, toggle } = useTheme()
 
   useEffect(() => {
     setVersion(document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
@@ -63,7 +69,7 @@ export function Sidebar({
       {open && (
         // A plain div, not a button: a full-viewport <button> was announced to
         // screen readers as an enormous unlabelled control and sat in the tab
-        // order. Escape (handled in App) and the × are the accessible paths;
+        // order. Escape (handled in App) and the x are the accessible paths;
         // this is just the pointer affordance.
         <div
           onClick={onClose}
@@ -74,7 +80,7 @@ export function Sidebar({
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-40 flex w-[248px] flex-col border-r bg-sidebar px-4 py-5 text-sidebar-foreground transition-transform duration-200 md:translate-x-0",
-          open ? "translate-x-0" : "-translate-x-full"
+          open ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <div className="flex h-12 items-center gap-3 border-b px-2 pb-4 mb-4">
@@ -108,12 +114,18 @@ export function Sidebar({
                 onClick={() => onNavigate(item.page)}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                  "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
                   active
                     ? "text-sidebar-primary-foreground"
-                    : "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                    : "overflow-hidden text-sidebar-foreground/60 hover:bg-sidebar-accent/40 hover:text-sidebar-foreground",
                 )}
               >
+                {/* Hover sweep glow -- inactive items only */}
+                {!active && (
+                  <span className="pointer-events-none absolute inset-0 -translate-x-full rounded-lg bg-gradient-to-r from-transparent via-sidebar-accent/60 to-transparent transition-transform duration-500 ease-out group-hover:translate-x-full" />
+                )}
+
+                {/* Active background pill */}
                 {active && (
                   <motion.span
                     layoutId="nav-active"
@@ -121,6 +133,16 @@ export function Sidebar({
                     transition={{ type: "spring", stiffness: 400, damping: 32 }}
                   />
                 )}
+
+                {/* Active left accent bar (4px rounded) */}
+                {active && (
+                  <motion.span
+                    layoutId="nav-accent-bar"
+                    className="absolute left-0 top-1 bottom-1 w-1 rounded-r-full bg-primary-foreground/60"
+                    transition={{ type: "spring", stiffness: 400, damping: 32 }}
+                  />
+                )}
+
                 <item.icon className="relative z-10 h-[18px] w-[18px]" />
                 <span className="relative z-10">{item.label}</span>
               </button>
@@ -128,15 +150,28 @@ export function Sidebar({
           })}
         </nav>
 
-        {/*
-          Version only. V2.67 briefly derived a gateway-health badge here, but
-          with 100+ channels configured it was almost always reporting something
-          like "86 个渠道不稳定" — technically true (those channels carry a
-          consecutive-failure count) yet permanently alarming and not actionable
-          from the sidebar. Channel health belongs on the 上游渠道 page, where
-          each row already carries its own status badge.
-        */}
-        <div className="mt-auto px-3 pt-3 text-[10px] text-muted-foreground">FusionGate {version}</div>
+        {/* Divider between nav and bottom status */}
+        <div className="mt-auto mx-2 border-t border-sidebar-border" />
+
+        {/* Bottom: online indicator, version, theme toggle */}
+        <div className="flex items-center gap-3 px-3 pt-3 pb-1">
+          <span className="flex items-center gap-1.5 text-[10px] text-sidebar-foreground/50">
+            <span
+              className="h-1.5 w-1.5 rounded-full"
+              style={{ backgroundColor: "#10b981", boxShadow: "0 0 6px rgba(16,185,129,0.45)" }}
+            />
+            在线
+          </span>
+          <span className="text-[10px] text-muted-foreground">FusionGate {version}</span>
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
+            className="ml-auto grid h-7 w-7 place-items-center rounded-md text-sidebar-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+          >
+            {theme === "dark" ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+          </button>
+        </div>
       </aside>
     </>
   )

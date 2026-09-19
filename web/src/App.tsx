@@ -14,6 +14,7 @@ const Routes = lazy(() => import("./pages/Routes").then((m) => ({ default: m.Rou
 const Usage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.Usage })))
 const Quality = lazy(() => import("./pages/Quality").then((m) => ({ default: m.Quality })))
 const AuthFiles = lazy(() => import("./pages/AuthFiles").then((m) => ({ default: m.AuthFiles })))
+const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })))
 
 function PageFallback() {
   return <PageSkeleton />
@@ -84,6 +85,8 @@ function pageContent(page: Page) {
       return <Requests />
     case "quality":
       return <Quality />
+    case "settings":
+      return <Settings />
   }
 }
 

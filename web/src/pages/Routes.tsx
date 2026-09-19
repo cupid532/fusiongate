@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
-import { Coins, Plus, RefreshCw, Search, Trash2 } from "lucide-react"
+import { Coins, Plus, RefreshCw, Search, Trash2, GitBranch, CheckCircle2, XCircle, Tag } from "lucide-react"
 import { api } from "@/lib/api"
 import type { ModelAlias, PricingStatus, PricingSyncResult, Route, RoutingStrategy } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
@@ -14,6 +14,7 @@ import { ModelAliasManager } from "@/components/ModelAliasManager"
 import { PricingDialog } from "@/components/PricingDialog"
 import { RouteDialog } from "@/components/RouteDialog"
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
+import { StatCard } from "@/components/ui/stat-card"
 
 const price = (micros: number) => `$${(micros / 1_000_000).toFixed(micros % 1_000_000 === 0 ? 0 : 3)}`
 const pricingSource = (source?: string) => !source ? "未定价" : source === "manual" ? "手工" : source.includes("openrouter.ai") ? "OpenRouter" : "官网"
@@ -82,6 +83,12 @@ export function Routes() {
       })
   }, [routes, aliases, q, strategy])
   const modelNames = useMemo(() => [...new Set(routes.map((route) => route.public_name))].sort(), [routes])
+  const routeCounts = useMemo(() => ({
+    total: routes.length,
+    enabled: routes.filter((r) => r.enabled).length,
+    disabled: routes.filter((r) => !r.enabled).length,
+    aliases: aliases.length,
+  }), [routes, aliases])
   const selectedRoutes = routes.filter((route) => route.public_name === pricingModel)
   const status = pricing?.status ?? {}
 
@@ -90,6 +97,13 @@ export function Routes() {
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div><h1 className="text-2xl font-bold tracking-tight">模型路由</h1><p className="mt-1 text-sm text-muted-foreground">按规范模型组管理调用名称、渠道成员与健康感知的请求内故障转移。</p></div>
         <div className="flex flex-wrap items-center gap-2"><div className="relative"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input aria-label="搜索模型路由" value={q} onChange={(event) => setQ(event.target.value)} placeholder="搜索模型、别名、渠道" className="h-9 w-60 pl-8 text-xs" /></div><Button onClick={() => setRouteOpen(true)}><Plus />添加渠道成员</Button></div>
+      </div>
+
+      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="总路由" value={routeCounts.total} icon={<GitBranch className="h-4 w-4" />} tone="text-foreground" sub={`${groups.length} 个模型组`} />
+        <StatCard label="已启用" value={routeCounts.enabled} icon={<CheckCircle2 className="h-4 w-4" />} tone="text-emerald-600" sub="参与调度" />
+        <StatCard label="已禁用" value={routeCounts.disabled} icon={<XCircle className="h-4 w-4" />} tone="text-muted-foreground" sub="不参与调度" />
+        <StatCard label="总别名" value={routeCounts.aliases} icon={<Tag className="h-4 w-4" />} tone="text-primary" sub="模型调用别名" />
       </div>
 
       <Card className="mb-4 overflow-hidden">
@@ -133,7 +147,7 @@ export function Routes() {
             </div>
             <div className="divide-y">{list.map((item, index) => {
               const state = routeState(item)
-              return <div key={item.id} className="grid gap-3 px-4 py-3 hover:bg-muted/30 lg:grid-cols-[36px_minmax(0,1fr)_minmax(180px,auto)_auto] lg:items-center">
+              return <div key={item.id} className="grid gap-3 px-4 py-3 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150 lg:grid-cols-[36px_minmax(0,1fr)_minmax(180px,auto)_auto] lg:items-center">
                 <div className="flex h-7 w-7 items-center justify-center rounded-full border bg-muted/40 text-xs font-semibold tabular-nums text-muted-foreground" title="当前策略下的配置顺序">{index + 1}</div>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2"><span className="text-sm font-medium">{item.provider_name || "—"}</span><Badge variant="outline">渠道优先级 {item.provider_priority}</Badge></div>
