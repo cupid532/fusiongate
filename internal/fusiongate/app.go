@@ -35,7 +35,6 @@ type Config struct {
 	StreamStartTimeout                            time.Duration
 	StreamIdleTimeout                             time.Duration
 	CORSOrigins                                   string
-	QualityDetectorURL, QualityDetectorBaseURL    string
 }
 
 const (
@@ -50,12 +49,6 @@ type App struct {
 	aead                     cipher.AEAD
 	client                   *http.Client
 	pricingClient            *http.Client
-	qualityDetectorClient    *qualityDetectorClient
-	qualityDetectorControlMu sync.Mutex
-	qualityDetectorMu        sync.Mutex
-	qualityDetectorRoutes    map[string]*qualityDetectorRouteSession
-	qualityDetectorActive    string
-	qualityDetectorLast      qualityDetectorTarget
 	log                      *slog.Logger
 	mu                       sync.Mutex
 	rate                     map[string]*rateWindow
@@ -77,7 +70,6 @@ type App struct {
 	lastLedgerCleanup        time.Time
 	healthChecker            *HealthChecker
 	healthCheckJobs          *healthCheckJobManager
-	qualityDetectorJobs      *qualityDetectorJobManager
 	healthProbeMu            sync.Mutex
 	healthProbes             map[int64]struct{}
 	balanceMu                sync.Mutex
@@ -312,18 +304,10 @@ func New(cfg Config) (*App, error) {
 		oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{},
 		healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{},
 		loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4),
-		adminSessions:         map[string]adminSession{},
-		qualityDetectorRoutes: map[string]*qualityDetectorRouteSession{},
-		pricingSyncTrigger:    make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
+		adminSessions:      map[string]adminSession{},
+		pricingSyncTrigger: make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
 		lastUsedAt: map[int64]time.Time{}, metrics: newGatewayMetrics(),
 		dpopCache: newDPoPSessionCache(),
-	}
-	if strings.TrimSpace(cfg.QualityDetectorURL) != "" {
-		a.qualityDetectorClient, err = newQualityDetectorClient(cfg.QualityDetectorURL)
-		if err != nil {
-			db.Close()
-			return nil, err
-		}
 	}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
@@ -358,9 +342,6 @@ func New(cfg Config) (*App, error) {
 	}
 	a.healthChecker = NewHealthChecker(a, healthCheckIntervalFromEnv(), healthCheckConcurrencyFromEnv())
 	a.healthCheckJobs = newHealthCheckJobManager(a)
-	a.qualityDetectorJobs = newQualityDetectorJobManager(a)
-	a.qualityDetectorJobs.convergeInterrupted(context.Background())
-	a.qualityDetectorJobs.prune(context.Background())
 	for _, file := range []string{"fusiongate.db", "fusiongate.db-wal", "fusiongate.db-shm"} {
 		if err := os.Chmod(path.Join(cfg.DataDir, file), 0600); err != nil && !errors.Is(err, os.ErrNotExist) {
 			db.Close()
@@ -491,9 +472,6 @@ func (a *App) Close() error {
 	if a.healthCheckJobs != nil {
 		a.healthCheckJobs.Close()
 	}
-	if a.qualityDetectorJobs != nil {
-		a.qualityDetectorJobs.Close()
-	}
 	if a.ipPool != nil {
 		a.ipPool.Close()
 	}
@@ -530,7 +508,6 @@ func (a *App) StartBackgroundTasks(ctx context.Context) {
 	go a.runPricingSyncLoop(ctx)
 	go a.runLedgerRetentionLoop(ctx)
 	go a.runLedgerReconcileLoop(ctx)
-	go a.runQualityDetectorRetentionLoop(ctx)
 	// Circuit recovery is performed by the next real request after cooldown.
 }
 
@@ -1133,8 +1110,6 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/ledger", a.admin(a.ledger))
 	mux.HandleFunc("/api/admin/ledger/clear", a.admin(a.ledgerClear))
 	mux.HandleFunc("/api/admin/ledger/export", a.admin(a.ledgerExport))
-	mux.HandleFunc("/api/admin/quality-detector", a.admin(a.qualityDetector))
-	mux.HandleFunc("/api/admin/quality-detector/", a.admin(a.qualityDetector))
 	mux.HandleFunc("/api/admin/token-usage", a.admin(a.tokenUsage))
 	mux.HandleFunc("/api/admin/auth/import/preview", a.admin(a.authImportPreview))
 	mux.HandleFunc("/api/admin/auth/import/commit", a.admin(a.authImportCommit))

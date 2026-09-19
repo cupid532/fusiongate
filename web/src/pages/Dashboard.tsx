@@ -260,7 +260,7 @@ export function Dashboard() {
             ))}
             <div className="col-span-2 flex items-center gap-2 rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground sm:col-span-3">
               <HardHat className="h-4 w-4 text-primary" />
-              健康状态由质量检测与健康检查共同驱动；详细情况请在「质量检测」与「上游渠道」中查看。
+              健康状态由健康检查驱动；详细情况请在「上游渠道」中查看。
             </div>
           </CardContent>
         </Card>

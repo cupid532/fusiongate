@@ -9,7 +9,6 @@ import {
   KeyRound,
   BarChart3,
   ScrollText,
-  ShieldCheck,
   Settings2,
   Octagon,
   X,
@@ -19,7 +18,7 @@ import {
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/providers/theme"
 
-export type Page = "dashboard" | "authfiles" | "providers" | "ippool" | "routes" | "keys" | "usage" | "requests" | "quality" | "settings"
+export type Page = "dashboard" | "authfiles" | "providers" | "ippool" | "routes" | "keys" | "usage" | "requests" | "settings"
 
 const navItems: { page: Page; label: string; icon: typeof LayoutDashboard }[] = [
   { page: "dashboard", label: "概览", icon: LayoutDashboard },
@@ -30,7 +29,6 @@ const navItems: { page: Page; label: string; icon: typeof LayoutDashboard }[] = 
   { page: "keys", label: "访问密钥", icon: KeyRound },
   { page: "usage", label: "用量与费用", icon: BarChart3 },
   { page: "requests", label: "请求账本", icon: ScrollText },
-  { page: "quality", label: "质量检测", icon: ShieldCheck },
   { page: "settings", label: "系统设置", icon: Settings2 },
 ]
 

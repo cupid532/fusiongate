@@ -287,17 +287,30 @@ func TestResolveKeepsHealthyRouteWhenAnotherProviderKeyCredentialIsCorrupt(t *te
 	}
 	defer a.Close()
 
-	bad := insertQualityDetectorTarget(t, a, "corrupt-fallback-provider", "sk-corrupt-fallback-12345678")
-	healthy := insertQualityDetectorTarget(t, a, "healthy-fallback-provider", "sk-healthy-fallback-12345678")
-	if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=X'00' WHERE id=?`, bad.ProviderKeyID); err != nil {
+	const model = "cross-provider-corrupt-model"
+	badProviderID := insertTestProvider(t, a, "corrupt-fallback-provider", "openai_compatible", "https://bad.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, badProviderID, model, model, "chat", 0)
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, badProviderID); err != nil {
+		t.Fatal(err)
+	}
+	badKeyID := insertProviderKeyForTest(t, a, badProviderID, "sk-corrupt-fallback-12345678", "bad-key", model, providerKeyEgressInherit, nil, 1, 0)
+
+	healthyProviderID := insertTestProvider(t, a, "healthy-fallback-provider", "openai_compatible", "https://healthy.test", "legacy", 1, 100, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, healthyProviderID, model, model, "chat", 0)
+	if _, err := a.db.Exec(`UPDATE providers SET multi_key_initialized=1 WHERE id=?`, healthyProviderID); err != nil {
+		t.Fatal(err)
+	}
+	healthyKeyID := insertProviderKeyForTest(t, a, healthyProviderID, "sk-healthy-fallback-12345678", "healthy-key", model, providerKeyEgressInherit, nil, 1, 0)
+
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET credential=X'00' WHERE id=?`, badKeyID); err != nil {
 		t.Fatal(err)
 	}
 
-	routes, err := a.resolve(context.Background(), "gpt-5.6-sol", "chat")
+	routes, err := a.resolve(context.Background(), model, "chat")
 	if err != nil {
 		t.Fatalf("resolve rejected healthy fallback after another credential failed: %v", err)
 	}
-	if len(routes) != 1 || routes[0].Provider.ID != healthy.ProviderID || routes[0].ProviderKeyID != healthy.ProviderKeyID || routes[0].Credential != "sk-healthy-fallback-12345678" {
+	if len(routes) != 1 || routes[0].Provider.ID != healthyProviderID || routes[0].ProviderKeyID != healthyKeyID || routes[0].Credential != "sk-healthy-fallback-12345678" {
 		t.Fatalf("routes=%#v, want only healthy provider/key", routes)
 	}
 }

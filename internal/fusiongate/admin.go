@@ -215,20 +215,6 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := map[string]any{"status": "ok", "service": "fusiongate", "version": Version, "revision": BuildRevision, "time": now()}
-	if r.URL.Query().Get("include") == "quality-detector" {
-		if a.qualityDetectorClient == nil {
-			fail(w, http.StatusServiceUnavailable, "quality_detector_unavailable", "quality detector is not configured")
-			return
-		}
-		detectorCtx, detectorCancel := context.WithTimeout(r.Context(), 5*time.Second)
-		defer detectorCancel()
-		status, err := a.qualityDetectorSidecarStatus(detectorCtx)
-		if err != nil {
-			fail(w, http.StatusServiceUnavailable, "quality_detector_unavailable", "quality detector is not ready")
-			return
-		}
-		response["quality_detector"] = status
-	}
 	writeJSON(w, 200, response)
 }
 

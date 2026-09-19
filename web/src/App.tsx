@@ -12,7 +12,6 @@ const Requests = lazy(() => import("./pages/Requests").then((m) => ({ default: m
 const IPPool = lazy(() => import("./pages/IPPool").then((m) => ({ default: m.IPPool })))
 const Routes = lazy(() => import("./pages/Routes").then((m) => ({ default: m.Routes })))
 const Usage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.Usage })))
-const Quality = lazy(() => import("./pages/Quality").then((m) => ({ default: m.Quality })))
 const AuthFiles = lazy(() => import("./pages/AuthFiles").then((m) => ({ default: m.AuthFiles })))
 const Settings = lazy(() => import("./pages/Settings").then((m) => ({ default: m.Settings })))
 
@@ -83,8 +82,6 @@ function pageContent(page: Page) {
       return <Usage />
     case "requests":
       return <Requests />
-    case "quality":
-      return <Quality />
     case "settings":
       return <Settings />
   }

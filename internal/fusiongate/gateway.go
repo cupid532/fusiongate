@@ -43,7 +43,6 @@ type authKey struct {
 	ExpiresAt    *time.Time
 	BudgetMicros int64
 	SpentMicros  int64
-	QualityRoute *qualityDetectorRouteSession
 }
 
 type resolvedRoute struct {
@@ -175,9 +174,6 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	if raw == "" {
 		return authKey{}, false
 	}
-	if key, ok := a.authenticateQualityDetectorRoute(r, raw); ok {
-		return key, true
-	}
 	sum := sha256.Sum256([]byte(raw))
 	var x authKey
 	var allowAll, allowImages, allowAudio, revoked int
@@ -205,21 +201,6 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	}
 	a.markAPIKeyUsed(x.ID)
 	return x, true
-}
-
-func restrictQualityDetectorRoutes(key authKey, routes []resolvedRoute) []resolvedRoute {
-	if key.QualityRoute == nil {
-		return routes
-	}
-	target := key.QualityRoute.Target
-	filtered := routes[:0]
-	for _, route := range routes {
-		if route.Route.ID != target.RouteID || route.Provider.ID != target.ProviderID || route.ProviderKeyID != target.ProviderKeyID {
-			continue
-		}
-		filtered = append(filtered, route)
-	}
-	return filtered
 }
 
 func (a *App) markAPIKeyUsed(id int64) {
@@ -970,20 +951,14 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 			a.metrics.failures.Add(1)
 		}
 	}()
-	if key.QualityRoute == nil {
-		routes = filterClientRoutes(routes, r)
-	}
+	routes = filterClientRoutes(routes, r)
 	if len(routes) == 0 {
 		finalStatus = http.StatusForbidden
 		failRequest(w, r, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
 		return
 	}
 	strategy := a.globalRoutingStrategy()
-	if key.QualityRoute != nil {
-		strategy = StrategyPriorityFailover
-	} else {
-		routes = a.prepareRoutes(routes, strategy)
-	}
+	routes = a.prepareRoutes(routes, strategy)
 	for i := range routes {
 		routes[i].AttemptID = int64(i + 1)
 	}
@@ -1009,11 +984,7 @@ func (a *App) runRoutes(w http.ResponseWriter, r *http.Request, key authKey, rou
 		var z resolvedRoute
 		var availability routeAvailability
 		var ok bool
-		if key.QualityRoute != nil && len(tried) == 0 {
-			z, availability, ok = a.acquireQualityDetectorRoute(routes[0])
-		} else {
-			z, availability, ok = a.acquireRoute(routes, tried, strategy)
-		}
+		z, availability, ok = a.acquireRoute(routes, tried, strategy)
 		if !ok {
 			if availability.RetryAfter > retryAfter {
 				retryAfter = availability.RetryAfter
@@ -1168,10 +1139,9 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		fail(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
-	routes = restrictQualityDetectorRoutes(key, routes)
 	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
-		fail(w, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		fail(w, http.StatusNotFound, "model_not_found", "no matching route is available")
 		return
 	}
 	a.runRoutes(w, r, key, routes, "openai_chat", requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
@@ -1451,10 +1421,9 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		fail(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
-	routes = restrictQualityDetectorRoutes(key, routes)
 	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
-		fail(w, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		fail(w, http.StatusNotFound, "model_not_found", "no matching route is available")
 		return
 	}
 	compatible := routes[:0]
@@ -1553,10 +1522,9 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 		failRequest(w, r, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
-	routes = restrictQualityDetectorRoutes(key, routes)
 	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
-		failRequest(w, r, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		failRequest(w, r, http.StatusNotFound, "model_not_found", "no matching route is available")
 		return
 	}
 	compatible := routes[:0]
@@ -1661,17 +1629,15 @@ func (a *App) messageTokenCount(w http.ResponseWriter, r *http.Request, key auth
 		failRequest(w, r, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
-	routes = exposeRequestedModel(restrictQualityDetectorRoutes(key, routes), model)
+	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
-		failRequest(w, r, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		failRequest(w, r, http.StatusNotFound, "model_not_found", "no matching route is available")
 		return
 	}
-	if key.QualityRoute == nil {
-		routes = filterClientRoutes(routes, r)
-		if len(routes) == 0 {
-			failRequest(w, r, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
-			return
-		}
+	routes = filterClientRoutes(routes, r)
+	if len(routes) == 0 {
+		failRequest(w, r, http.StatusForbidden, "provider_client_policy_mismatch", "no provider accepts this request's real User-Agent")
+		return
 	}
 	native := make([]resolvedRoute, 0, len(routes))
 	fallback := make([]resolvedRoute, 0, len(routes))
@@ -1822,10 +1788,9 @@ func (a *App) audioTranscriptions(w http.ResponseWriter, r *http.Request, key au
 		fail(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
-	routes = restrictQualityDetectorRoutes(key, routes)
 	routes = exposeRequestedModel(routes, model)
 	if len(routes) == 0 {
-		fail(w, http.StatusNotFound, "model_not_found", "the selected quality detector route is unavailable")
+		fail(w, http.StatusNotFound, "model_not_found", "no matching route is available")
 		return
 	}
 	compatible := routes[:0]
