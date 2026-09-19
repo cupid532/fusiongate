@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { animate, motion, useMotionValue } from "motion/react"
-import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, ShieldCheck, HardHat } from "lucide-react"
+import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, ShieldCheck, HardHat, ChevronDown } from "lucide-react"
 import { api } from "@/lib/api"
 import { formatCost, formatTokens, cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -110,7 +110,7 @@ export function Dashboard() {
   })
 
   const navigate = useCallback((page: string) => { location.hash = page }, [])
-
+  const [guideOpen, setGuideOpen] = useState(true)
 
   const health = useMemo(() => {
     const enabled = providers.filter((p) => p.enabled && !p.archived)
@@ -268,10 +268,14 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.35fr_0.65fr]">
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">{setupDone ? "✓ 设置已完成" : "开始使用"}</CardTitle>
+          <CardHeader className="cursor-pointer" onClick={() => setGuideOpen((o) => !o)}>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">{setupDone ? "✓ 设置已完成" : "开始使用"}</CardTitle>
+              <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", guideOpen ? "rotate-180" : "")} />
+            </div>
             {!setupDone && <CardDescription>完成三步即可从客户端调用统一模型。</CardDescription>}
           </CardHeader>
+          {guideOpen && (
             <CardContent className="space-y-3">
               {[
                 { n: "01", t: "连接上游 Provider", d: "添加 OpenAI、Anthropic、Gemini 或兼容渠道", page: "providers" },
@@ -294,6 +298,7 @@ export function Dashboard() {
                 </div>
               ))}
             </CardContent>
+          )}
         </Card>
 
         <Card>
