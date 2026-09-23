@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
@@ -52,28 +53,71 @@ function statusBadge(p: Provider) {
   return <Badge variant="success">运行中</Badge>
 }
 
+const MENU_GAP = 4
+const VIEWPORT_MARGIN = 8
+
 function ActionMenu({ items }: { items: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean; disabledReason?: string; className?: string }[] }) {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false) }
+    // The menu is pinned to the viewport, so any scroll or resize would leave
+    // it floating away from its button; closing is simpler than tracking.
+    const close = (e: Event) => { if (!menuRef.current?.contains(e.target as Node)) setOpen(false) }
     document.addEventListener("keydown", onKey)
-    return () => document.removeEventListener("keydown", onKey)
+    window.addEventListener("scroll", close, true)
+    window.addEventListener("resize", close)
+    return () => {
+      document.removeEventListener("keydown", onKey)
+      window.removeEventListener("scroll", close, true)
+      window.removeEventListener("resize", close)
+    }
+  }, [open])
+
+  // The table sits in an overflow-x-auto wrapper, which also clips vertically,
+  // so an absolutely positioned menu on the last rows was cut off. The menu is
+  // portalled to <body> and placed from the trigger's rect instead, opening
+  // upward when there is no room below.
+  useLayoutEffect(() => {
+    const trigger = triggerRef.current?.getBoundingClientRect()
+    const menu = menuRef.current
+    if (!open || !trigger || !menu) return
+    const { offsetHeight: h, offsetWidth: w } = menu
+    const vh = window.innerHeight
+    let top = trigger.bottom + MENU_GAP
+    if (top + h > vh - VIEWPORT_MARGIN) {
+      const above = trigger.top - MENU_GAP - h
+      top = above >= VIEWPORT_MARGIN ? above : Math.max(VIEWPORT_MARGIN, vh - VIEWPORT_MARGIN - h)
+    }
+    const left = Math.max(VIEWPORT_MARGIN, Math.min(trigger.right - w, window.innerWidth - VIEWPORT_MARGIN - w))
+    // Written straight to the node: this runs before paint, so the menu never
+    // flashes at its unplaced origin, and no second render is needed.
+    menu.style.top = `${top}px`
+    menu.style.left = `${left}px`
+    menu.style.visibility = "visible"
   }, [open])
 
   return (
-    <div className="relative">
-      <Button variant="ghost" size="icon" onClick={() => setOpen((v) => !v)} aria-label="更多操作">
+    <>
+      <Button ref={triggerRef} variant="ghost" size="icon" onClick={() => setOpen((v) => !v)} aria-label="更多操作" aria-haspopup="menu" aria-expanded={open}>
         <MoreHorizontal className="h-4 w-4" />
       </Button>
-      {open && (
+      {open && createPortal(
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 w-48 rounded-lg bg-popover shadow-lg ring-1 ring-border/50 z-50 py-1">
+          <div
+            ref={menuRef}
+            role="menu"
+            style={{ top: 0, left: 0, visibility: "hidden" }}
+            className="fixed w-48 max-h-[calc(100vh-16px)] overflow-y-auto rounded-lg bg-popover shadow-lg ring-1 ring-border/50 z-50 py-1"
+          >
             {items.map((item, i) => (
               <button
                 key={i}
+                role="menuitem"
                 disabled={item.disabled}
                 title={item.disabledReason}
                 onClick={() => {
@@ -92,9 +136,10 @@ function ActionMenu({ items }: { items: { icon: React.ReactNode; label: string; 
               </button>
             ))}
           </div>
-        </>
+        </>,
+        document.body,
       )}
-    </div>
+    </>
   )
 }
 

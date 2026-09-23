@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.04
+
+- Fix the upstream channel row's “⋯” action menu being clipped on the last rows of the table. The menu was absolutely positioned inside the table's `overflow-x-auto` wrapper, which also clips vertically, so the bottom row's menu was cut off or only reachable by scrolling inside the table. It is now portalled to `<body>` with fixed positioning, opens upward when there is no room below, and closes on scroll or resize.
+
 ## V2.98
 
 - Support `grok_console` SSO credentials in the auth import system. JSON files with a `sso_token` field, `kind: sso`, or `platform: grok_console` are now imported as Console providers with `console.x.ai` as the base URL, appearing in the Auth Files page alongside existing Grok OAuth credentials. The grok2api console export format is directly importable.
