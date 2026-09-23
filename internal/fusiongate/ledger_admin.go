@@ -19,7 +19,6 @@ const (
 	ledgerMaxMBMax      = 10240 // 10 GB
 	ledgerTrimBatchSize = 2000  // rows removed per capacity-trim chunk
 	ledgerRowOverhead   = 600   // estimated bytes/row for btree pages, indexes and WAL slack
-	ledgerExportLimit   = 200000
 )
 
 // ledgerMaxMB reads the configured capacity cap, falling back to the default.
@@ -133,7 +132,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	where := []string{"1=1"}
 	args := []any{}
 	for _, filter := range []struct{ name, operator string }{
-		{"from", ">="}, {"to", "<="},
+		{"from", ">="}, {"to", "<="}, {"until", "<"},
 	} {
 		value := strings.TrimSpace(r.URL.Query().Get(filter.name))
 		if value == "" {
@@ -144,8 +143,37 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "invalid_time_filter", filter.name+" must be an RFC3339 timestamp")
 			return
 		}
-		where = append(where, "l.created_at "+filter.operator+" ?")
-		args = append(args, parsed.UTC().Format(time.RFC3339Nano))
+		where = append(where, ledgerCreatedAtSQL+" "+filter.operator+" ?")
+		args = append(args, parsed.UTC().Format(ledgerTimeLayout))
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("api_key_id")); raw != "" {
+		id, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || id < 1 {
+			fail(w, http.StatusBadRequest, "invalid_api_key_filter", "api_key_id must be a positive integer")
+			return
+		}
+		where = append(where, "l.api_key_id=?")
+		args = append(args, id)
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("provider_id")); raw != "" {
+		id, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || id < 1 {
+			fail(w, http.StatusBadRequest, "invalid_provider_filter", "provider_id must be a positive integer")
+			return
+		}
+		where = append(where, "l.provider_id=?")
+		args = append(args, id)
+	}
+	if model := strings.TrimSpace(r.URL.Query().Get("model")); model != "" {
+		where = append(where, "l.public_model=?")
+		args = append(args, model)
+	}
+	if query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))); query != "" {
+		like := "%" + query + "%"
+		where = append(where, `(LOWER(l.public_model) LIKE ? OR LOWER(l.upstream_model) LIKE ? OR LOWER(l.protocol) LIKE ? OR LOWER(l.request_id) LIKE ? OR LOWER(l.gateway_request_id) LIKE ? OR LOWER(l.client_ip) LIKE ? OR LOWER(COALESCE(NULLIF(l.provider_name,''),p.name,'')) LIKE ? OR LOWER(l.provider_key_name) LIKE ? OR LOWER(l.provider_key_hint) LIKE ? OR LOWER(COALESCE(NULLIF(l.api_key_name,''),k.name,'')) LIKE ? OR LOWER(COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,'')) LIKE ? OR LOWER(l.error_type) LIKE ? OR LOWER(l.retry_reason) LIKE ?)`)
+		for range 13 {
+			args = append(args, like)
+		}
 	}
 	if s := strings.TrimSpace(r.URL.Query().Get("since")); s != "" {
 		id, parseErr := strconv.ParseInt(s, 10, 64)
@@ -169,11 +197,9 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 
-	q := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms
-		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id ASC LIMIT ?`
-	pageArgs := append([]any{}, args...)
-	pageArgs = append(pageArgs, ledgerExportLimit)
-	rows, err := a.reader().Query(q, pageArgs...)
+	q := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms
+		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id ASC`
+	rows, err := a.reader().QueryContext(r.Context(), q, args...)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -186,15 +212,16 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	// BOM so Excel opens UTF-8 columns correctly.
 	w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"时间", "完成时间", "请求ID", "模型", "上游模型", "渠道", "协议", "流式", "状态", "HTTP状态码", "错误类型", "思考强度", "首字节(ms)", "延迟(ms)", "输入Token", "输出Token", "缓存Token", "思考Token", "总Token", "费用(微)", "费用类型", "客户端IP", "重试原因"})
+	_ = cw.Write([]string{"时间", "完成时间", "请求ID", "模型", "上游模型", "渠道", "访问秘钥名称", "访问秘钥前缀", "协议", "流式", "状态", "HTTP状态码", "错误类型", "思考强度", "首字节(ms)", "延迟(ms)", "输入Token", "输出Token", "缓存Token", "思考Token", "总Token", "费用(微)", "费用类型", "客户端IP", "重试原因"})
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency, usageReported int
-		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, clientIP, reasoningEffort string
+		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, apiKeyName, apiKeyPrefix, clientIP, reasoningEffort string
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
 		var requestTimeoutMS int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
-			break
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyName, &apiKeyPrefix, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
+			a.log.Error("request ledger export scan failed", "error", err)
+			panic(http.ErrAbortHandler)
 		}
 		fb := ""
 		if firstByte.Valid {
@@ -207,7 +234,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			statusLabel = "成功"
 		}
 		_ = cw.Write([]string{
-			created, completed, rid, pm, um, providerName, proto,
+			created, completed, rid, pm, um, providerName, apiKeyName, apiKeyPrefix, proto,
 			boolLabel(strBool(stream)), statusLabel, strconv.Itoa(status), et,
 			reasoningEffort, fb, strconv.Itoa(latency),
 			strconv.FormatInt(input, 10), strconv.FormatInt(output, 10),
@@ -216,7 +243,15 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			clientIP, retryReason,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		a.log.Error("request ledger export rows failed", "error", err)
+		panic(http.ErrAbortHandler)
+	}
 	cw.Flush()
+	if err := cw.Error(); err != nil {
+		a.log.Error("request ledger export write failed", "error", err)
+	}
+
 }
 
 func boolLabel(b bool) string {

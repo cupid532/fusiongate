@@ -104,16 +104,17 @@ type discoveryEnvelope struct {
 }
 
 type discoveryModelEntry struct {
-	ID                         string   `json:"id"`
-	Name                       string   `json:"name"`
-	Model                      string   `json:"model"`
-	ModelID                    string   `json:"modelId"`
-	Slug                       string   `json:"slug"`
-	Hidden                     bool     `json:"hidden"`
-	DisplayName                string   `json:"display_name"`
-	DisplayNameCamel           string   `json:"displayName"`
-	SupportedGenerationMethods []string `json:"supportedGenerationMethods"`
-	SupportedReasoningEfforts  []string `json:"supported_reasoning_efforts"`
+	ID                         string          `json:"id"`
+	Name                       string          `json:"name"`
+	Model                      json.RawMessage `json:"model"`
+	ModelID                    string          `json:"modelId"`
+	ModelIDSnake               json.RawMessage `json:"model_id"`
+	Slug                       string          `json:"slug"`
+	Hidden                     bool            `json:"hidden"`
+	DisplayName                string          `json:"display_name"`
+	DisplayNameCamel           string          `json:"displayName"`
+	SupportedGenerationMethods []string        `json:"supportedGenerationMethods"`
+	SupportedReasoningEfforts  []string        `json:"supported_reasoning_efforts"`
 	SupportedReasoningLevels   []struct {
 		Effort string `json:"effort"`
 	} `json:"supported_reasoning_levels"`
@@ -121,10 +122,35 @@ type discoveryModelEntry struct {
 	DefaultReasoningLevel  string   `json:"default_reasoning_level"`
 	InputModalities        []string `json:"input_modalities"`
 	Meta                   struct {
-		Model   string `json:"model"`
-		ModelID string `json:"modelId"`
-		Hidden  bool   `json:"hidden"`
+		Model        string          `json:"model"`
+		ModelID      string          `json:"modelId"`
+		ModelIDSnake json.RawMessage `json:"model_id"`
+		Hidden       bool            `json:"hidden"`
 	} `json:"_meta"`
+}
+
+// Decode optional identifier variants independently: an unfamiliar model or
+// model_id value must not discard an otherwise valid entry with an id/slug.
+func discoveryIdentifierString(raw json.RawMessage) string {
+	var value string
+	_ = json.Unmarshal(raw, &value)
+	return value
+}
+
+func discoveryModelReferenceID(raw json.RawMessage) string {
+	if value := discoveryIdentifierString(raw); value != "" {
+		return value
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return ""
+	}
+	for _, key := range []string{"id", "name", "model", "modelId", "model_id", "slug"} {
+		if value := discoveryIdentifierString(fields[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 type discoveryCandidate struct {
@@ -556,16 +582,22 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 				upstreamID = entry.Name
 			}
 			if upstreamID == "" {
-				upstreamID = entry.Model
+				upstreamID = discoveryModelReferenceID(entry.Model)
 			}
 			if upstreamID == "" {
 				upstreamID = entry.ModelID
+			}
+			if upstreamID == "" {
+				upstreamID = discoveryModelReferenceID(entry.ModelIDSnake)
 			}
 			if upstreamID == "" {
 				upstreamID = entry.Meta.Model
 			}
 			if upstreamID == "" {
 				upstreamID = entry.Meta.ModelID
+			}
+			if upstreamID == "" {
+				upstreamID = discoveryModelReferenceID(entry.Meta.ModelIDSnake)
 			}
 			if upstreamID == "" {
 				upstreamID = entry.Slug

@@ -179,6 +179,9 @@ export interface RequestLedgerRow {
   gateway_request_id: string
   attempt: number
   retry_reason: string
+  api_key_id: number
+  api_key_name: string
+  api_key_prefix: string
   provider_name: string
   provider_key_id: number
   provider_key_name: string

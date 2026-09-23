@@ -536,7 +536,7 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		delete(a.oauthSessions, sessionID)
 		a.authMu.Unlock()
 		modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName, Type: oauthProviderType(credential.Platform)}})
-		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": modelSync.Items[0]})
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": oauthModelSyncResult(modelSync, id, createdName)})
 		return
 	}
 	code, callbackState, err := parseOAuthCallback(in.Callback)
@@ -572,7 +572,7 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 		return
 	}
 	modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName, Type: oauthProviderType(credential.Platform)}})
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": modelSync.Items[0]})
+	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": oauthModelSyncResult(modelSync, id, createdName)})
 }
 
 func (a *App) pollXAIDeviceAuthorization(ctx context.Context, session oauthSession) (ProviderCredential, bool, int, error) {
@@ -1023,6 +1023,21 @@ func (a *App) authImportCommit(w http.ResponseWriter, r *http.Request, _ adminCt
 	writeJSON(w, http.StatusOK, map[string]any{"created": created, "updated": updated, "skipped": skipped, "providers": providers, "model_sync": modelSync})
 }
 
+// oauthModelSyncResult keeps successful credential creation independent from the
+// best-effort model discovery step. A cancelled worker or future empty summary
+// must not turn a stored OAuth credential into an index-out-of-range panic.
+func oauthModelSyncResult(summary authModelSyncSummary, providerID int64, providerName string) authModelSyncItem {
+	if len(summary.Items) > 0 {
+		return summary.Items[0]
+	}
+	return authModelSyncItem{
+		ID:     providerID,
+		Name:   providerName,
+		Status: "error",
+		Error:  "模型自动识别未返回结果，可稍后重试",
+	}
+}
+
 func (a *App) oauthProviderNeedsModels(ctx context.Context, providerID int64) bool {
 	var count int
 	return a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_routes WHERE provider_id=?`, providerID).Scan(&count) == nil && count == 0
@@ -1147,19 +1162,25 @@ func (a *App) authModelSync(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 			requested[id] = true
 		}
 	}
-	// Explicitly selected credentials must refresh even when they already have
-	// inherited routes. Automatic sync remains conservative and fills only empty routes.
-	forceRefresh := len(requested) > 0
-	rows, err := a.db.QueryContext(r.Context(), `SELECT p.id,p.name,p.type FROM providers p
+	// Refresh existing inventories too: new upstream models must not require a
+	// source update or removal of the provider's previously discovered routes.
+	query := `SELECT p.id,p.name,p.type FROM providers p
 		WHERE p.auth_kind='oauth'
-		  AND (? OR NOT EXISTS (SELECT 1 FROM model_routes r WHERE r.provider_id=p.id))
 		  AND NOT (
 			lower(COALESCE(p.auth_source,'')) IN ('cliproxy','cli-proxy','cli_proxy','cpa','sub2api')
 			AND p.auth_expires_at IS NOT NULL
 			AND p.auth_expires_at!=''
 			AND p.auth_expires_at<=?
-		  )
-		ORDER BY p.id LIMIT 200`, forceRefresh, time.Now().UTC().Format(time.RFC3339))
+		  )`
+	args := []any{time.Now().UTC().Format(time.RFC3339)}
+	if len(requested) > 0 {
+		query += " AND p.id IN (" + strings.TrimRight(strings.Repeat("?,", len(requested)), ",") + ")"
+		for id := range requested {
+			args = append(args, id)
+		}
+	}
+	query += " ORDER BY p.enabled DESC,p.id"
+	rows, err := a.db.QueryContext(r.Context(), query, args...)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", "authentication files could not be loaded")
 		return
@@ -1705,6 +1726,19 @@ func decodeStoredCredential(kind string, plaintext string) (ProviderCredential, 
 	return credential, credential.AccessToken, nil
 }
 
+func safeOAuthRefreshFailure(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "OAuth refresh timed out; retry later"
+	}
+	lower := strings.ToLower(err.Error())
+	for _, marker := range []string{"invalid_grant", "invalid refresh", "revoked"} {
+		if strings.Contains(lower, marker) {
+			return "OAuth refresh permanently failed (invalid_grant); re-authentication required"
+		}
+	}
+	return "OAuth refresh failed; re-authentication may be required"
+}
+
 func (a *App) ensureFreshProviderCredential(ctx context.Context, z *resolvedRoute) error {
 	return a.refreshProviderCredential(ctx, z, false)
 }
@@ -1758,6 +1792,7 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 		return err
 	}
 	if !force {
+
 		if currentExpires := parseTime(current.ExpiresAt); currentExpires == nil || currentExpires.After(time.Now().Add(oauthRefreshLeadTime())) {
 			z.AuthCredential, z.Credential = &current, token
 			return nil
@@ -1765,16 +1800,10 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 	}
 	refreshed, err := a.refreshOAuthCredentialViaNode(ctx, current, z.Provider.IPPoolNodeID)
 	if err != nil {
-		detail := strings.TrimSpace(err.Error())
-		if detail == "" {
-			detail = "OAuth refresh failed"
-		}
-		if len(detail) > 300 {
-			detail = detail[:300] + "…"
-		}
+		detail := safeOAuthRefreshFailure(err)
 		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET auth_status='refresh_failed',status='auth_expired',last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
-		a.log.Warn("oauth refresh failed", "provider_id", z.Provider.ID, "platform", current.Platform, "error", detail)
-		return fmt.Errorf("OAuth token refresh failed: %s", detail)
+		a.log.Warn("oauth refresh failed", "provider_id", z.Provider.ID, "platform", current.Platform, "error_type", fmt.Sprintf("%T", err))
+		return errors.New(detail)
 	}
 	payload, _ := json.Marshal(refreshed)
 	sealed, err := a.encrypt(string(payload))

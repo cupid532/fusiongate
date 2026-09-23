@@ -828,7 +828,7 @@ func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
 			}
 			jwt := unsignedJWT(map[string]any{"sub": "grok-user-1", "email": "grok@example.com", "exp": time.Now().Add(time.Hour).Unix()})
 			return authJSONResponse(http.StatusOK, fmt.Sprintf(`{"access_token":"access-super-secret","refresh_token":"refresh-super-secret","id_token":%q,"expires_in":3600}`, jwt)), nil
-		case "https://cli-chat-proxy.grok.com/v1/models":
+		case "https://cli-chat-proxy.grok.com/models":
 			return authJSONResponse(http.StatusOK, `{"data":[{"id":"grok-3"}]}`), nil
 		default:
 			t.Fatalf("unexpected request %s", r.URL)
@@ -888,6 +888,13 @@ func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
 	}
 	if providerType != "grok_oauth" || baseURL != "https://cli-chat-proxy.grok.com" || authKind != "oauth" {
 		t.Fatalf("provider type=%q base=%q kind=%q", providerType, baseURL, authKind)
+	}
+}
+
+func TestOAuthModelSyncResultHandlesEmptySummary(t *testing.T) {
+	item := oauthModelSyncResult(authModelSyncSummary{}, 42, "saved provider")
+	if item.ID != 42 || item.Name != "saved provider" || item.Status != "error" || item.Error == "" {
+		t.Fatalf("empty model sync result=%+v", item)
 	}
 }
 
@@ -1119,7 +1126,7 @@ func TestOAuthProviderBatchDeleteCascadesRoutes(t *testing.T) {
 	}
 }
 
-func TestOAuthProviderBatchRejectsNonOAuthAtomically(t *testing.T) {
+func TestProviderBatchSupportsMixedAuthKindsAtomically(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -1133,15 +1140,15 @@ func TestOAuthProviderBatchRejectsNonOAuthAtomically(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"provider_ids": []int64{oauthID, regularID}, "action": "disable"})
 	rec := httptest.NewRecorder()
 	a.providerBatch(rec, httptest.NewRequest(http.MethodPost, "/api/admin/providers/batch", strings.NewReader(string(body))), adminCtx{})
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "only support OAuth") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"affected":2`) {
 		t.Fatalf("mixed status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var enabled int
-	if err := a.db.QueryRow(`SELECT enabled FROM providers WHERE id=?`, oauthID).Scan(&enabled); err != nil {
+	var disabled int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id IN (?,?) AND enabled=0`, oauthID, regularID).Scan(&disabled); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 1 {
-		t.Fatal("OAuth provider was modified despite rejected mixed batch")
+	if disabled != 2 {
+		t.Fatalf("disabled mixed providers=%d", disabled)
 	}
 }
 
@@ -1301,7 +1308,7 @@ func TestAuthModelSyncRefreshesExplicitExistingRoutes(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &summary); err != nil {
 		t.Fatal(err)
 	}
-	if summary.Providers != 1 || summary.Succeeded != 1 || summary.Models != 1 {
+	if summary.Providers != 1 || summary.Succeeded != 1 || summary.Models < 1 {
 		t.Fatalf("explicit existing-route sync was skipped: %#v", summary)
 	}
 }

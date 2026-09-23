@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.05
+
+- Add access-key attribution to request ledger rows and CSV exports using historical name/prefix snapshots with current-key fallback; support access-key search/filtering and exclusive `until` time bounds.
+- Add exact local year/month/day/hour/minute request-ledger navigation with tested exclusive boundaries, and apply it consistently to listing, pagination, summaries, and export.
+- Prevent OAuth completion from panicking when best-effort model synchronization returns no item, and update the xAI model-discovery regression coverage for the current `/models` endpoint.
+- Keep model/key/channel/search filters consistent across request lists, full totals, cursor pages and CSV; preserve nanosecond time boundaries and stream complete exports without silent row limits.
+- Refresh existing OAuth model inventories instead of only empty ones, select requested accounts before enumeration limits, and accept dynamic `model_id`/nested model identifiers while preserving existing discovery formats. Model discovery remains driven by the upstream account catalog; Codex client compatibility is configurable without rebuilding.
+- Redact OAuth refresh failures in logs, provider status and API errors while retaining safe permanent-failure and timeout classifications.
+
 ## V3.04
 
 - Fix the upstream channel row's “⋯” action menu being clipped on the last rows of the table. The menu was absolutely positioned inside the table's `overflow-x-auto` wrapper, which also clips vertically, so the bottom row's menu was cut off or only reachable by scrolling inside the table. It is now portalled to `<body>` with fixed positioning, opens upward when there is no room below, and closes on scroll or resize.

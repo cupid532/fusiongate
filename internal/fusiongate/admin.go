@@ -2018,6 +2018,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}{
 		{"from", ">="},
 		{"to", "<="},
+		{"until", "<"},
 	} {
 		value := strings.TrimSpace(r.URL.Query().Get(filter.name))
 		if value == "" {
@@ -2028,8 +2029,8 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusBadRequest, "invalid_time_filter", filter.name+" must be an RFC3339 timestamp")
 			return
 		}
-		where = append(where, "l.created_at "+filter.operator+" ?")
-		args = append(args, parsed.UTC().Format(time.RFC3339Nano))
+		where = append(where, ledgerCreatedAtSQL+" "+filter.operator+" ?")
+		args = append(args, parsed.UTC().Format(ledgerTimeLayout))
 	}
 	if providerID := strings.TrimSpace(r.URL.Query().Get("provider_id")); providerID != "" {
 		id, parseErr := strconv.ParseInt(providerID, 10, 64)
@@ -2039,6 +2040,19 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		}
 		where = append(where, "l.provider_id=?")
 		args = append(args, id)
+	}
+	if apiKeyID := strings.TrimSpace(r.URL.Query().Get("api_key_id")); apiKeyID != "" {
+		id, parseErr := strconv.ParseInt(apiKeyID, 10, 64)
+		if parseErr != nil || id < 1 {
+			fail(w, http.StatusBadRequest, "invalid_api_key_filter", "api_key_id must be a positive integer")
+			return
+		}
+		where = append(where, "l.api_key_id=?")
+		args = append(args, id)
+	}
+	if model := strings.TrimSpace(r.URL.Query().Get("model")); model != "" {
+		where = append(where, "l.public_model=?")
+		args = append(args, model)
 	}
 	switch status := strings.TrimSpace(r.URL.Query().Get("status")); status {
 	case "", "all":
@@ -2052,16 +2066,10 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		fail(w, http.StatusBadRequest, "invalid_status_filter", "status must be all, running, success, or failed")
 		return
 	}
-	if s := strings.TrimSpace(r.URL.Query().Get("before")); s != "" {
-		if id, parseErr := strconv.ParseInt(s, 10, 64); parseErr == nil && id > 0 {
-			where = append(where, "l.id < ?")
-			args = append(args, id)
-		}
-	}
 	if query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))); query != "" {
 		like := "%" + query + "%"
-		where = append(where, `(LOWER(l.public_model) LIKE ? OR LOWER(l.upstream_model) LIKE ? OR LOWER(l.protocol) LIKE ? OR LOWER(l.request_id) LIKE ? OR LOWER(l.gateway_request_id) LIKE ? OR LOWER(l.client_ip) LIKE ? OR LOWER(COALESCE(NULLIF(l.provider_name,''),p.name,'')) LIKE ? OR LOWER(l.provider_key_name) LIKE ? OR LOWER(l.provider_key_hint) LIKE ? OR LOWER(l.error_type) LIKE ? OR LOWER(l.retry_reason) LIKE ?)`)
-		for range 11 {
+		where = append(where, `(LOWER(l.public_model) LIKE ? OR LOWER(l.upstream_model) LIKE ? OR LOWER(l.protocol) LIKE ? OR LOWER(l.request_id) LIKE ? OR LOWER(l.gateway_request_id) LIKE ? OR LOWER(l.client_ip) LIKE ? OR LOWER(COALESCE(NULLIF(l.provider_name,''),p.name,'')) LIKE ? OR LOWER(l.provider_key_name) LIKE ? OR LOWER(l.provider_key_hint) LIKE ? OR LOWER(COALESCE(NULLIF(l.api_key_name,''),k.name,'')) LIKE ? OR LOWER(COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,'')) LIKE ? OR LOWER(l.error_type) LIKE ? OR LOWER(l.retry_reason) LIKE ?)`)
+		for range 13 {
 			args = append(args, like)
 		}
 	}
@@ -2091,16 +2099,26 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		COALESCE(SUM(l.output_tokens),0),
 		COALESCE(SUM(l.cached_tokens),0),
 		COALESCE(SUM(l.cost_micros),0)
-		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + whereClause
+		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id WHERE ` + whereClause
 	if err := a.reader().QueryRow(summaryQuery, filterArgs...).Scan(
 		&total, &okCount, &failedCount, &runningCount, &inputTokens, &outputTokens, &cachedTokens, &costMicros,
 	); err != nil {
 		fail(w, 500, "database_error", err.Error())
 		return
 	}
+	// The cursor bounds the page only, never the filtered totals above.
+	if s := strings.TrimSpace(r.URL.Query().Get("before")); s != "" {
+		id, parseErr := strconv.ParseInt(s, 10, 64)
+		if parseErr != nil || id < 1 {
+			fail(w, http.StatusBadRequest, "invalid_cursor", "before must be a positive integer id")
+			return
+		}
+		whereClause += " AND l.id < ?"
+		args = append(args, id)
+	}
 
 	args = append(args, limit)
-	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id WHERE ` + whereClause + ` ORDER BY l.id DESC LIMIT ?`
+	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(l.api_key_id,0),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id WHERE ` + whereClause + ` ORDER BY l.id DESC LIMIT ?`
 	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
@@ -2111,12 +2129,12 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	out := []map[string]any{}
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency, usageReported int
-		var providerKeyID int64
-		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, providerKeyName, providerKeyHint, clientIP, reasoningEffort string
+		var apiKeyID, providerKeyID int64
+		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, apiKeyName, apiKeyPrefix, providerKeyName, providerKeyHint, clientIP, reasoningEffort string
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
 		var requestTimeoutMS int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &providerKeyID, &providerKeyName, &providerKeyHint, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyID, &apiKeyName, &apiKeyPrefix, &providerKeyID, &providerKeyName, &providerKeyHint, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -2128,7 +2146,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if completed == "" {
 			rowStale = ledgerRowStale(created, requestTimeoutMS, serverNow)
 		}
-		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "provider_key_id": providerKeyID, "provider_key_name": providerKeyName, "provider_key_hint": providerKeyHint, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported), "reasoning_effort": reasoningEffort, "stale": rowStale})
+		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "api_key_id": apiKeyID, "api_key_name": apiKeyName, "api_key_prefix": apiKeyPrefix, "provider_key_id": providerKeyID, "provider_key_name": providerKeyName, "provider_key_hint": providerKeyHint, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported), "reasoning_effort": reasoningEffort, "stale": rowStale})
 	}
 	if err := rows.Err(); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())

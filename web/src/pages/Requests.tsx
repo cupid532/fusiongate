@@ -5,7 +5,7 @@ import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { RefreshCw, Search, Trash2, Download, HardDrive, Save } from "lucide-react"
 import { api, apiDownload, saveBlob } from "@/lib/api"
 import { notifySuccess } from "@/lib/notify"
-import type { Provider, RequestLedgerPayload, LedgerStatus } from "@/lib/types"
+import type { APIKey, Provider, RequestLedgerPayload, LedgerStatus } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -15,6 +15,7 @@ import { SegmentedTabs } from "@/components/ui/segmented-tabs"
 import { useConfirm } from "@/components/ui/confirm"
 import { QueryError } from "@/components/ui/query-error"
 import { useDebounced } from "@/lib/use-debounced"
+import { exactTimeRange, type TimeGranularity } from "@/lib/exact-time-range"
 
 type StatusFilter = "all" | "running" | "success" | "failed"
 
@@ -135,7 +136,20 @@ export function Requests() {
   // The query keys off the debounced value; the input stays fully responsive.
   const debouncedQ = useDebounced(q, 350)
   const [providerId, setProviderId] = useState("")
+  const [apiKeyId, setApiKeyId] = useState("")
   const [range, setRange] = useState("")
+  const [rangeAnchor, setRangeAnchor] = useState(0)
+  const [exactGranularity, setExactGranularity] = useState<TimeGranularity>("day")
+  const [exactValue, setExactValue] = useState("")
+  const exactRange = useMemo(() => exactValue ? exactTimeRange(exactGranularity, exactValue) : null, [exactGranularity, exactValue])
+  const exactValueInvalid = exactValue !== "" && exactRange === null
+  // Keep quick-range bounds stable so list, pagination and export share them.
+  const effectiveRange = useMemo(() => {
+    if (exactRange) return exactRange
+    const durations: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
+    return durations[range] ? { from: new Date(rangeAnchor - durations[range]).toISOString(), until: undefined } : null
+  }, [exactRange, range, rangeAnchor])
+  const localTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
   const [view, setView] = useState<"list" | "group">("list")
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [modelFilter, setModelFilter] = useState("")
@@ -143,6 +157,10 @@ export function Requests() {
   const { data: providers = [] } = useQuery({
     queryKey: ["providers"],
     queryFn: () => api<Provider[]>("/api/admin/providers"),
+  })
+  const { data: apiKeys = [] } = useQuery({
+    queryKey: ["keys"],
+    queryFn: () => api<APIKey[]>("/api/admin/keys"),
   })
 
   const qc = useQueryClient()
@@ -176,87 +194,109 @@ export function Requests() {
     if (Number.isFinite(parsed) && parsed > 0) maxMb = parsed
   }
 
-  const exportLedger = useMutation({
-    mutationFn: async () => {
-      // Export honors the time-range and status filters (the same ones the list uses).
-      const params = new URLSearchParams()
-      if (status !== "all") params.set("status", status)
-      if (range) {
-        const now = new Date()
-        const ms: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
-        if (ms[range]) params.set("from", new Date(now.getTime() - ms[range]).toISOString())
-      }
-      const qs = params.toString()
-      // apiDownload checks res.ok. The previous version did not, and swallowed
-      // every failure in an empty catch — so an expired session wrote the 401
-      // error body to disk as fusiongate-requests-<date>.json and looked like
-      // a successful export.
-      const blob = await apiDownload(`/api/admin/ledger/export${qs ? `?${qs}` : ""}`)
-      saveBlob(blob, `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.csv`)
-    },
-    onSuccess: () => notifySuccess("账本已导出"),
-  })
-
-  const [pages, setPages] = useState<RequestLedgerPayload[]>([])
-  const [loadingMore, setLoadingMore] = useState(false)
-
-  // Reset accumulated pages when any filter changes.
-  useEffect(() => { setPages([]) }, [status, debouncedQ, providerId, range])
-
-  const baseParams = useMemo(() => {
-    const p = new URLSearchParams({ limit: String(PAGE_LIMIT) })
+  // Only pagination adds limit/before; all server-side filters are shared.
+  const filterParams = useMemo(() => {
+    const p = new URLSearchParams()
     if (status !== "all") p.set("status", status)
     if (debouncedQ.trim()) p.set("q", debouncedQ.trim())
     if (providerId) p.set("provider_id", providerId)
-    if (range) {
-      const now = new Date()
-      const ms: Record<string, number> = { "1h": 3600_000, "24h": 86400_000, "7d": 604800_000 }
-      if (ms[range]) p.set("from", new Date(now.getTime() - ms[range]).toISOString())
+    if (apiKeyId) p.set("api_key_id", apiKeyId)
+    if (modelFilter.trim()) p.set("model", modelFilter.trim())
+    if (effectiveRange) {
+      p.set("from", effectiveRange.from)
+      if (effectiveRange.until) p.set("until", effectiveRange.until)
     }
+    return p.toString()
+  }, [status, debouncedQ, providerId, apiKeyId, modelFilter, effectiveRange])
+  const filterSignature = JSON.stringify([filterParams, exactGranularity, exactValue])
+  const baseParams = useMemo(() => {
+    const p = new URLSearchParams(filterParams)
+    p.set("limit", String(PAGE_LIMIT))
     return p
-  }, [status, debouncedQ, providerId, range])
+  }, [filterParams])
 
-  const requestsQuery = useQuery({
-    queryKey: ["requests", status, debouncedQ, providerId, range],
-    queryFn: () => api<RequestLedgerPayload>(`/api/admin/requests?${baseParams.toString()}`),
-    refetchInterval: 5000,
+  const exportLedger = useMutation({
+    mutationFn: async () => {
+      if (exactValueInvalid) return false
+      const blob = await apiDownload(`/api/admin/ledger/export${filterParams ? `?${filterParams}` : ""}`)
+      saveBlob(blob, `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.csv`)
+      return true
+    },
+    onSuccess: (exported) => { if (exported) notifySuccess("账本已导出") },
   })
 
-  const firstPage = requestsQuery.data
-  const rows = useMemo(() => {
-    const first = firstPage?.items ?? []
-    const rest = pages.flatMap((p) => p.items)
-    return [...first, ...rest]
-  }, [firstPage, pages])
-  const models = useMemo(() => [...new Set(rows.map((r) => r.model))].sort(), [rows])
-  const filteredRows = useMemo(() => {
-    if (!modelFilter) return rows
-    return rows.filter((r) => r.model === modelFilter)
-  }, [rows, modelFilter])
+  const requestsQuery = useQuery({
+    queryKey: ["requests", filterSignature],
+    queryFn: ({ signal }) => {
+      if (exactValueInvalid) throw new Error("精确时间无效")
+      return api<RequestLedgerPayload>(`/api/admin/requests?${baseParams.toString()}`, { signal })
+    },
+    enabled: !exactValueInvalid,
+    refetchInterval: exactValueInvalid ? false : 5000,
+  })
 
-  const isLoading = requestsQuery.isLoading
-  const isFetching = requestsQuery.isFetching
-  const refetch = () => { setPages([]); return requestsQuery.refetch() }
+  const firstPage = exactValueInvalid ? undefined : requestsQuery.data
+  const firstPageSignature = JSON.stringify(firstPage?.items.map((r) => r.id) ?? [])
+  const [pageState, setPageState] = useState<{
+    filter: string
+    firstPageSignature: string
+    pages: RequestLedgerPayload[]
+    loading: boolean
+    error: unknown
+  }>({ filter: filterSignature, firstPageSignature, pages: [], loading: false, error: null })
+  const pagesMatch = pageState.filter === filterSignature && pageState.firstPageSignature === firstPageSignature
+  // A shifted first page must discard old cursors before anything is rendered.
+  // A fresh state object also invalidates any outstanding loadMore response.
+  if (!pagesMatch) setPageState({ filter: filterSignature, firstPageSignature, pages: [], loading: false, error: null })
+  const rows = useMemo(() => {
+    if (exactValueInvalid) return []
+    const seen = new Set<number>()
+    return [...(firstPage?.items ?? []), ...(pagesMatch ? pageState.pages.flatMap((p) => p.items) : [])].filter((row) => {
+      if (seen.has(row.id)) return false
+      seen.add(row.id)
+      return true
+    })
+  }, [firstPage, pageState.pages, pagesMatch, exactValueInvalid])
+  const models = useMemo(() => [...new Set(rows.map((r) => r.model))].sort(), [rows])
+  const isLoading = requestsQuery.isLoading && !exactValueInvalid
+  const isFetching = requestsQuery.isFetching && !exactValueInvalid
+  const loadingMore = pagesMatch && pageState.loading
+  const refetch = () => {
+    if (exactValueInvalid) return Promise.resolve()
+    setPageState({ filter: filterSignature, firstPageSignature, pages: [], loading: false, error: null })
+    return requestsQuery.refetch()
+  }
   const totalRows = firstPage?.total ?? rows.length
-  const hasMore = rows.length < totalRows
+  const hasMore = !exactValueInvalid && rows.length < totalRows
 
   async function loadMore() {
+    if (exactValueInvalid || !pagesMatch || !hasMore || loadingMore) return
     const lastId = rows[rows.length - 1]?.id
-    if (!lastId || loadingMore) return
-    setLoadingMore(true)
+    if (lastId == null) return
+    const pendingState = { ...pageState, loading: true, error: null }
+    setPageState(pendingState)
     try {
       const p = new URLSearchParams(baseParams)
       p.set("before", String(lastId))
       const page = await api<RequestLedgerPayload>(`/api/admin/requests?${p.toString()}`)
-      setPages((prev) => [...prev, page])
-    } finally {
-      setLoadingMore(false)
+      setPageState((prev) => {
+        if (prev !== pendingState) return prev
+        const known = new Set(rows.map((row) => row.id))
+        const items = page.items.filter((row) => {
+          if (known.has(row.id)) return false
+          known.add(row.id)
+          return true
+        })
+        return { ...prev, loading: false, pages: items.length ? [...prev.pages, { ...page, items }] : prev.pages }
+      })
+    } catch (error) {
+      setPageState((prev) => prev === pendingState ? { ...prev, loading: false, error } : prev)
     }
   }
 
   const groupByModel = useMemo(() => {
     const map = new Map<string, { model: string; count: number; success: number; failed: number; tokens: number; input_tokens: number; cached_tokens: number; cost_micros: number; avg_latency: number }>()
-    for (const r of filteredRows) {
+    for (const r of rows) {
       const g = map.get(r.model) ?? { model: r.model, count: 0, success: 0, failed: 0, tokens: 0, input_tokens: 0, cached_tokens: 0, cost_micros: 0, avg_latency: 0 }
       g.count++
       if (r.success) g.success++
@@ -272,13 +312,13 @@ export function Requests() {
       .map((g) => ({ ...g, avg_latency: g.count ? Math.round(g.avg_latency / g.count) : 0 }))
       .sort((a, b) => b.tokens - a.tokens)
     return { list, maxTokens: Math.max(1, ...list.map((g) => g.tokens)) }
-  }, [filteredRows])
+  }, [rows])
 
   // Comes straight from the server's aggregate over the whole filtered range.
   // Summing the returned page here instead — which is what this did before —
   // reported the newest 100 rows under a "当前范围" label.
   const summary = useMemo(() => {
-    const totals = requestsQuery.data?.totals
+    const totals = firstPage?.totals
     if (!totals) return { count: 0, ok: 0, failed: 0, tokens: 0, cost: 0, cacheRate: 0 }
     const inputTokens = totals.input_tokens ?? 0
     const cachedTokens = totals.cached_tokens ?? 0
@@ -290,7 +330,7 @@ export function Requests() {
       cost: totals.cost_micros,
       cacheRate: inputTokens > 0 ? (cachedTokens / inputTokens) * 100 : 0,
     }
-  }, [requestsQuery.data?.totals])
+  }, [firstPage?.totals])
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
@@ -299,7 +339,7 @@ export function Requests() {
           <h1 className="text-2xl font-bold tracking-tight">请求账本</h1>
           <p className="mt-1 text-sm text-muted-foreground">观察每一次请求的状态、耗时与 Token 用量。</p>
         </div>
-        <Button variant="outline" onClick={() => void refetch()}>
+        <Button variant="outline" disabled={exactValueInvalid} onClick={() => void refetch()}>
           <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
           刷新
         </Button>
@@ -372,7 +412,7 @@ export function Requests() {
                 variant="outline"
                 size="sm"
                 onClick={() => exportLedger.mutate()}
-                disabled={exportLedger.isPending || !ledger || ledger.rows === 0}
+                disabled={exactValueInvalid || exportLedger.isPending || !ledger || ledger.rows === 0}
               >
                 <Download className="h-3.5 w-3.5" />
                 {exportLedger.isPending ? "导出中…" : "导出"}
@@ -436,22 +476,22 @@ export function Requests() {
                 {label}
               </button>
             ))}
-            <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+            <div className="ml-auto flex min-w-0 w-full flex-wrap items-center gap-2 sm:w-auto">
               <div className="relative min-w-0 flex-1 sm:flex-none">
                 <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input aria-label="搜索请求账本" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / IP / 错误" className="h-8 w-full pl-8 text-xs sm:w-56" />
+                <Input aria-label="搜索请求账本" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / 访问秘钥名称或前缀 / IP / 错误" className="h-8 w-full pl-8 text-xs sm:w-72" />
               </div>
-              <select
+              <Input
                 aria-label="按模型筛选请求"
+                list="request-models"
+                placeholder="全部模型（可输入）"
                 value={modelFilter}
                 onChange={(e) => { setModelFilter(e.target.value); setExpandedId(null) }}
-                className="h-8 rounded-md border bg-background px-2 text-xs"
-              >
-                <option value="">全部模型</option>
-                {models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
+                className="h-8 w-44 max-w-full text-xs"
+              />
+              <datalist id="request-models">
+                {models.map((m) => <option key={m} value={m} />)}
+              </datalist>
               <select
                 aria-label="按渠道筛选请求"
                 value={providerId}
@@ -466,9 +506,20 @@ export function Requests() {
                 ))}
               </select>
               <select
+                aria-label="按访问秘钥筛选请求"
+                value={apiKeyId}
+                onChange={(e) => setApiKeyId(e.target.value)}
+                className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              >
+                <option value="">全部访问秘钥</option>
+                {apiKeys.map((key) => (
+                  <option key={key.id} value={key.id}>{key.name} · {key.prefix}</option>
+                ))}
+              </select>
+              <select
                 aria-label="按时间范围筛选请求"
                 value={range}
-                onChange={(e) => setRange(e.target.value)}
+                onChange={(e) => { setRange(e.target.value); setRangeAnchor(Date.now()); if (e.target.value) setExactValue("") }}
                 className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
               >
                 {timeRanges.map((t) => (
@@ -477,10 +528,45 @@ export function Requests() {
                   </option>
                 ))}
               </select>
+              <select
+                aria-label="精确时间粒度"
+                value={exactGranularity}
+                onChange={(e) => { setExactGranularity(e.target.value as TimeGranularity); setExactValue(""); setRange("") }}
+                className="h-8 rounded-md border border-input bg-transparent px-2 text-xs"
+              >
+                <option value="year">年</option>
+                <option value="month">月</option>
+                <option value="day">日</option>
+                <option value="hour">时</option>
+                <option value="minute">分</option>
+              </select>
+              <Input
+                aria-label="精确时间"
+                type={exactGranularity === "year" ? "number" : exactGranularity === "month" ? "month" : exactGranularity === "day" ? "date" : "datetime-local"}
+                step={exactGranularity === "hour" ? 3600 : exactGranularity === "minute" ? 60 : undefined}
+                min={exactGranularity === "year" ? 1000 : undefined}
+                max={exactGranularity === "year" ? 9998 : undefined}
+                value={exactValue}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setExactValue(exactGranularity === "hour" && value ? `${value.slice(0, 13)}:00` : value)
+                  if (value) setRange("")
+                }}
+                aria-invalid={exactValueInvalid}
+                aria-describedby={exactValueInvalid ? "exact-time-error" : "request-time-range"}
+                className="h-8 w-auto max-w-full text-xs"
+              />
             </div>
           </div>
+          <p id="request-time-range" className="break-words px-3 py-2 text-xs text-muted-foreground">
+            浏览器本地时区：{localTimeZone}。实际范围：
+            {exactValueInvalid ? "无效（已暂停查询）" : `from=${effectiveRange?.from ?? "不限"}；until=${effectiveRange?.until ?? "不限"}`}
+            {exactRange && "（结束不含；夏令时重复时刻选择第一次）"}
+          </p>
 
-          {isLoading ? (
+          {exactValueInvalid ? (
+            <div id="exact-time-error" role="alert" className="p-4 text-sm text-destructive">精确时间无效或该本地时刻不存在，请修改后重试。</div>
+          ) : isLoading ? (
             <div className="space-y-2 p-4">{Array.from({ length: 5 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />)}</div>
           ) : requestsQuery.isError ? (
             <QueryError
@@ -492,8 +578,6 @@ export function Requests() {
             />
           ) : rows.length === 0 ? (
             <div className="p-8 text-center text-sm text-muted-foreground">当前筛选范围还没有请求</div>
-          ) : filteredRows.length === 0 ? (
-            <div className="p-8 text-center text-sm text-muted-foreground">没有匹配所选模型的请求</div>
           ) : view === "group" ? (
             <div className="p-4">
               <div className="space-y-2">
@@ -528,6 +612,7 @@ export function Requests() {
                   <tr className="border-b text-left text-xs text-muted-foreground">
                     <th className="px-4 py-3 font-medium">时间</th>
                     <th className="px-4 py-3 font-medium">模型</th>
+                    <th className="px-4 py-3 font-medium">访问秘钥名称</th>
                     <th className="px-4 py-3 font-medium">渠道</th>
                     <th className="px-4 py-3 font-medium">状态</th>
                     <th className="px-4 py-3 font-medium">思考强度</th>
@@ -538,7 +623,7 @@ export function Requests() {
                   </tr>
                 </thead>
                 <tbody ref={animateParent}>
-                  {filteredRows.map((r) => (
+                  {rows.map((r) => (
                     <Fragment key={r.id}>
                       <tr
                         className="cursor-pointer border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150"
@@ -548,6 +633,10 @@ export function Requests() {
                         <td className="px-4 py-3">
                           <div className="font-medium">{r.model}</div>
                           <div className="text-xs text-muted-foreground">{r.protocol}</div>
+                        </td>
+                        <td className="px-4 py-3 text-xs">
+                          <div>{r.api_key_name || "---"}</div>
+                          {r.api_key_prefix && <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">{r.api_key_prefix}</div>}
                         </td>
                         <td className="px-4 py-3 text-xs">
                           <div>{r.provider_name || "---"}</div>
@@ -604,6 +693,7 @@ export function Requests() {
                                     <div><div className="text-muted-foreground">Request ID</div><div className="break-all font-mono">{r.request_id}</div></div>
                                     <div><div className="text-muted-foreground">Gateway Request ID</div><div className="break-all font-mono">{r.gateway_request_id}</div></div>
                                     <div><div className="text-muted-foreground">Client IP</div><div className="font-mono">{r.client_ip}</div></div>
+                                    <div><div className="text-muted-foreground">访问秘钥</div><div>{r.api_key_name || "---"}{r.api_key_prefix && <span className="ml-1 font-mono text-muted-foreground">({r.api_key_prefix})</span>}</div></div>
                                     {!r.success && !r.running && r.error_type && (
                                       <div><div className="text-muted-foreground">Error Type</div><div className="font-mono text-destructive">{r.error_type}</div></div>
                                     )}
@@ -632,13 +722,14 @@ export function Requests() {
             </div>
           )}
 
+          {pagesMatch && !exactValueInvalid && pageState.error != null && (
+            <QueryError title="无法加载更多请求" error={pageState.error} onRetry={() => void loadMore()} retrying={loadingMore} className="m-4" />
+          )}
+
           {!isLoading && !requestsQuery.isError && rows.length > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground">
               <span>
                 已加载 <span className="font-medium tabular-nums text-foreground">{rows.length}</span> 条
-                {modelFilter && filteredRows.length < rows.length && (
-                  <>（显示 <span className="font-medium tabular-nums text-foreground">{filteredRows.length}</span> 条）</>
-                )}
                 {totalRows > rows.length && (
                   <>，当前筛选共 <span className="font-medium tabular-nums text-foreground">{totalRows.toLocaleString()}</span> 条</>
                 )}
