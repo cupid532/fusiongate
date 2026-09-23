@@ -146,29 +146,27 @@ else
   warn "no existing fusiongate:local to tag; rollback will not be available"
 fi
 
-# The quality detector runs with network_mode: service:fusiongate, so it shares
-# FusionGate's network namespace. Recreating fusiongate alone destroys that
-# namespace and leaves the detector attached to nothing — they must always come
-# up as a pair.
+# The quality-detector sidecar was removed in V3.03, so fusiongate is the only
+# service to recreate. Naming a service the compose file no longer defines makes
+# compose exit non-zero, which aborted the deploy before anything was replaced.
 recreate() {
   docker tag "$1" fusiongate:local
-  docker compose -f "$COMPOSE_FILE" up -d --no-build --force-recreate fusiongate quality-detector
+  docker compose -f "$COMPOSE_FILE" up -d --no-build --force-recreate fusiongate
 }
 
 wait_healthy() {
-  local deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS)) fg qd
+  local deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS)) fg
   while (( SECONDS < deadline )); do
     fg="$(docker inspect -f '{{.State.Health.Status}}' fusiongate 2>/dev/null || echo missing)"
-    qd="$(docker inspect -f '{{.State.Health.Status}}' fusiongate-quality-detector 2>/dev/null || echo missing)"
-    [[ "$fg" == "healthy" && "$qd" == "healthy" ]] && return 0
+    [[ "$fg" == "healthy" ]] && return 0
     [[ "$fg" == "unhealthy" ]] && { warn "fusiongate reported unhealthy"; return 1; }
     sleep 3
   done
-  warn "timed out after ${HEALTH_TIMEOUT_SECONDS}s (fusiongate=$fg quality-detector=$qd)"
+  warn "timed out after ${HEALTH_TIMEOUT_SECONDS}s (fusiongate=$fg)"
   return 1
 }
 
-log "recreating fusiongate + quality-detector"
+log "recreating fusiongate"
 recreate "$CANDIDATE_IMAGE"
 
 if ! wait_healthy; then
