@@ -26,8 +26,6 @@ services:
     environment:
       FUSIONGATE_ADDR: 0.0.0.0:8787
       FUSIONGATE_DATA_DIR: /data
-      FUSIONGATE_QUALITY_DETECTOR_URL: http://127.0.0.1:18789
-      FUSIONGATE_QUALITY_DETECTOR_BASE_URL: http://127.0.0.1:8787/v1
       FUSIONGATE_MASTER_KEY_FILE: /run/secrets/fusiongate_master_key
       FUSIONGATE_ADMIN_PASSWORD_FILE: /run/secrets/fusiongate_admin_password
     ports:
@@ -53,38 +51,3 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
-
-  quality-detector:
-    build:
-      context: ..
-      dockerfile: deploy/quality-detector.Dockerfile
-      args:
-        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:?set the exact Git commit}
-        FUSIONGATE_BUILD_SOURCE: ${FUSIONGATE_BUILD_SOURCE:-https://github.com/cupid532/fusiongate}
-        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:?set the FusionGate version}
-    image: fusiongate-quality-detector:${FUSIONGATE_BUILD_REVISION}
-    container_name: fusiongate-quality-detector
-    restart: unless-stopped
-    stop_grace_period: 20s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-    network_mode: service:fusiongate
-    depends_on:
-      fusiongate:
-        condition: service_started
-    volumes:
-      - ${FUSIONGATE_QUALITY_DETECTOR_DATA_PATH:-/opt/fusiongate/quality-detector-data}:/runs
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,noexec,nosuid,nodev
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    mem_limit: 1g
-    mem_reservation: 256m
-    cpus: 2.0
-    pids_limit: 256

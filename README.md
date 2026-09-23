@@ -28,7 +28,6 @@
 | OAuth 账号接入 | 支持 Codex、Claude 官方浏览器授权，Grok 设备授权和兼容 OAuth JSON 迁移。 |
 | 固定网络出口 | 支持常见代理分享链接与 sing-box outbound JSON；节点失败时严格故障转移，不静默回落直连。 |
 | 请求与费用可观测 | 实时请求账本支持精确到秒的开始/结束时间、状态、渠道、关键词和条数筛选，并统计 Token、延迟和估算费用；管理员运行指标接口提供并发、重试、故障转移和首字节概览。 |
-| GPT-5.6 质量检测 | 独立 GPT-5.6 vNext 检测侧车，提供低/中/高冻结档位。可按模型、渠道、渠道下具体 Key 单选或多选，生成真实存在的有效组合后启动单项或最多 100 项的串行批量检测；单项失败继续后续队列，可随时停止。真实上游 Key、路由令牌与 sidecar 会话均不写入数据库或报告，脱敏历史仅保留 24 小时。 |
 | 安全默认值 | SQLite 单机部署、字段级 AES-256-GCM 加密、CSRF、安全响应头、SSRF 防护和非 root 只读容器。 |
 
 ```text
@@ -55,7 +54,6 @@ OpenCode / SDK / 应用
 - IP 池与固定出口：默认所有渠道使用服务器本机直连；管理员可粘贴 SOCKS4/5、HTTP(S)、Shadowsocks、Trojan、VLESS（含 Reality）、VMess、Hysteria/Hysteria2、TUIC、AnyTLS 分享链接，或单个受支持的 sing-box outbound JSON，并为普通 API 渠道或 OAuth 认证文件指定节点。转发、模型识别、检活、OAuth 续签和额度查询使用同一渠道出口；节点故障时严格失败并交给现有渠道故障转移，不会静默泄漏到本机直连。
 - 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE）、Grok 设备授权，以及常见工具导出的 Codex / Claude / Grok OAuth JSON。JSON 可一次选择多个文件，必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。认证文件支持按厂商筛选、批量选择和敏感凭据 JSON 导出。
 - 安全检活：后台仅对允许检活的 OAuth 渠道做低成本模型列表连通性探测，结果显示为“可连接”而非“可用”；管理员手动启动模型检活时才发送真实最小生成请求并记录首字节/总耗时。普通 API 渠道除渠道总开关外，每张 Key 还有独立检活开关；结果按 Key × 模型持久保存，某张 Key 的失败或停检不会污染同渠道其他 Key。禁止后不发送探测请求，但真实业务请求仍参与失败统计和熔断。任务采用低并发、单项超时、重复探测互斥、可取消和逐项结果展示。
-- 质量检测：管理员控制台提供原生“质量检测”模块，驱动 [`chen-006/gpt56_api_detector`](https://github.com/chen-006/gpt56_api_detector) `4.0.1` 独立侧车的冻结低/中/高档。可按 GPT-5.6 模型、上游渠道与渠道下具体 Key 单选或多选，生成真实存在的有效组合后启动单项或串行批量检测（最多 100 项，单项失败继续、可停止）。FusionGate 不复制或执行上游网页脚本，只通过受管理员会话和 CSRF 保护的窄 API 启停任务、读取进度与报告；目标地址固定为当前网关，输入的下游 Key 仅进入检测器进程内存。脱敏检测历史仅保留 24 小时，不保存真实 Key 或检测令牌。检测失败也可能来自官方风控、出口 IP、并发或账号池降级，不应单独作为中转主动掺水的定论。
 - 公共模型 / 别名与多条候选路由；既可删除单条渠道映射，也可从模型页一次删除某个公开模型的全部映射。“上游渠道”列表支持拖拽或上下按钮调整全局渠道位置，刷新后保留，并统一用于 API 渠道与 OAuth 认证渠道调度。渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级；可在渠道页全局选择优先级、逐个轮询、智能轮询或智能选择。
 - 渠道支持归档：归档用于“余额耗尽但是优秀的站点”。归档渠道只出现在“归档”列表，不会出现在“全部渠道”“已开启”或“熔断冷却”列表，也不会参与新请求调度。
 - 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、冷却结束后的真实请求半开恢复、指数冷却和 `Retry-After`。模型列表连通性只显示为“可连接”，不会把它当作真实模型可用性，也不会用它恢复熔断渠道。自动熔断不会改写管理员开关，手动关闭的渠道不会自动开启。429 会显示为“限流”并立即进入至少 5 分钟冷却，不会因短耗时错误响应污染自适应延迟统计。
@@ -142,10 +140,10 @@ docker compose up -d --build
 
 Compose 默认绑定 `127.0.0.1:8787`；请使用 Tailscale/WireGuard 或配置了 TLS 与访问控制的反向代理，而不是直接将后台暴露到公网。
 
-正式发布使用 pull-only 的 `deploy/compose.release.yml`，只引用 `ghcr.io/cupid532/fusiongate:<tag>`，没有 `build:`。`VERSION` 的 `V2.75` 对应 Git/GHCR tag `v2.75`。tag workflow 成功后按以下方式精确拉取和更新：
+正式发布使用 pull-only 的 `deploy/compose.release.yml`，只引用 `ghcr.io/cupid532/fusiongate:<tag>`，没有 `build:`。根目录 `VERSION` 去掉前缀 `V` 即对应 Git/GHCR tag（例如 `V3.06` 对应 `v3.06`）。tag workflow 成功后按以下方式精确拉取和更新：
 
 ```bash
-export FUSIONGATE_REF=v2.75
+export FUSIONGATE_REF=v<版本>   # 必须替换为真实发布 tag（例如 V3.06 → v3.06），不要使用 latest
 docker compose -f deploy/compose.release.yml config --images
 docker compose -f deploy/compose.release.yml pull fusiongate
 docker compose -f deploy/compose.release.yml up -d --no-build fusiongate
@@ -153,10 +151,6 @@ curl -fsS http://127.0.0.1:8787/healthz
 ```
 
 每次更新必须显式修改 `FUSIONGATE_REF` 并先检查 `config --images`。旧 shell 或 `.env` 中残留的 `FUSIONGATE_REF` 不会自动前进；它会让 `pull` 成功但仍拉取/运行旧 tag。不要用 `latest` 代替可复现的 release tag。
-
-Compose 同时构建质量检测侧车，并与 FusionGate 共享网络命名空间。检测器自身仍只监听 `127.0.0.1`，不会新增公开端口；运行状态保存在独立 Docker volume。重建 FusionGate 主容器会替换这个网络命名空间，因此必须同时重建 `fusiongate` 与 `quality-detector`；`fusiongatectl restart`、更新流程和容器健康检查会共同保证这一点。构建固定到已审查的上游提交与 SHA-256，升级检测器必须显式更新 `deploy/quality-detector.Dockerfile`。
-
-质量检测页面可以按模型、渠道与具体渠道凭据/Key 单选或多选，启动单项或串行批量定向检测。真实上游密钥不会发送给浏览器或检测侧车；FusionGate 会为每次任务生成仅回环可用、绑定到所选模型/路由/渠道/Key 且带有时限和请求上限的临时令牌，并在单项结束后立即撤销。
 
 ## 服务器一键部署
 
@@ -174,24 +168,30 @@ curl -fsSL https://raw.githubusercontent.com/cupid532/fusiongate/main/deploy/ins
 - 通过 Docker secrets 挂载主密钥和管理员密码；
 - 配置 Caddy 自动申请和续期 HTTPS 证书；
 - 启用非 root 容器、只读根文件系统、能力裁剪和健康检查；
-- 安装 `fusiongatectl` 运维命令。
 
 常用操作（安装器托管的部署）：
 
 ```bash
-sudo fusiongatectl status
-sudo fusiongatectl logs
-sudo fusiongatectl update
-sudo fusiongatectl backup
-fusiongatectl health
+# 更新到安装时记录的 GitHub ref
+sudo /opt/fusiongate/app/deploy/install.sh --update
+
+# 生成带校验和的受保护备份（默认写入 /var/backups/fusiongate）
+sudo /opt/fusiongate/app/deploy/install.sh --backup
+
+# 校验并恢复备份；旧数据安全副本保存在 /opt/fusiongate/pre-restore-<stamp>
+sudo /opt/fusiongate/app/deploy/install.sh --restore /var/backups/fusiongate/fusiongate-<stamp>.tar.gz
+
+# 日常状态与日志
+sudo docker compose --project-directory /opt/fusiongate/app --env-file /opt/fusiongate/config/compose.env -f /opt/fusiongate/app/deploy/compose.production.yml ps
 ```
 
 如果该主机不是由 `deploy/install.sh` 安装的（即没有
 `/opt/fusiongate/.fusiongate-install`，Compose 与 Caddy 由你自己维护），
-`fusiongatectl` 不适用。请改用 `deploy/deploy-from-origin.sh` 升级——它只允许
-部署已经推送到 `origin/main` 的提交，并在部署后校验 `/healthz` 上报的
-`version` 与 `revision`，从而保证服务器与 GitHub 始终一致。两种部署模式的
-差异与操作方式见 [DEPLOYMENT.md](DEPLOYMENT.md#two-deployment-models)。
+安装器的 `--update` / `--backup` / `--restore` 都不适用。请改用
+`deploy/deploy-from-origin.sh` 升级——它只允许部署已经推送到 `origin/main`
+的提交，并在部署后校验 `/healthz` 上报的 `version` 与 `revision`，从而保证
+服务器与 GitHub 始终一致。两种部署模式的差异与操作方式见
+[DEPLOYMENT.md](DEPLOYMENT.md#two-deployment-models)。
 
 建议先下载并审阅脚本，再执行：
 

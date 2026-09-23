@@ -18,8 +18,6 @@ services:
     environment:
       FUSIONGATE_ADDR: 0.0.0.0:8787
       FUSIONGATE_DATA_DIR: /data
-      FUSIONGATE_QUALITY_DETECTOR_URL: http://127.0.0.1:18789
-      FUSIONGATE_QUALITY_DETECTOR_BASE_URL: http://127.0.0.1:8787/v1
     ports:
       # Bind to loopback by default. Use a VPN or authenticated reverse proxy for remote access.
       - "127.0.0.1:8787:8787"
@@ -33,36 +31,3 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
-
-  quality-detector:
-    build:
-      context: .
-      dockerfile: deploy/quality-detector.Dockerfile
-      args:
-        FUSIONGATE_BUILD_REVISION: ${FUSIONGATE_BUILD_REVISION:-local}
-        FUSIONGATE_BUILD_SOURCE: ${FUSIONGATE_BUILD_SOURCE:-https://github.com/cupid532/fusiongate}
-        FUSIONGATE_BUILD_VERSION: ${FUSIONGATE_BUILD_VERSION:-dev}
-    image: fusiongate-quality-detector:4.0.1
-    restart: unless-stopped
-    stop_grace_period: 20s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "5"
-    network_mode: service:fusiongate
-    depends_on:
-      fusiongate:
-        condition: service_started
-    volumes:
-      - quality-detector-data:/runs
-    read_only: true
-    tmpfs:
-      - /tmp:size=64m,noexec,nosuid,nodev
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-
-volumes:
-  quality-detector-data:

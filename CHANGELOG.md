@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.06
+
+- Remove the remaining quality-detector deployment leftovers. The sidecar service is gone from `compose.yml` and both production Compose templates, the `FUSIONGATE_QUALITY_DETECTOR_*` variables are gone from `.env.example` and every Compose file, and `deploy/quality-detector.Dockerfile` is deleted. The Go application never read those variables or port 18789, so deployments can no longer abort while building a sidecar image that no longer exists.
+- Replace `deploy/fusiongatectl` with `install.sh --backup` and `install.sh --restore FILE`. Backups are checksummed and validated; restore extracts and swaps data/config on the same filesystem as the installation, preserves a same-filesystem safety copy, rejects archives missing `config/master_key`, and restores the previous data before restarting if the swap fails. Status, logs, start, and stop are plain `docker compose`.
+- For the first installer-managed upgrade from V3.05 to V3.06, rerun the one-line installer (`curl -fsSL https://raw.githubusercontent.com/cupid532/fusiongate/main/deploy/install.sh | sudo env FUSIONGATE_DOMAIN=<your-domain> bash`); the old V3.05 updater expects deployment files removed here. The installer detects its marker, backs up first, and preserves the existing master key. After verifying the new deployment, operators may manually remove the obsolete `/opt/fusiongate/quality-detector-data` directory and `fusiongate-quality-detector:*` Docker images.
+- Sync the release version files: `VERSION` and `internal/fusiongate/version.go` both report `V3.06`, which the container workflow asserts before publishing an image.
+- Run `gofmt` over `internal/fusiongate/app.go`, `grok_console_dpop.go`, and `grok_web_ws.go`, which were left unaligned after the detector removal and failed the CI format gate.
+
 ## V3.05
 
 - Add access-key attribution to request ledger rows and CSV exports using historical name/prefix snapshots with current-key fallback; support access-key search/filtering and exclusive `until` time bounds.

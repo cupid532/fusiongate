@@ -294,4 +294,3 @@ func parseDPoPNonce(body []byte) string {
 	}
 	return ""
 }
-

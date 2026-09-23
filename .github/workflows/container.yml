@@ -57,7 +57,7 @@ jobs:
         run: test -z "$(gofmt -l .)"
       - name: Deployment scripts parse
         run: |
-          bash -n deploy/install.sh deploy/fusiongatectl
+          bash -n deploy/install.sh
           sh -n deploy/healthcheck.sh
       - name: Vet
         run: go vet ./...

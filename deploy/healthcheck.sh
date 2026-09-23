@@ -6,6 +6,6 @@ port=${addr##*:}
 host=$(hostname -i)
 host=${host%% *}
 wget -q -T 5 -O- "http://${host}:${port}/readyz" >/dev/null
-# The detector shares this container's network namespace in the production
-# compose layout, but Docker may start FusionGate before the sidecar listener.
-# Probe the core service only; the detector has its own container healthcheck.
+# Probe FusionGate's own readiness endpoint from inside the container: the app
+# may be bound to 0.0.0.0, so connect to the container's primary address from
+# `hostname -i` on the configured port. Nothing else runs in this namespace.

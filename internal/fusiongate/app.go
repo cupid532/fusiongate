@@ -43,51 +43,51 @@ const (
 )
 
 type App struct {
-	db                       *sql.DB
-	readDB                   *sql.DB
-	cfg                      Config
-	aead                     cipher.AEAD
-	client                   *http.Client
-	pricingClient            *http.Client
-	log                      *slog.Logger
-	mu                       sync.Mutex
-	rate                     map[string]*rateWindow
-	routeMu                  sync.Mutex
-	providerStates           map[int64]*providerRuntime
-	providerKeyCooldowns     map[int64]time.Time
-	providerKeyRoundRobin    map[string]int
-	roundRobinCursor         map[string]int
-	smoothWeights            map[string]map[int64]float64
-	ledgerMu                 sync.RWMutex
-	ledgerWrites             chan ledgerWrite
-	ledgerWriterDone         chan struct{}
-	ledgerClosed             bool
-	authMu                   sync.Mutex
-	refreshMu                sync.Mutex
-	oauthSessions            map[string]oauthSession
-	authImports              map[string]credentialImportSession
-	ledgerCleanupMu          sync.Mutex
-	lastLedgerCleanup        time.Time
-	healthChecker            *HealthChecker
-	healthCheckJobs          *healthCheckJobManager
-	healthProbeMu            sync.Mutex
-	healthProbes             map[int64]struct{}
-	balanceMu                sync.Mutex
-	balanceCache             map[int64]ProviderUpstreamBalance
-	loginMu                  sync.Mutex
-	loginAttempts            map[string]*rateWindow
-	loginVerifiers           chan struct{}
-	sessionMu                sync.Mutex
-	adminSessions            map[string]adminSession
-	ready                    atomic.Bool
-	pricingSyncMu            sync.Mutex
-	pricingSyncTrigger       chan struct{}
-	ipPool                   *ipPoolManager
-	requestSlots             chan struct{}
-	lastUsedMu               sync.Mutex
-	lastUsedAt               map[int64]time.Time
-	metrics                  gatewayMetrics
-	dpopCache                *dpopSessionCache
+	db                    *sql.DB
+	readDB                *sql.DB
+	cfg                   Config
+	aead                  cipher.AEAD
+	client                *http.Client
+	pricingClient         *http.Client
+	log                   *slog.Logger
+	mu                    sync.Mutex
+	rate                  map[string]*rateWindow
+	routeMu               sync.Mutex
+	providerStates        map[int64]*providerRuntime
+	providerKeyCooldowns  map[int64]time.Time
+	providerKeyRoundRobin map[string]int
+	roundRobinCursor      map[string]int
+	smoothWeights         map[string]map[int64]float64
+	ledgerMu              sync.RWMutex
+	ledgerWrites          chan ledgerWrite
+	ledgerWriterDone      chan struct{}
+	ledgerClosed          bool
+	authMu                sync.Mutex
+	refreshMu             sync.Mutex
+	oauthSessions         map[string]oauthSession
+	authImports           map[string]credentialImportSession
+	ledgerCleanupMu       sync.Mutex
+	lastLedgerCleanup     time.Time
+	healthChecker         *HealthChecker
+	healthCheckJobs       *healthCheckJobManager
+	healthProbeMu         sync.Mutex
+	healthProbes          map[int64]struct{}
+	balanceMu             sync.Mutex
+	balanceCache          map[int64]ProviderUpstreamBalance
+	loginMu               sync.Mutex
+	loginAttempts         map[string]*rateWindow
+	loginVerifiers        chan struct{}
+	sessionMu             sync.Mutex
+	adminSessions         map[string]adminSession
+	ready                 atomic.Bool
+	pricingSyncMu         sync.Mutex
+	pricingSyncTrigger    chan struct{}
+	ipPool                *ipPoolManager
+	requestSlots          chan struct{}
+	lastUsedMu            sync.Mutex
+	lastUsedAt            map[int64]time.Time
+	metrics               gatewayMetrics
+	dpopCache             *dpopSessionCache
 }
 type rateWindow struct {
 	At    time.Time

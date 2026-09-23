@@ -146,9 +146,10 @@ else
   warn "no existing fusiongate:local to tag; rollback will not be available"
 fi
 
-# The quality-detector sidecar was removed in V3.03, so fusiongate is the only
-# service to recreate. Naming a service the compose file no longer defines makes
-# compose exit non-zero, which aborted the deploy before anything was replaced.
+# The detector sidecar that shared FusionGate's network namespace was removed in
+# V3.03, so fusiongate is the only service to recreate. Naming a service the
+# compose file no longer defines makes compose exit non-zero, which aborted the
+# deploy before anything was replaced.
 recreate() {
   docker tag "$1" fusiongate:local
   docker compose -f "$COMPOSE_FILE" up -d --no-build --force-recreate fusiongate

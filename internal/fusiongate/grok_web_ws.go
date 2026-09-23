@@ -269,4 +269,3 @@ func (ws *wsConn) writeFrame(opcode int, data []byte) error {
 	_, err := ws.conn.Write(buf)
 	return err
 }
-
