@@ -220,7 +220,7 @@ func (a *App) readyHealth(w http.ResponseWriter, r *http.Request) {
 
 func validProviderType(t string) bool {
 	switch t {
-	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "grok_console", "grok_web", "gemini_cli":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "anthropic_compatible", "gemini", "codex_oauth", "claude_oauth", "grok_oauth", "grok_console", "grok_web", "gemini_cli":
 		return true
 	}
 	return false
@@ -228,7 +228,7 @@ func validProviderType(t string) bool {
 
 func validEditableProviderType(t string) bool {
 	switch t {
-	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "gemini":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "anthropic_compatible", "gemini":
 		return true
 	}
 	return false

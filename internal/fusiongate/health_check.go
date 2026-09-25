@@ -406,7 +406,7 @@ func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryP
 	if p.Type == "opencode" {
 		protocol = opencodeModelProtocol(model, capabilities)
 	}
-	if p.Type == "anthropic" || p.Type == "claude_oauth" || protocol == opencodeProtocolAnthropic {
+	if isAnthropicProvider(p.Type) || p.Type == "claude_oauth" || protocol == opencodeProtocolAnthropic {
 		endpoint = "/v1/messages"
 		body = map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "temperature": 0, "max_tokens": 32}
 	} else if p.Type == "gemini" || protocol == opencodeProtocolGemini {
@@ -472,7 +472,7 @@ func extractProbeContent(providerType, model, capabilities string, body []byte) 
 	if err := json.Unmarshal(body, &data); err != nil {
 		return "", errors.New("generation response was not valid JSON")
 	}
-	if providerType == "anthropic" || providerType == "claude_oauth" || protocol == opencodeProtocolAnthropic {
+	if isAnthropicProvider(providerType) || providerType == "claude_oauth" || protocol == opencodeProtocolAnthropic {
 		var content string
 		for _, item := range anySlice(data["content"]) {
 			part, _ := item.(map[string]any)
@@ -565,7 +565,7 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 		return "gpt-4o-mini"
 	case "opencode":
 		return ""
-	case "anthropic":
+	case "anthropic", "anthropic_compatible":
 		return "claude-3-5-haiku-20241022"
 	default:
 		return ""
@@ -575,7 +575,7 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider, model string) string {
 	var endpoint string
 	switch p.Type {
-	case "anthropic", "claude_oauth":
+	case "anthropic", "anthropic_compatible", "claude_oauth":
 		endpoint = "/v1/messages"
 	case "grok_oauth":
 		endpoint = "/v1/responses"
@@ -612,7 +612,7 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 		opencodeProtocol = opencodeModelProtocol(asString(body["model"]), "")
 	}
 	// Anthropic 使用不同的请求格式
-	if p.Type == "anthropic" || p.Type == "claude_oauth" {
+	if isAnthropicProvider(p.Type) || p.Type == "claude_oauth" {
 		body = map[string]interface{}{
 			"model": body["model"],
 			"messages": []map[string]string{
@@ -682,7 +682,7 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 		req.Header.Set("anthropic-version", "2023-06-01")
 		req.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
 		req.Header.Set("x-app", "cli")
-	case "anthropic":
+	case "anthropic", "anthropic_compatible":
 		req.Header.Set("x-api-key", p.Credential)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	default:

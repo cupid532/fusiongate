@@ -345,7 +345,7 @@ func officialPricingCatalogName(providerType, upstreamModel string) string {
 		return "grok"
 	case "gemini", "gemini_cli":
 		return "gemini"
-	case "anthropic", "claude_oauth":
+	case "anthropic", "anthropic_compatible", "claude_oauth":
 		return "claude"
 	default:
 		return ""

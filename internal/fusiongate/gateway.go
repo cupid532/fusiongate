@@ -1429,7 +1429,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	compatible := routes[:0]
 	for _, z := range routes {
 		eligible := z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth" || z.Provider.Type == "grok_console" || z.Provider.Type == "grok_web"
-		if z.Provider.Type == "anthropic" {
+		if isAnthropicProvider(z.Provider.Type) {
 			// Some Anthropic-compatible aggregators expose a native OpenAI
 			// Responses endpoint alongside Messages. Opt in per route so a
 			// regular Anthropic provider is never probed with the wrong API.
@@ -1460,7 +1460,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" {
 			return a.responsesFirstCompatibleProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
 		}
-		if protocol == "openai_responses" && z.Provider.Type == "anthropic" && routeProtocolEnabled(z, protocolResponses) {
+		if protocol == "openai_responses" && isAnthropicProvider(z.Provider.Type) && routeProtocolEnabled(z, protocolResponses) {
 			// Keep the provider typed as Anthropic for /v1/messages while using
 			// its explicitly declared native Responses endpoint for this route.
 			w.Header().Set("X-FusionGate-Upstream-Protocol", "responses")
@@ -1530,7 +1530,7 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 	compatible := routes[:0]
 	for _, z := range routes {
 		switch z.Provider.Type {
-		case "anthropic", "claude_oauth":
+		case "anthropic", "anthropic_compatible", "claude_oauth":
 			compatible = append(compatible, z)
 		case "opencode":
 			if opencodeRouteProtocol(z) == opencodeProtocolAnthropic || opencodeRouteProtocol(z) == opencodeProtocolChat && z.Provider.PassthroughMode != "transparent" {
@@ -1643,7 +1643,7 @@ func (a *App) messageTokenCount(w http.ResponseWriter, r *http.Request, key auth
 	fallback := make([]resolvedRoute, 0, len(routes))
 	for _, z := range routes {
 		switch z.Provider.Type {
-		case "anthropic", "claude_oauth":
+		case "anthropic", "anthropic_compatible", "claude_oauth":
 			native = append(native, z)
 		case "opencode":
 			fallback = append(fallback, z)

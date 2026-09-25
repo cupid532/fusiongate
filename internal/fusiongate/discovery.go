@@ -401,7 +401,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 		// /v1/models endpoint. Its CLI endpoint requires the client version
 		// query parameter and returns the list in a top-level models field.
 		paths = []string{basePath + "/models"}
-	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic":
+	case "openai", "grok", "openrouter", "openai_compatible", "opencode", "anthropic", "anthropic_compatible":
 		paths = compatibleDiscoveryPaths(basePath)
 	case "claude_oauth":
 		if strings.HasSuffix(basePath, "/v1") {
@@ -439,7 +439,7 @@ func discoveryURLs(p discoveryProvider) ([]string, error) {
 			q.Set("pageSize", "1000")
 		} else if p.Type == "codex_oauth" {
 			q.Set("client_version", codexCLIVersion())
-		} else if p.Type == "anthropic" || p.Type == "claude_oauth" {
+		} else if isAnthropicProvider(p.Type) || p.Type == "claude_oauth" {
 			q.Set("limit", "1000")
 		}
 		copyURL.RawQuery = q.Encode()
@@ -507,7 +507,7 @@ func setDiscoveryAuth(req *http.Request, p discoveryProvider) {
 		setGrokClientHeaders(req.Header)
 	case "grok_console":
 		req.Header.Set("Authorization", "Bearer "+p.Credential)
-	case "anthropic":
+	case "anthropic", "anthropic_compatible":
 		req.Header.Set("x-api-key", p.Credential)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	case "claude_oauth":
@@ -643,7 +643,7 @@ func addCapability(capabilities, capability string) string {
 }
 
 func (a *App) probeProviderResponses(parent context.Context, p discoveryProvider, model string) bool {
-	if p.Type != "anthropic" || strings.EqualFold(strings.TrimSpace(p.ProtocolPolicy), protocolFixed) {
+	if !isAnthropicProvider(p.Type) || strings.EqualFold(strings.TrimSpace(p.ProtocolPolicy), protocolFixed) {
 		return false
 	}
 	preference, valid := normalizeProtocolPreference(p.ProtocolPreference)
@@ -684,7 +684,7 @@ func (a *App) probeProviderResponses(parent context.Context, p discoveryProvider
 }
 
 func (a *App) applyDiscoveredProtocolCapabilities(parent context.Context, p discoveryProvider, models []discoveredModel) []discoveredModel {
-	if len(models) == 0 || p.Type != "anthropic" {
+	if len(models) == 0 || !isAnthropicProvider(p.Type) {
 		return models
 	}
 	probeModel := ""

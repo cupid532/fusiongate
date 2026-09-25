@@ -29,7 +29,8 @@ import { notifyError } from "@/lib/notify"
 const providerTypes = [
   { value: "openai_compatible", label: "OpenAI 兼容" },
   { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Anthropic" },
+  { value: "anthropic", label: "Anthropic 官方" },
+  { value: "anthropic_compatible", label: "Anthropic 兼容" },
   { value: "gemini", label: "Gemini" },
   { value: "openrouter", label: "OpenRouter" },
   { value: "grok", label: "Grok" },
@@ -226,7 +227,8 @@ export function ProviderDialog({
             </div>
             <div className="col-span-2 flex flex-col gap-1.5">
               <Label>API 地址</Label>
-              <Input value={form.baseURL} onChange={(e) => set("baseURL", e.target.value)} placeholder="https://api.example.com" className="font-mono text-xs" />
+              <Input value={form.baseURL} onChange={(e) => set("baseURL", e.target.value)} placeholder={form.type === "anthropic" ? "https://api.anthropic.com" : form.type === "anthropic_compatible" ? "https://api.example.com/v1" : "https://api.example.com"} className="font-mono text-xs" />
+              {form.type === "anthropic_compatible" && <span className="text-xs text-muted-foreground">填写服务根地址，可带 /v1；不要填写 /messages。</span>}
             </div>
             <div className="col-span-2 space-y-2 rounded-md border p-3">
               <div className="flex items-center justify-between gap-3">

@@ -13,6 +13,7 @@ import (
 )
 
 func TestAnthropicDiscoveryAutomaticallyDetectsResponses(t *testing.T) {
+
 	var responseProbes atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -56,6 +57,35 @@ func TestAnthropicDiscoveryAutomaticallyDetectsResponses(t *testing.T) {
 	}
 	if !matchesCapability(capabilities, "protocol:responses") {
 		t.Fatalf("capabilities=%q", capabilities)
+	}
+}
+
+func TestAnthropicCompatibleDiscovery(t *testing.T) {
+	testAnthropicCompatibleDiscovery(t)
+}
+
+func testAnthropicCompatibleDiscovery(t *testing.T) {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.URL.Query().Get("limit") != "1000" || r.Header.Get("x-api-key") != "secret" || r.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Errorf("discovery query=%q key=%q version=%q", r.URL.RawQuery, r.Header.Get("x-api-key"), r.Header.Get("anthropic-version"))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": []any{map[string]any{"id": "claude-compatible"}}})
+	}))
+	defer upstream.Close()
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "anthropic-compatible", "anthropic_compatible", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	discovery, err := a.discoverProviderModels(context.Background(), providerID)
+	if err != nil || len(discovery.Models) != 1 || discovery.Models[0].UpstreamID != "claude-compatible" {
+		t.Fatalf("discovery=%#v err=%v", discovery, err)
 	}
 }
 

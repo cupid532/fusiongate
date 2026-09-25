@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.07
+
+- Add a dedicated Anthropic-compatible provider type for third-party Messages API upstreams, including model discovery, health checks, native Messages routing and OpenAI Chat translation. Responses is only used when explicitly detected for the route.
+
 ## V3.06
 
 - Remove the remaining quality-detector deployment leftovers. The sidecar service is gone from `compose.yml` and both production Compose templates, the `FUSIONGATE_QUALITY_DETECTOR_*` variables are gone from `.env.example` and every Compose file, and `deploy/quality-detector.Dockerfile` is deleted. The Go application never read those variables or port 18789, so deployments can no longer abort while building a sidecar image that no longer exists.

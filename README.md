@@ -2,7 +2,7 @@
 
 根目录 [`VERSION`](VERSION) 是发布入口，并且必须与 [`internal/fusiongate/version.go`](internal/fusiongate/version.go) 完全一致。所有 Agent 和贡献者在更新前必须遵循 [AGENTS.md](AGENTS.md) 中的版本递增规则。
 
-面向个人和小型可信团队的**自托管 AI 账号与 API 聚合网关**。它将多个上游渠道映射成统一模型名，并通过一把下游 API Key 提供 OpenAI 兼容访问和完整请求账本。
+面向个人和小型可信团队的**自托管 AI 账号与 API 聚合网关**。它将多个上游渠道映射成统一模型名，并通过一把下游 API Key 提供 OpenAI 与 Anthropic 兼容访问和完整请求账本。
 
 已实现 API Key 渠道与基础协议适配，并支持 Codex、Claude 与 Grok 的官方 OAuth 授权及常见 OAuth JSON 迁移。FusionGate 只接收用户主动完成的官方授权或用户主动导出的凭据文件，不保存账号密码、不抓取 Cookie，也不绕过服务商访问控制。
 
@@ -50,7 +50,7 @@ OpenCode / SDK / 应用
 - Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
 - 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
 - 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
-- Provider 管理：OpenAI 官方 Key、Grok / xAI 官方 Key（默认 `https://api.x.ai`）、OpenRouter、任意 OpenAI Compatible、Anthropic、Gemini，以及 Codex / Claude / Grok OAuth；官方 API Key 与 OAuth 认证文件是独立渠道类型。普通 API 渠道可随时编辑名称、类型、Base URL、API Key 与调度设置，更换 Key 无需删除渠道或重建模型路由；保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
+- Provider 管理：OpenAI 官方 Key、Grok / xAI 官方 Key（默认 `https://api.x.ai`）、OpenRouter、任意 OpenAI Compatible、Anthropic 官方与 Anthropic 兼容渠道、Gemini，以及 Codex / Claude / Grok OAuth；官方 API Key 与 OAuth 认证文件是独立渠道类型。普通 API 渠道可随时编辑名称、类型、Base URL、API Key 与调度设置，更换 Key 无需删除渠道或重建模型路由；保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
 - IP 池与固定出口：默认所有渠道使用服务器本机直连；管理员可粘贴 SOCKS4/5、HTTP(S)、Shadowsocks、Trojan、VLESS（含 Reality）、VMess、Hysteria/Hysteria2、TUIC、AnyTLS 分享链接，或单个受支持的 sing-box outbound JSON，并为普通 API 渠道或 OAuth 认证文件指定节点。转发、模型识别、检活、OAuth 续签和额度查询使用同一渠道出口；节点故障时严格失败并交给现有渠道故障转移，不会静默泄漏到本机直连。
 - 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE）、Grok 设备授权，以及常见工具导出的 Codex / Claude / Grok OAuth JSON。JSON 可一次选择多个文件，必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。认证文件支持按厂商筛选、批量选择和敏感凭据 JSON 导出。
 - 安全检活：后台仅对允许检活的 OAuth 渠道做低成本模型列表连通性探测，结果显示为“可连接”而非“可用”；管理员手动启动模型检活时才发送真实最小生成请求并记录首字节/总耗时。普通 API 渠道除渠道总开关外，每张 Key 还有独立检活开关；结果按 Key × 模型持久保存，某张 Key 的失败或停检不会污染同渠道其他 Key。禁止后不发送探测请求，但真实业务请求仍参与失败统计和熔断。任务采用低并发、单项超时、重复探测互斥、可取消和逐项结果展示。
@@ -64,7 +64,7 @@ OpenCode / SDK / 应用
   - OpenAI Compatible：Chat、Responses、Images、Audio、Embeddings；Chat / Responses 支持安全流式转发。Responses 请求会优先调用上游 `/v1/responses`，仅在尚未向客户端提交输出且该协议失败时回退到 Chat Completions，并通过 `X-FusionGate-Upstream-Protocol` 标明最终上游协议。
   - Codex OAuth Plus 生图兼容：发现到 `gpt-5.5` 时自动提供 `gpt-image-1` 与 `gpt-image-2` 图像别名；标准 `POST /v1/images/generations` 会转换成 Codex Responses 的 `image_generation` 内置工具调用，并把 SSE 中的真实图片结果转换回 OpenAI `b64_json` 响应。Codex OAuth 路径每次只支持 `n=1`（ChatGPT 账号侧工具一次只出一张，且并发 fan-out 易被限流/拖垮）；需要多图时请对 OpenAI Compatible 生图渠道传 `n`，或对 Codex 路径发起多次请求。支持上游接受的 `size`、`output_format`、`output_compression`、`background`、`moderation` 与 `partial_images` 参数；不伪造 URL 或透明背景能力。Codex 生图默认至少 180s 超时下限。
   - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
-  - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 支持原生代理，也可安全转换到 OpenAI / OpenRouter / OpenAI Compatible / Grok Chat，覆盖文本、图片、工具调用、工具结果以及 Anthropic SSE 流。
+  - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 支持 Anthropic 官方与兼容上游的原生代理，也可安全转换到 OpenAI / OpenRouter / OpenAI Compatible / Grok Chat，覆盖文本、图片、工具调用、工具结果以及 Anthropic SSE 流。
 - 下游 API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限、到期时间、USD 费用预算与安全再次复制；到期或累计估算费用达到预算后会停止接受新请求。预算只是记账上限，**不会限制并发**：只要预算还有余额，任意数量的并发请求都会被放行。费用在上游返回 usage 后结算，因此预算用尽时仍在途的请求会照常结算，可能产生少量超额；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。
 - 请求账本实时显示进行中请求、逐秒读数的动态运行时间（区分“等待首字节”与“输出中”）、Token 明细（输入/缓存/推理/输出）、每次故障转移尝试及上游首字节耗时；多 Key 渠道会按尝试显示实际选中的 Key 名称和脱敏提示，不保存明文上游凭据。滞留的进行中记录会被标记为“疑强停滞”，启动与周期清扫会自动关账遗留的开行，避免僵尸记录永久显示进行中。
 - 请求账本支持精确到秒的本地日期时间范围、状态、渠道、模型/协议/请求 ID/错误关键词与 50/100/200 条返回数量组合筛选；筛选在服务端执行，实时轮询保持当前条件。

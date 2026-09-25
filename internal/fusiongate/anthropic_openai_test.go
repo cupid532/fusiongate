@@ -381,9 +381,21 @@ func TestMessagesNonStreamUsesOpenAIUpstreamSSE(t *testing.T) {
 }
 
 func TestMessagesKeepsNativeAnthropicRoute(t *testing.T) {
+	testNativeAnthropicCompatibleMessagesRoute(t, "anthropic")
+}
+
+func TestMessagesKeepsNativeAnthropicCompatibleRoute(t *testing.T) {
+	testNativeAnthropicCompatibleMessagesRoute(t, "anthropic_compatible")
+}
+
+func testNativeAnthropicCompatibleMessagesRoute(t *testing.T, providerType string) {
+	t.Helper()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			t.Errorf("path=%s", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "anthropic-secret" || r.Header.Get("anthropic-version") != "2023-06-01" {
+			t.Errorf("Anthropic headers: api-key=%q version=%q", r.Header.Get("x-api-key"), r.Header.Get("anthropic-version"))
 		}
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -410,7 +422,7 @@ func TestMessagesKeepsNativeAnthropicRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	providerID := insertTestProvider(t, a, "native", "anthropic", upstream.URL, "anthropic-secret", 1, 100, "normalized", "any", 0, 3, 30)
+	providerID := insertTestProvider(t, a, "native", providerType, upstream.URL, "anthropic-secret", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "claude-native", "native-claude", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/messages", key, `{"model":"claude-native","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`, "claude-cli/1")

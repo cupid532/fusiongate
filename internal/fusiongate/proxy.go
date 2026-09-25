@@ -670,8 +670,11 @@ func setProviderAuth(req *http.Request, z resolvedRoute) error {
 		if z.Provider.Type == "opencode" {
 			ensureFusionGateUserAgent(req.Header)
 		}
-	case "anthropic":
+	case "anthropic", "anthropic_compatible":
 		req.Header.Set("x-api-key", z.Credential)
+		if req.Header.Get("anthropic-version") == "" {
+			req.Header.Set("anthropic-version", "2023-06-01")
+		}
 	case "claude_oauth":
 		req.Header.Set("Authorization", "Bearer "+z.Credential)
 		beta := req.Header.Get("Anthropic-Beta")
