@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { HealthCheckJob, HealthCheckPreview } from "@/lib/types"
-import { HealthCheckDialog } from "./HealthCheckDialog"
+import { HealthCheckDialog, ProviderHealthPanel } from "./HealthCheckDialog"
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
@@ -185,5 +185,21 @@ describe("HealthCheckDialog", () => {
     renderDialog({ providerIds: [7, 8], title: "批量检活", autoStart: true })
     await screen.findByText("渠道已停用，无法检活")
     expect(screen.getByText("重试")).toBeTruthy()
+  })
+
+  it("embeds the health panel without a dialog and waits until active to fetch", async () => {
+    const calls = mockFetch((url) => {
+      if (url.endsWith("/health-check-targets")) return json(preview())
+      if (url === "/api/admin/health-checks") return json({ active: false })
+      return undefined
+    })
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const panel = (open: boolean) => <QueryClientProvider client={qc}><ProviderHealthPanel open={open} providerId={7} /></QueryClientProvider>
+    const { rerender } = render(panel(false))
+    expect(calls).toHaveLength(0)
+    rerender(panel(true))
+    await screen.findByText("gpt-live")
+    expect(screen.queryByRole("dialog")).toBeNull()
+    expect(calls.some((call) => call.url.endsWith("/health-check-targets"))).toBe(true)
   })
 })

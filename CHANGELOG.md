@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.10
+
+- Move per-channel Key, model, balance, health-check, archive and delete actions from the collapsed upstream-channel menu into a card-based channel management workspace. Keep channel settings and each independent operation on their existing save paths.
+
 ## V3.09
 
 - Add an upstream interface method setting for channels, with adaptive selection or a fixed Chat Completions, Responses, or Messages endpoint where supported. Validate unsupported combinations and use the selected endpoint for forwarding and health checks.

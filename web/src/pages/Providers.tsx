@@ -1,9 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { createPortal } from "react-dom"
+import { useMemo, useState } from "react"
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
-import { Plus, Trash2, RefreshCw, Search, Settings2, HeartPulse, Wallet, KeySquare, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink, Server, CheckCircle2, Pause, MoreHorizontal } from "lucide-react"
+import { Plus, RefreshCw, Search, HeartPulse, DatabaseBackup, Archive, FolderTree, GripVertical, ListChecks, ExternalLink, Server, CheckCircle2, Pause } from "lucide-react"
 import { api } from "@/lib/api"
 import { remainingBarTone } from "@/lib/codex-windows"
 import { reorderProviderIDs } from "@/lib/provider-order"
@@ -19,13 +18,10 @@ import { Switch } from "@/components/ui/switch"
 import { ProviderDialog } from "@/components/ProviderDialog"
 import { ProviderProtocolLabel } from "@/components/ProtocolMethodSelect"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
-import { BalanceDialog } from "@/components/BalanceDialog"
-import { ProviderKeysDialog } from "@/components/ProviderKeysDialog"
-import { ProviderModelManagementDialog } from "@/components/ProviderModelManagementDialog"
 import { ExportImportDialog } from "@/components/ExportImportDialog"
 import { GroupManager } from "@/components/GroupManager"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
-import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
+import { useConfirm } from "@/components/ui/confirm"
 import { QueryError } from "@/components/ui/query-error"
 import { StatCard } from "@/components/ui/stat-card"
 
@@ -55,113 +51,15 @@ function statusBadge(p: Provider) {
   return <Badge variant="success">运行中</Badge>
 }
 
-const MENU_GAP = 4
-const VIEWPORT_MARGIN = 8
-
-function ActionMenu({ items }: { items: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean; disabledReason?: string; className?: string }[] }) {
-  const [open, setOpen] = useState(false)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false) }
-    // The menu is pinned to the viewport, so any scroll or resize would leave
-    // it floating away from its button; closing is simpler than tracking.
-    const close = (e: Event) => { if (!menuRef.current?.contains(e.target as Node)) setOpen(false) }
-    document.addEventListener("keydown", onKey)
-    window.addEventListener("scroll", close, true)
-    window.addEventListener("resize", close)
-    return () => {
-      document.removeEventListener("keydown", onKey)
-      window.removeEventListener("scroll", close, true)
-      window.removeEventListener("resize", close)
-    }
-  }, [open])
-
-  // The table sits in an overflow-x-auto wrapper, which also clips vertically,
-  // so an absolutely positioned menu on the last rows was cut off. The menu is
-  // portalled to <body> and placed from the trigger's rect instead, opening
-  // upward when there is no room below.
-  useLayoutEffect(() => {
-    const trigger = triggerRef.current?.getBoundingClientRect()
-    const menu = menuRef.current
-    if (!open || !trigger || !menu) return
-    const { offsetHeight: h, offsetWidth: w } = menu
-    const vh = window.innerHeight
-    let top = trigger.bottom + MENU_GAP
-    if (top + h > vh - VIEWPORT_MARGIN) {
-      const above = trigger.top - MENU_GAP - h
-      top = above >= VIEWPORT_MARGIN ? above : Math.max(VIEWPORT_MARGIN, vh - VIEWPORT_MARGIN - h)
-    }
-    const left = Math.max(VIEWPORT_MARGIN, Math.min(trigger.right - w, window.innerWidth - VIEWPORT_MARGIN - w))
-    // Written straight to the node: this runs before paint, so the menu never
-    // flashes at its unplaced origin, and no second render is needed.
-    menu.style.top = `${top}px`
-    menu.style.left = `${left}px`
-    menu.style.visibility = "visible"
-  }, [open])
-
-  return (
-    <>
-      <Button ref={triggerRef} variant="ghost" size="icon" onClick={() => setOpen((v) => !v)} aria-label="更多操作" aria-haspopup="menu" aria-expanded={open}>
-        <MoreHorizontal className="h-4 w-4" />
-      </Button>
-      {open && createPortal(
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            ref={menuRef}
-            role="menu"
-            style={{ top: 0, left: 0, visibility: "hidden" }}
-            className="fixed w-48 max-h-[calc(100vh-16px)] overflow-y-auto rounded-lg bg-popover shadow-lg ring-1 ring-border/50 z-50 py-1"
-          >
-            {items.map((item, i) => (
-              <button
-                key={i}
-                role="menuitem"
-                disabled={item.disabled}
-                title={item.disabledReason}
-                onClick={() => {
-                  if (item.disabled) return
-                  setOpen(false)
-                  item.onClick()
-                }}
-                className={cn(
-                  "flex w-full items-center gap-2 px-3 py-2 text-sm rounded-md",
-                  item.disabled ? "opacity-40 cursor-not-allowed" : "hover:bg-muted cursor-pointer",
-                  item.className
-                )}
-              >
-                {item.icon}
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </>,
-        document.body,
-      )}
-    </>
-  )
-}
-
 export function Providers() {
   const qc = useQueryClient()
   const confirm = useConfirm()
-  const confirmDelete = useConfirmDelete()
   const [animateParent] = useAutoAnimate({ duration: 200 })
   const [filter, setFilter] = useState<Filter>("all")
   const [q, setQ] = useState("")
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
-  const [healthCheckOpen, setHealthCheckOpen] = useState(false)
-  const [healthCheckProvider, setHealthCheckProvider] = useState<Provider | null>(null)
   const [batchHealthOpen, setBatchHealthOpen] = useState(false)
-  const [balanceOpen, setBalanceOpen] = useState(false)
-  const [balanceProvider, setBalanceProvider] = useState<Provider | null>(null)
-  const [keysOpen, setKeysOpen] = useState(false)
-  const [keysProvider, setKeysProvider] = useState<Provider | null>(null)
-  const [modelsProvider, setModelsProvider] = useState<{ id: number; name: string } | null>(null)
   const [backupOpen, setBackupOpen] = useState(false)
   const [groupOpen, setGroupOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
@@ -226,11 +124,6 @@ export function Providers() {
   const update = useMutation({
     mutationFn: async ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
       api(`/api/admin/providers/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
-  })
-
-  const remove = useMutation({
-    mutationFn: async (id: number) => api(`/api/admin/providers/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["providers"] }),
   })
 
@@ -529,31 +422,11 @@ export function Providers() {
                       <td className="px-4 py-3 text-xs text-muted-foreground">{p.model_count} 个</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          <Button variant="ghost" size="icon" onClick={() => { setEditing(p); setDialogOpen(true) }} aria-label={`编辑 ${p.name}`} title="编辑渠道">
-                            <Settings2 className="h-4 w-4" />
-                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => { setEditing(p); setDialogOpen(true) }} aria-label={`管理 ${p.name}`}>管理</Button>
                           <Switch
                             checked={p.enabled}
                             onCheckedChange={(v) => update.mutate({ id: p.id, patch: { enabled: v } })}
                             aria-label={`${p.name} 开关`}
-                          />
-                          <ActionMenu
-                            items={[
-                              { icon: <ListChecks className="h-4 w-4" />, label: "模型管理", onClick: () => setModelsProvider(p) },
-                              {
-                                icon: <HeartPulse className="h-4 w-4" />, label: "模型检活",
-                                onClick: () => { setHealthCheckProvider(p); setHealthCheckOpen(true) },
-                                disabled: p.archived || !p.enabled || !p.health_check_enabled,
-                                disabledReason: p.archived ? "已归档的渠道不能检活" : !p.enabled ? "渠道已停用，无法检活" : !p.health_check_enabled ? "该渠道已关闭检活，可在编辑中开启" : undefined,
-                              },
-                              { icon: <Wallet className="h-4 w-4" />, label: "余额设置", onClick: () => { setBalanceProvider(p); setBalanceOpen(true) } },
-                              { icon: <KeySquare className="h-4 w-4" />, label: "Key 管理", onClick: () => { setKeysProvider(p); setKeysOpen(true) } },
-                              { icon: <Archive className={cn("h-4 w-4", p.archived && "text-amber-500")} />, label: p.archived ? "取消归档" : "归档", onClick: () => update.mutate({ id: p.id, patch: { archived: !p.archived } }) },
-                              {
-                                icon: <Trash2 className="h-4 w-4" />, label: "删除", className: "text-destructive",
-                                onClick: async () => { if (await confirmDelete(`渠道「${p.name}」`, "该渠道下的 Key 与模型路由也会失效。")) remove.mutate(p.id) },
-                              },
-                            ]}
                           />
                         </div>
                       </td>
@@ -566,15 +439,7 @@ export function Providers() {
         </CardContent>
       </Card>
 
-      <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} onCreated={(provider) => setModelsProvider(provider)} />
-      {healthCheckProvider && (
-        <HealthCheckDialog
-          open={healthCheckOpen}
-          onOpenChange={setHealthCheckOpen}
-          providerIds={[healthCheckProvider.id]}
-          title={`模型检活 · ${healthCheckProvider.name}`}
-        />
-      )}
+      <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} />
       {batchHealthOpen && (
         <HealthCheckDialog
           open={batchHealthOpen}
@@ -584,24 +449,6 @@ export function Providers() {
           autoStart
         />
       )}
-      {balanceProvider && (
-        <BalanceDialog
-          open={balanceOpen}
-          onOpenChange={setBalanceOpen}
-          providerId={balanceProvider.id}
-          providerName={balanceProvider.name}
-        />
-      )}
-      {keysProvider && (
-        <ProviderKeysDialog
-          open={keysOpen}
-          onOpenChange={setKeysOpen}
-          providerId={keysProvider.id}
-          providerName={keysProvider.name}
-          onManageModels={() => { setKeysOpen(false); setModelsProvider(keysProvider) }}
-        />
-      )}
-      {modelsProvider && <ProviderModelManagementDialog open={!!modelsProvider} onOpenChange={(value) => { if (!value) setModelsProvider(null) }} providerId={modelsProvider.id} providerName={modelsProvider.name} />}
       <ExportImportDialog open={backupOpen} onOpenChange={setBackupOpen} />
       <GroupManager open={groupOpen} onOpenChange={setGroupOpen} />
     </motion.div>

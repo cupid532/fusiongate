@@ -6,7 +6,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -32,29 +31,21 @@ const multiplierLabels: Record<string, string> = {
   other: "其他",
 }
 
-export function BalanceDialog({
-  open,
-  onOpenChange,
-  providerId,
-  providerName,
-}: {
-  open: boolean
-  onOpenChange: (v: boolean) => void
-  providerId: number
-  providerName: string
-}) {
+type PanelProps = { open: boolean; providerId: number; providerName?: string; onClose?: () => void; onSaved?: () => void }
+
+export function ProviderBalancePanel({ open, providerId, onClose, onSaved }: PanelProps) {
   const qc = useQueryClient()
   const [usd, setUsd] = useState("")
   const [multipliers, setMultipliers] = useState<Record<string, string>>({})
 
-  const { data: balance } = useQuery({
+  const { data: balance, isLoading, error } = useQuery({
     queryKey: ["balance", providerId],
     queryFn: () => api<BalanceResponse>(`/api/admin/providers/${providerId}/balance`),
     enabled: open,
   })
 
   useEffect(() => {
-    if (balance) {
+    if (open && balance) {
       setUsd(balance.manual?.configured_micros != null ? (balance.manual.configured_micros / 1_000_000).toString() : "")
       const m: Record<string, string> = {}
       for (const k of Object.keys(multiplierLabels)) {
@@ -62,7 +53,7 @@ export function BalanceDialog({
       }
       setMultipliers(m)
     }
-  }, [balance])
+  }, [open, balance])
 
   const save = useMutation({
     mutationFn: async () => {
@@ -76,19 +67,14 @@ export function BalanceDialog({
       return api(`/api/admin/providers/${providerId}`, { method: "PATCH", body: JSON.stringify(body) })
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["balance", providerId] })
-      qc.invalidateQueries({ queryKey: ["providers"] })
-      onOpenChange(false)
+      void qc.invalidateQueries({ queryKey: ["balance", providerId] })
+      void qc.invalidateQueries({ queryKey: ["providers"] })
+      onSaved?.()
     },
   })
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>余额设置 · {providerName}</DialogTitle>
-          <DialogDescription>设置渠道余额基线与模型分类换算倍率，用于计算余额消耗；不会替代每张 Key 的成本倍率。</DialogDescription>
-        </DialogHeader>
+    <div className="space-y-4">
 
         {balance ? (
           <div className="space-y-4">
@@ -127,18 +113,33 @@ export function BalanceDialog({
             </div>
           </div>
         ) : (
-          <div className="py-6 text-center text-sm text-muted-foreground">加载中…</div>
+          <div className="py-6 text-center text-sm text-muted-foreground">{isLoading ? "加载中…" : error instanceof Error ? error.message : "读取余额失败"}</div>
         )}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+        {save.isError && <div role="alert" className="text-sm text-destructive">{save.error instanceof Error ? save.error.message : "保存余额失败"}</div>}
+        <div className="flex justify-end gap-2">
+          {onClose && <Button variant="outline" onClick={onClose}>取消</Button>}
+          <Button onClick={() => save.mutate()} disabled={save.isPending || !balance}>
             {save.isPending ? "保存中…" : "保存"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+    </div>
   )
+}
+
+export function BalanceDialog({ open, onOpenChange, providerId, providerName }: {
+  open: boolean
+  onOpenChange: (v: boolean) => void
+  providerId: number
+  providerName: string
+}) {
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="max-w-lg">
+      <DialogHeader>
+        <DialogTitle>余额设置 · {providerName}</DialogTitle>
+        <DialogDescription>设置渠道余额基线与模型分类换算倍率，用于计算余额消耗；不会替代每张 Key 的成本倍率。</DialogDescription>
+      </DialogHeader>
+      <ProviderBalancePanel open={open} providerId={providerId} onClose={() => onOpenChange(false)} onSaved={() => onOpenChange(false)} />
+    </DialogContent>
+  </Dialog>
 }

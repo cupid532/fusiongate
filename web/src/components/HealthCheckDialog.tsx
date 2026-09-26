@@ -44,8 +44,11 @@ function keyLabel(name?: string, hint?: string) {
   return name || hint || "默认"
 }
 
-export function HealthCheckDialog({ open, onOpenChange, providerIds, title, autoStart = false }: Props) {
+type PanelProps = { open: boolean; providerId?: number; providerIds?: number[]; title?: string; onClose?: () => void; autoStart?: boolean }
+
+export function ProviderHealthPanel({ open, providerId, providerIds: batchIds, onClose, autoStart = false }: PanelProps) {
   const qc = useQueryClient()
+  const providerIds = useMemo(() => batchIds ?? (providerId == null ? [] : [providerId]), [batchIds, providerId])
   const single = providerIds.length === 1 ? providerIds[0] : null
 
   const [job, setJob] = useState<HealthCheckJob | null>(null)
@@ -80,7 +83,7 @@ export function HealthCheckDialog({ open, onOpenChange, providerIds, title, auto
     setSelectedKeys(new Set())
     setProblemsOnly(false)
     autoStarted.current = false
-  }, [open])
+  }, [open, single])
 
   // While we have no job of our own, keep an eye on the single manual slot so
   // the start buttons can say "busy" instead of failing on click.
@@ -108,7 +111,7 @@ export function HealthCheckDialog({ open, onOpenChange, providerIds, title, auto
   // Poll our job until it settles, then refresh the pages that show health.
   useEffect(() => {
     const id = job?.id
-    if (!id || !isActive(job)) return
+    if (!open || !id || !isActive(job)) return
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const poll = async () => {
@@ -127,7 +130,7 @@ export function HealthCheckDialog({ open, onOpenChange, providerIds, title, auto
       cancelled = true
       if (timer) clearTimeout(timer)
     }
-  }, [job?.id, job?.status, invalidate]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, job?.id, job?.status, invalidate]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const previewData = preview.data
   const routes: HealthCheckRoutePreview[] = useMemo(() => previewData?.routes ?? [], [previewData])
@@ -226,14 +229,7 @@ export function HealthCheckDialog({ open, onOpenChange, providerIds, title, auto
   const busy = starting || (blocker != null && !job)
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[88vh] max-w-3xl flex-col overflow-hidden">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>
-            {single != null ? "向每个模型发送一次极短的生成请求，验证 Key、路由与上游都真正可用。" : `对 ${providerIds.length} 个认证的全部已启用模型逐个探测。`}
-          </DialogDescription>
-        </DialogHeader>
+    <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
 
         {!job && blocker && (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
@@ -344,7 +340,7 @@ export function HealthCheckDialog({ open, onOpenChange, providerIds, title, auto
             {error && <div className="text-sm text-destructive">{error}</div>}
 
             <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
+              {onClose && <Button variant="outline" onClick={onClose}>取消</Button>}
               <Button
                 variant="outline"
                 onClick={() => void start("selected")}
@@ -364,7 +360,7 @@ export function HealthCheckDialog({ open, onOpenChange, providerIds, title, auto
             {error ? <span className="text-destructive">{error}</span> : blocker ? "等待上一项检活结束…" : "正在启动检活…"}
             {error && (
               <div className="mt-4 flex justify-center gap-2">
-                <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+                {onClose && <Button variant="outline" onClick={onClose}>关闭</Button>}
                 <Button onClick={() => void start("all")} disabled={busy}>重试</Button>
               </div>
             )}
@@ -440,11 +436,24 @@ export function HealthCheckDialog({ open, onOpenChange, providerIds, title, auto
               {single != null && !isActive(job) && (
                 <Button variant="outline" onClick={() => { setJob(null); setError(""); void preview.refetch() }}>再测一次</Button>
               )}
-              <Button variant="outline" onClick={() => onOpenChange(false)}>关闭</Button>
+              {onClose && <Button variant="outline" onClick={onClose}>关闭</Button>}
             </div>
           </div>
         )}
-      </DialogContent>
-    </Dialog>
+    </div>
   )
+}
+
+export function HealthCheckDialog({ open, onOpenChange, providerIds, title, autoStart = false }: Props) {
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="flex max-h-[88vh] max-w-3xl flex-col overflow-hidden">
+      <DialogHeader>
+        <DialogTitle>{title}</DialogTitle>
+        <DialogDescription>
+          {providerIds.length === 1 ? "向每个模型发送一次极短的生成请求，验证 Key、路由与上游都真正可用。" : `对 ${providerIds.length} 个认证的全部已启用模型逐个探测。`}
+        </DialogDescription>
+      </DialogHeader>
+      <ProviderHealthPanel open={open} providerIds={providerIds} autoStart={autoStart} onClose={() => onOpenChange(false)} />
+    </DialogContent>
+  </Dialog>
 }
