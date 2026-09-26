@@ -95,15 +95,24 @@ describe("ProviderDialog interface method", () => {
     expect(requests.some((r) => r.url === "/api/admin/providers/7")).toBe(false)
   })
 
+  it("saves and clears the merchant URL with channel parameters", async () => {
+    setup()
+    show(provider({ website_url: "https://shop.example.com/old" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "商家地址（选填）" }), { target: { value: "https://shop.example.com/topup" } })
+    fireEvent.click(screen.getByRole("button", { name: "保存渠道参数" }))
+    await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7")?.body).toMatchObject({ website_url: "https://shop.example.com/topup" }))
+  })
+
   it("creates with the first Key and continues in the Key card", async () => {
     setup()
     show(null)
     fireEvent.change(screen.getByRole("textbox", { name: "名称" }), { target: { value: "新渠道" } })
     fireEvent.change(screen.getByRole("textbox", { name: "API 地址" }), { target: { value: "https://new.example" } })
+    fireEvent.change(screen.getByRole("textbox", { name: "商家地址（选填）" }), { target: { value: "https://merchant.example/credit" } })
     fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
     fireEvent.change(screen.getByRole("textbox", { name: "首张 API Key" }), { target: { value: "sk-first" } })
     fireEvent.click(screen.getByRole("button", { name: "创建渠道" }))
-    await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers")?.body).toMatchObject({ credential: "sk-first", name: "新渠道" }))
+    await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers")?.body).toMatchObject({ credential: "sk-first", name: "新渠道", website_url: "https://merchant.example/credit" }))
     await waitFor(() => expect(screen.getByRole("heading", { name: "管理渠道 · 新渠道" })).toBeTruthy())
     expect(screen.getByRole("button", { name: "添加 Key" })).toBeTruthy()
   })

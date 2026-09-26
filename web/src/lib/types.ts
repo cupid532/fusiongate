@@ -36,6 +36,7 @@ export interface Provider {
   name: string
   type: string
   base_url: string
+  website_url?: string
   credential_hint: string
   auth_kind: string
   auth_source: string

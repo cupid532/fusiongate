@@ -18,6 +18,70 @@ func patchProviderForTest(t *testing.T, a *App, id int64, body string) *httptest
 	return rec
 }
 
+func TestProviderWebsiteCreateEditAndFallback(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	create := httptest.NewRecorder()
+	a.providers(create, httptest.NewRequest(http.MethodPost, "/api/admin/providers", strings.NewReader(`{"name":"website-provider","type":"openai_compatible","baseURL":"https://api.example.com/v1","website_url":" https://shop.example.com/topup?tab=credit ","credential":"sk-website","auto_discover":false}`)), adminCtx{})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", create.Code, create.Body.String())
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(want string) {
+		t.Helper()
+		var stored string
+		if err := a.db.QueryRow(`SELECT website_url FROM providers WHERE id=?`, created.ID).Scan(&stored); err != nil || stored != want {
+			t.Fatalf("stored website=%q want=%q err=%v", stored, want, err)
+		}
+		listed := httptest.NewRecorder()
+		a.providers(listed, httptest.NewRequest(http.MethodGet, "/api/admin/providers", nil), adminCtx{})
+		if listed.Code != http.StatusOK {
+			t.Fatalf("list status=%d body=%s", listed.Code, listed.Body.String())
+		}
+		var providers []Provider
+		if err := json.Unmarshal(listed.Body.Bytes(), &providers); err != nil {
+			t.Fatal(err)
+		}
+		if len(providers) != 1 || providers[0].WebsiteURL != want || providers[0].BaseURL != "https://api.example.com/v1" {
+			t.Fatalf("listed providers=%+v want website=%q", providers, want)
+		}
+	}
+	check("https://shop.example.com/topup?tab=credit")
+	for _, invalid := range []string{"javascript:alert(1)", "ftp://shop.example.com", "https://user:pass@shop.example.com", "/relative"} {
+		body, _ := json.Marshal(map[string]string{"website_url": invalid})
+		rec := patchProviderForTest(t, a, created.ID, string(body))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid website %q status=%d body=%s", invalid, rec.Code, rec.Body.String())
+		}
+	}
+	check("https://shop.example.com/topup?tab=credit")
+	patched := patchProviderForTest(t, a, created.ID, `{"website_url":"https://new.example.com/billing"}`)
+	if patched.Code != http.StatusOK {
+		t.Fatalf("patch status=%d body=%s", patched.Code, patched.Body.String())
+	}
+	check("https://new.example.com/billing")
+	cleared := patchProviderForTest(t, a, created.ID, `{"website_url":"  "}`)
+	if cleared.Code != http.StatusOK {
+		t.Fatalf("clear status=%d body=%s", cleared.Code, cleared.Body.String())
+	}
+	check("")
+	badCreate := httptest.NewRecorder()
+	a.providers(badCreate, httptest.NewRequest(http.MethodPost, "/api/admin/providers", strings.NewReader(`{"name":"bad-website","type":"openai_compatible","baseURL":"https://api.example.com","website_url":"javascript:alert(1)","credential":"sk-bad","auto_discover":false}`)), adminCtx{})
+	if badCreate.Code != http.StatusBadRequest {
+		t.Fatalf("bad create status=%d body=%s", badCreate.Code, badCreate.Body.String())
+	}
+}
+
 func TestEditAPIKeyProviderConnectionAndCredential(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {

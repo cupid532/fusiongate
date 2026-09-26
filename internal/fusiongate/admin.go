@@ -236,7 +236,7 @@ func validEditableProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.reader().Query(`SELECT p.id,p.name,p.type,p.base_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
+		rows, err := a.reader().Query(`SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -248,7 +248,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			var enabled, archived, hasRefresh, healthCheckEnabled int
 			var groupID, ipPoolNodeID sql.NullInt64
 			var manualBalance sql.NullInt64
-			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &archived, &p.Priority, &p.SortOrder, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &healthCheckEnabled, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastFirstByteMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS, &p.HealthCheckMode, &p.HealthCheckFirstByteMS, &p.HealthCheckModel, &p.HealthCheckModelCount, &manualBalance, &p.BalanceBaselineAt, &p.BalanceMultiplierOpenAI, &p.BalanceMultiplierClaude, &p.BalanceMultiplierGrok, &p.BalanceMultiplierGemini, &p.BalanceMultiplierOther, &ipPoolNodeID, &p.IPPoolNodeName, &p.IPPoolNodeProtocol, &p.DefaultModel, &p.KeySelectionMode, &p.ProtocolPolicy, &p.ProtocolPreference, &p.APIKeyCount, &p.EnabledAPIKeyCount); err != nil {
+			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.WebsiteURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &archived, &p.Priority, &p.SortOrder, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &healthCheckEnabled, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastFirstByteMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS, &p.HealthCheckMode, &p.HealthCheckFirstByteMS, &p.HealthCheckModel, &p.HealthCheckModelCount, &manualBalance, &p.BalanceBaselineAt, &p.BalanceMultiplierOpenAI, &p.BalanceMultiplierClaude, &p.BalanceMultiplierGrok, &p.BalanceMultiplierGemini, &p.BalanceMultiplierOther, &ipPoolNodeID, &p.IPPoolNodeName, &p.IPPoolNodeProtocol, &p.DefaultModel, &p.KeySelectionMode, &p.ProtocolPolicy, &p.ProtocolPreference, &p.APIKeyCount, &p.EnabledAPIKeyCount); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -284,6 +284,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			Name               string `json:"name"`
 			Type               string `json:"type"`
 			BaseURL            string `json:"baseURL"`
+			WebsiteURL         string `json:"website_url"`
 			Credential         string `json:"credential"`
 			Notes              string `json:"notes"`
 			Enabled            *bool  `json:"enabled"`
@@ -312,6 +313,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		in.Name = strings.TrimSpace(in.Name)
 		in.Type = strings.TrimSpace(in.Type)
 		in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
+		in.WebsiteURL = strings.TrimSpace(in.WebsiteURL)
 		in.Credential = strings.TrimSpace(in.Credential)
 		in.DefaultModel = normalizeProviderKeyModel(in.DefaultModel)
 		if strings.TrimSpace(in.KeySelectionMode) == "" {
@@ -335,6 +337,10 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		}
 		if err := validateUpstream(in.BaseURL, a.cfg); err != nil {
 			fail(w, http.StatusBadRequest, "unsafe_upstream", err.Error())
+			return
+		}
+		if err := validateProviderWebsite(in.WebsiteURL); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_website_url", err.Error())
 			return
 		}
 		priority := 1
@@ -401,7 +407,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		res, err := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,ip_pool_node_id,group_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, in.Name, in.Type, in.BaseURL, encrypted, boolInt(enabled), priority, sortOrder, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, ipPoolNodeID, groupID, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, now(), now())
+		res, err := tx.Exec(`INSERT INTO providers(name,type,base_url,website_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,ip_pool_node_id,group_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)`, in.Name, in.Type, in.BaseURL, in.WebsiteURL, encrypted, boolInt(enabled), priority, sortOrder, in.Weight, "unknown", in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, ipPoolNodeID, groupID, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, now(), now())
 		if err != nil {
 			fail(w, http.StatusConflict, "provider_conflict", err.Error())
 			return
@@ -941,6 +947,7 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		Name                    *string  `json:"name"`
 		Type                    *string  `json:"type"`
 		BaseURL                 *string  `json:"baseURL"`
+		WebsiteURL              *string  `json:"website_url"`
 		Credential              *string  `json:"credential"`
 		Enabled                 *bool    `json:"enabled"`
 		Archived                *bool    `json:"archived"`
@@ -985,7 +992,7 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
-	connectionEditRequested := in.Name != nil || in.Type != nil || in.BaseURL != nil || in.Credential != nil
+	connectionEditRequested := in.Name != nil || in.Type != nil || in.BaseURL != nil || in.WebsiteURL != nil || in.Credential != nil
 	if connectionEditRequested && authKind != "api_key" {
 		fail(w, http.StatusBadRequest, "invalid_request", "OAuth providers must be managed from credential files")
 		return
@@ -1013,6 +1020,14 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 			return
 		}
 		in.BaseURL = &value
+	}
+	if in.WebsiteURL != nil {
+		value := strings.TrimSpace(*in.WebsiteURL)
+		if err := validateProviderWebsite(value); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_website_url", err.Error())
+			return
+		}
+		in.WebsiteURL = &value
 	}
 	var encryptedCredential any
 	credentialUpdated := false
@@ -1134,7 +1149,7 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 			return
 		}
 	}
-	res, err := tx.ExecContext(r.Context(), `UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),key_selection_mode=COALESCE(?,key_selection_mode),protocol_policy=COALESCE(?,protocol_policy),protocol_preference=COALESCE(?,protocol_preference),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, now(), id)
+	res, err := tx.ExecContext(r.Context(), `UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),website_url=COALESCE(?,website_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),key_selection_mode=COALESCE(?,key_selection_mode),protocol_policy=COALESCE(?,protocol_policy),protocol_preference=COALESCE(?,protocol_preference),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, in.WebsiteURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, now(), id)
 	if err != nil {
 		lowerErr := strings.ToLower(err.Error())
 		if in.Name != nil && strings.Contains(lowerErr, "unique") && strings.Contains(lowerErr, "providers.name") {
@@ -2178,6 +2193,17 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			"cost_micros":   costMicros,
 		},
 	})
+}
+
+func validateProviderWebsite(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := urlParse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("website URL must be an absolute HTTP(S) URL without credentials")
+	}
+	return nil
 }
 
 func validateUpstream(raw string, cfg Config) error {

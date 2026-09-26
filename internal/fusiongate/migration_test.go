@@ -66,7 +66,7 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	}
 	defer a.Close()
 	for table, columns := range map[string][]string{
-		"providers":         {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "health_check_enabled", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived", "key_selection_mode"},
+		"providers":         {"passthrough_mode", "client_policy", "max_concurrency", "request_timeout_ms", "health_check_enabled", "failure_threshold", "cooldown_seconds", "consecutive_failures", "circuit_open_until", "last_latency_ms", "auth_kind", "auth_source", "auth_account_id", "auth_email", "auth_expires_at", "auth_last_refresh_at", "auth_status", "auth_fingerprint", "auth_has_refresh", "ip_pool_node_id", "sort_order", "archived", "key_selection_mode", "website_url"},
 		"provider_api_keys": {"health_check_enabled"},
 		"model_routes":      {"sort_order"},
 		"api_keys":          {"encrypted_key"},
@@ -131,6 +131,10 @@ CREATE TABLE route_policies (public_name TEXT PRIMARY KEY, strategy TEXT NOT NUL
 	var directCount int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE ip_pool_node_id IS NULL`).Scan(&directCount); err != nil || directCount != 1 {
 		t.Fatalf("legacy provider did not remain in direct mode: count=%d err=%v", directCount, err)
+	}
+	var websiteURL string
+	if err := a.db.QueryRow(`SELECT website_url FROM providers WHERE id=1`).Scan(&websiteURL); err != nil || websiteURL != "" {
+		t.Fatalf("legacy provider website URL=%q err=%v", websiteURL, err)
 	}
 	var healthCheckEnabled int
 	if err := a.db.QueryRow(`SELECT health_check_enabled FROM providers WHERE id=1`).Scan(&healthCheckEnabled); err != nil || healthCheckEnabled != 1 {

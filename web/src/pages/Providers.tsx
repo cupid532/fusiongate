@@ -154,7 +154,7 @@ export function Providers() {
     else list = list.filter((p) => !p.archived)
     if (q.trim()) {
       const kw = q.trim().toLowerCase()
-      list = list.filter((p) => p.name.toLowerCase().includes(kw) || p.base_url.toLowerCase().includes(kw))
+      list = list.filter((p) => p.name.toLowerCase().includes(kw) || p.base_url.toLowerCase().includes(kw) || (p.website_url ?? "").toLowerCase().includes(kw))
     }
     return list
   }, [visibleProviders, filter, q])
@@ -367,21 +367,17 @@ export function Providers() {
                       </td>
                       <td className="px-4 py-3">
                         {/*
-                          The name opens the channel's own site, which is what
-                          you reach for when you want to top up or check an
-                          account. It links to the *origin* of base_url, not
-                          base_url itself: the latter is an API root
-                          (…/v1) and opens a 404 or a JSON error. Editing keeps
-                          its own gear button in the actions column, so the row
-                          no longer overloads the name with two meanings.
+                          The name opens the configured merchant page when available.
+                          Older channels fall back to the API host, leaving
+                          the API path out of the browser destination.
                         */}
-                        {providerSiteURL(p.base_url) ? (
+                        {providerSiteURL(p.base_url, p.website_url) ? (
                           <a
-                            href={providerSiteURL(p.base_url)}
+                            href={providerSiteURL(p.base_url, p.website_url)}
                             target="_blank"
                             rel="noreferrer noopener"
                             className="flex items-center gap-1 font-medium hover:text-primary hover:underline"
-                            title={`在新标签打开 ${providerSiteURL(p.base_url)}`}
+                            title={`在新标签打开 ${providerSiteURL(p.base_url, p.website_url)}`}
                           >
                             <span className="truncate">{p.name}</span>
                             <ExternalLink className="h-3 w-3 shrink-0 opacity-50" />

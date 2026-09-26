@@ -1,14 +1,22 @@
 /**
  * The page a channel's name should open.
  *
- * `base_url` is an API root — `https://api.example.com/v1` — and opening that
- * verbatim lands on a 404 or a bare JSON error. The site people actually want
- * is its origin, so strip the path and keep scheme + host.
+ * A configured merchant URL opens as-is, including its path and query. When
+ * omitted, base_url is an API root, so link to its origin instead of /v1.
  *
  * Returns "" for anything that is not an http(s) URL, so callers can fall back
  * to plain text rather than render a link that goes nowhere.
  */
-export function providerSiteURL(baseURL: string): string {
+export function providerSiteURL(baseURL: string, websiteURL?: string): string {
+  const merchant = (websiteURL ?? "").trim()
+  if (merchant) {
+    try {
+      const url = new URL(merchant)
+      if ((url.protocol === "http:" || url.protocol === "https:") && url.hostname && !url.username && !url.password) return url.href
+    } catch {
+      // Old or imported invalid addresses fall back to the API host.
+    }
+  }
   const raw = (baseURL || "").trim()
   if (!raw) return ""
   try {

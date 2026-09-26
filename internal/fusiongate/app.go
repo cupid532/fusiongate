@@ -101,6 +101,7 @@ type Provider struct {
 	Name                    string  `json:"name"`
 	Type                    string  `json:"type"`
 	BaseURL                 string  `json:"base_url"`
+	WebsiteURL              string  `json:"website_url,omitempty"`
 	CredentialHint          string  `json:"credential_hint"`
 	AuthKind                string  `json:"auth_kind"`
 	AuthSource              string  `json:"auth_source"`
@@ -558,7 +559,7 @@ func (a *App) migrate(ctx context.Context) error {
     last_latency_ms INTEGER NOT NULL DEFAULT 0, exit_ip TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS providers (
-    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, base_url TEXT NOT NULL,
+    id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, base_url TEXT NOT NULL, website_url TEXT NOT NULL DEFAULT '',
      credential BLOB NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, archived INTEGER NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 1,
     sort_order INTEGER NOT NULL DEFAULT 0,
     weight INTEGER NOT NULL DEFAULT 100, status TEXT NOT NULL DEFAULT 'unknown', notes TEXT NOT NULL DEFAULT '',
@@ -662,6 +663,7 @@ func (a *App) migrate(ctx context.Context) error {
 		return err
 	}
 	for _, column := range []struct{ table, name, ddl string }{
+		{"providers", "website_url", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "passthrough_mode", "TEXT NOT NULL DEFAULT 'normalized'"},
 		{"providers", "client_policy", "TEXT NOT NULL DEFAULT 'any'"},
 		{"providers", "max_concurrency", "INTEGER NOT NULL DEFAULT 0"},

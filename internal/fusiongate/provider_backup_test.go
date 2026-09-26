@@ -17,7 +17,7 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	}
 	defer a.Close()
 	providerID := insertTestProvider(t, a, "backup-source", "openai_compatible", "https://backup.example.com", "sk-backup-primary-123456", 7, 80, "normalized", "any", 3, 4, 45)
-	if _, err := a.db.Exec(`UPDATE providers SET key_selection_mode=? WHERE id=?`, providerKeySelectionHighMultiplier, providerID); err != nil {
+	if _, err := a.db.Exec(`UPDATE providers SET key_selection_mode=?,website_url=? WHERE id=?`, providerKeySelectionHighMultiplier, "https://shop.example.com/topup", providerID); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.migrateProviderAPIKeys(context.Background()); err != nil {
@@ -56,7 +56,7 @@ func TestProviderBackupExportIncludesKeysInventoryAndRoutes(t *testing.T) {
 	if provider.HealthCheckEnabled == nil || !*provider.HealthCheckEnabled {
 		t.Fatal("export did not preserve the default enabled health check")
 	}
-	if provider.Name != "backup-source" || provider.BaseURL != "https://backup.example.com" || provider.KeySelectionMode != providerKeySelectionHighMultiplier || len(provider.Keys) != 2 || len(provider.Routes) != 1 {
+	if provider.Name != "backup-source" || provider.BaseURL != "https://backup.example.com" || provider.WebsiteURL != "https://shop.example.com/topup" || provider.KeySelectionMode != providerKeySelectionHighMultiplier || len(provider.Keys) != 2 || len(provider.Routes) != 1 {
 		t.Fatalf("provider=%#v", provider)
 	}
 	if provider.Keys[0].APIKey != "sk-backup-primary-123456" || provider.Keys[1].APIKey != "sk-backup-secondary-654321" {
@@ -107,7 +107,7 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 	backup := providerBackupFile{
 		Format: providerBackupFormat, Version: providerBackupVersion, ContainsSecrets: true,
 		Providers: []providerBackupProvider{{
-			Name: "imported", Type: "openai_compatible", BaseURL: "https://import.example.com", Notes: "restored", Enabled: true,
+			Name: "imported", Type: "openai_compatible", BaseURL: "https://import.example.com", WebsiteURL: "https://merchant.example.com/billing", Notes: "restored", Enabled: true,
 			Priority: 5, Weight: 90, PassthroughMode: "normalized", ClientPolicy: "any", RequestTimeoutMS: 90000, FailureThreshold: 4, CooldownSeconds: 60, KeySelectionMode: providerKeySelectionRoundRobin,
 			Keys: []providerBackupKey{
 				{Name: "主 Key", APIKey: "sk-import-primary-123456", EgressMode: providerKeyEgressInherit, Enabled: true, SortOrder: 0, Models: []providerBackupKeyModel{{Model: "deepseek-test", DisplayName: "DeepSeek Test", Capabilities: "chat,stream", Enabled: boolPtr(false)}}},
@@ -169,6 +169,10 @@ func TestProviderBackupImportCreatesThenMergesWithoutDuplicates(t *testing.T) {
 	var restoredModelEnabled int
 	if err := a.db.QueryRow(`SELECT enabled FROM provider_api_key_models WHERE model='deepseek-test' AND provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, providerID).Scan(&restoredModelEnabled); err != nil || restoredModelEnabled != 0 {
 		t.Fatalf("restored model enabled=%d err=%v", restoredModelEnabled, err)
+	}
+	var websiteURL string
+	if err := a.db.QueryRow(`SELECT website_url FROM providers WHERE id=?`, providerID).Scan(&websiteURL); err != nil || websiteURL != "https://merchant.example.com/billing" {
+		t.Fatalf("restored website URL=%q err=%v", websiteURL, err)
 	}
 	var healthCheckEnabled int
 	if err := a.db.QueryRow(`SELECT health_check_enabled FROM providers WHERE id=?`, providerID).Scan(&healthCheckEnabled); err != nil || healthCheckEnabled != 1 {

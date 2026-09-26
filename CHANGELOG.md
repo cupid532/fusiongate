@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.11
+
+- Let API channels store an optional merchant website address. Channel name links open that full address when provided and fall back to the API host otherwise; preserve it in provider backups.
+
 ## V3.10
 
 - Move per-channel Key, model, balance, health-check, archive and delete actions from the collapsed upstream-channel menu into a card-based channel management workspace. Keep channel settings and each independent operation on their existing save paths.

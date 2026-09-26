@@ -38,6 +38,7 @@ function providerForm(provider: Provider | null) {
     name: provider?.name ?? "",
     type: provider?.type ?? "openai_compatible",
     baseURL: provider?.base_url ?? "",
+    websiteURL: provider?.website_url ?? "",
     priority: provider?.priority ?? 1,
     max_concurrency: provider?.max_concurrency ?? 0,
     request_timeout_ms: provider?.request_timeout_ms ?? 120000,
@@ -105,7 +106,7 @@ export function ProviderDialog({
   const save = useMutation({
     mutationFn: async (submitted: typeof form) => {
       const body: Record<string, unknown> = {
-        name: submitted.name.trim(), type: submitted.type, baseURL: submitted.baseURL.trim(),
+        name: submitted.name.trim(), type: submitted.type, baseURL: submitted.baseURL.trim(), website_url: submitted.websiteURL.trim(),
         priority: submitted.priority, max_concurrency: submitted.max_concurrency,
         request_timeout_ms: submitted.request_timeout_ms, passthrough_mode: submitted.passthrough_mode,
         notes: submitted.notes, key_selection_mode: submitted.key_selection_mode, health_check_enabled: submitted.health_check_enabled,
@@ -133,7 +134,7 @@ export function ProviderDialog({
       const providers = qc.getQueryData<Provider[]>(["providers"]) ?? []
       const latest = providers.find((item) => item.id === id)
       if (latest) setActive(latest)
-      else if (created) setActive({ id, name: submitted.name, type: submitted.type, base_url: submitted.baseURL, priority: submitted.priority, model_count: 0 } as Provider)
+      else if (created) setActive({ id, name: submitted.name, type: submitted.type, base_url: submitted.baseURL, website_url: submitted.websiteURL, priority: submitted.priority, model_count: 0 } as Provider)
       if (created) {
         onCreated?.({ id, name: submitted.name })
         setSection("keys")
@@ -183,6 +184,7 @@ export function ProviderDialog({
                 <div className="space-y-1.5"><Label htmlFor="provider-name">名称</Label><Input id="provider-name" value={form.name} onChange={(event) => set("name", event.target.value)} placeholder="例如：粥API" /></div>
                 <div className="space-y-1.5"><Label htmlFor="provider-type">类型</Label><select id="provider-type" value={form.type} onChange={(event) => { const type = event.target.value; setForm((current) => ({ ...current, type, protocol_method: supportsProtocolMethod(type, current.protocol_method) ? current.protocol_method : "auto" })); setMethodChanged(true) }} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm">{providerTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
                 <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="provider-url">API 地址</Label><Input id="provider-url" value={form.baseURL} onChange={(event) => set("baseURL", event.target.value)} placeholder={form.type === "anthropic" ? "https://api.anthropic.com" : "https://api.example.com/v1"} className="font-mono text-xs" /><p className="text-xs text-muted-foreground">填写服务根地址，可带 /v1；不要填写 /messages 等接口路径。</p></div>
+                <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="provider-website">商家地址（选填）</Label><Input id="provider-website" type="url" value={form.websiteURL} onChange={(event) => set("websiteURL", event.target.value)} placeholder="https://example.com/account" className="font-mono text-xs" /><p className="text-xs text-muted-foreground">填写后点击渠道名称将打开此地址；留空则打开 API 地址所在网站。</p></div>
                 <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="provider-notes">备注</Label><Textarea id="provider-notes" value={form.notes} onChange={(event) => set("notes", event.target.value)} rows={2} /></div>
               </div>
             </ProviderManagementCard>

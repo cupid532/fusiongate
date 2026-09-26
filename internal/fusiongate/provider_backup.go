@@ -37,6 +37,7 @@ type providerBackupProvider struct {
 	Name               string                `json:"name"`
 	Type               string                `json:"type"`
 	BaseURL            string                `json:"base_url"`
+	WebsiteURL         string                `json:"website_url,omitempty"`
 	Notes              string                `json:"notes,omitempty"`
 	Enabled            bool                  `json:"enabled"`
 	Priority           int                   `json:"priority"`
@@ -119,7 +120,7 @@ func (a *App) providerBackupExport(w http.ResponseWriter, r *http.Request, _ adm
 		return
 	}
 	rows, err := a.db.Query(`
-SELECT p.id,p.name,p.type,p.base_url,p.notes,p.enabled,p.priority,p.weight,p.passthrough_mode,p.client_policy,
+SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.notes,p.enabled,p.priority,p.weight,p.passthrough_mode,p.client_policy,
        p.max_concurrency,p.request_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,p.group_sort_order,
        COALESCE(g.name,''),COALESCE(n.name,''),p.credential,p.multi_key_initialized
 FROM providers p
@@ -135,7 +136,7 @@ ORDER BY p.priority DESC,p.id`)
 	for rows.Next() {
 		var item providerBackupPending
 		var enabled, healthCheckEnabled int
-		if err := rows.Scan(&item.ID, &item.Provider.Name, &item.Provider.Type, &item.Provider.BaseURL, &item.Provider.Notes,
+		if err := rows.Scan(&item.ID, &item.Provider.Name, &item.Provider.Type, &item.Provider.BaseURL, &item.Provider.WebsiteURL, &item.Provider.Notes,
 			&enabled, &item.Provider.Priority, &item.Provider.Weight, &item.Provider.PassthroughMode, &item.Provider.ClientPolicy,
 			&item.Provider.MaxConcurrency, &item.Provider.RequestTimeoutMS, &item.Provider.FailureThreshold, &item.Provider.CooldownSeconds, &healthCheckEnabled,
 			&item.Provider.DefaultModel, &item.Provider.KeySelectionMode, &item.Provider.ProtocolPolicy, &item.Provider.ProtocolPreference, &item.Provider.GroupSortOrder, &item.Provider.GroupName, &item.Provider.IPPoolNodeName, &item.Credential, &item.Initialized); err != nil {
@@ -334,6 +335,7 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 		provider.Name = strings.TrimSpace(provider.Name)
 		provider.Type = strings.TrimSpace(provider.Type)
 		provider.BaseURL = strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/")
+		provider.WebsiteURL = strings.TrimSpace(provider.WebsiteURL)
 		provider.DefaultModel = normalizeProviderKeyModel(provider.DefaultModel)
 		if strings.TrimSpace(provider.KeySelectionMode) != "" && !validKeySelectionMode(provider.KeySelectionMode) {
 			return fmt.Errorf("provider %q contains an invalid key selection mode", provider.Name)
@@ -348,6 +350,9 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 			return fmt.Errorf("duplicate provider name %q", provider.Name)
 		}
 		seenNames[provider.Name] = struct{}{}
+		if err := validateProviderWebsite(provider.WebsiteURL); err != nil {
+			return fmt.Errorf("provider %q: %w", provider.Name, err)
+		}
 		if err := validateUpstream(provider.BaseURL, cfg); err != nil {
 			return fmt.Errorf("provider %q: %w", provider.Name, err)
 		}
@@ -518,7 +523,7 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 		var authKind string
 		findErr := tx.QueryRow(`SELECT id,auth_kind FROM providers WHERE name=?`, provider.Name).Scan(&providerID, &authKind)
 		if errors.Is(findErr, sql.ErrNoRows) {
-			res, insertErr := tx.Exec(`INSERT INTO providers(name,type,base_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_status,group_id,group_sort_order,ip_pool_node_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM providers),?,'unknown',?,?,?,?,?,?,?,?,?,'ready',?,?,?,?,?,?,?,1,?,?)`, provider.Name, provider.Type, provider.BaseURL, firstEncrypted, boolInt(provider.Enabled), provider.Priority, provider.Weight, provider.Notes, provider.PassthroughMode, provider.ClientPolicy, provider.MaxConcurrency, provider.RequestTimeoutMS, provider.FailureThreshold, provider.CooldownSeconds, "api_key", "manual", groupID, provider.GroupSortOrder, providerNodeID, provider.DefaultModel, provider.KeySelectionMode, provider.ProtocolPolicy, provider.ProtocolPreference, now(), now())
+			res, insertErr := tx.Exec(`INSERT INTO providers(name,type,base_url,website_url,credential,enabled,priority,sort_order,weight,status,notes,passthrough_mode,client_policy,max_concurrency,request_timeout_ms,failure_threshold,cooldown_seconds,auth_kind,auth_source,auth_status,group_id,group_sort_order,ip_pool_node_id,default_model,key_selection_mode,protocol_policy,protocol_preference,multi_key_initialized,created_at,updated_at) VALUES(?,?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM providers),?,'unknown',?,?,?,?,?,?,?,?,?,'ready',?,?,?,?,?,?,?,1,?,?)`, provider.Name, provider.Type, provider.BaseURL, provider.WebsiteURL, firstEncrypted, boolInt(provider.Enabled), provider.Priority, provider.Weight, provider.Notes, provider.PassthroughMode, provider.ClientPolicy, provider.MaxConcurrency, provider.RequestTimeoutMS, provider.FailureThreshold, provider.CooldownSeconds, "api_key", "manual", groupID, provider.GroupSortOrder, providerNodeID, provider.DefaultModel, provider.KeySelectionMode, provider.ProtocolPolicy, provider.ProtocolPreference, now(), now())
 			if insertErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
 				return
@@ -533,7 +538,7 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 				fail(w, http.StatusConflict, "provider_conflict", fmt.Sprintf("provider %q is an OAuth provider and cannot be overwritten", provider.Name))
 				return
 			}
-			if _, updateErr := tx.Exec(`UPDATE providers SET type=?,base_url=?,credential=?,enabled=?,priority=?,weight=?,status='unknown',notes=?,passthrough_mode=?,client_policy=?,max_concurrency=?,request_timeout_ms=?,failure_threshold=?,cooldown_seconds=?,consecutive_failures=0,circuit_open_until=NULL,last_error='',group_id=?,group_sort_order=?,ip_pool_node_id=?,default_model=?,key_selection_mode=?,protocol_policy=?,protocol_preference=?,multi_key_initialized=1,updated_at=? WHERE id=?`, provider.Type, provider.BaseURL, firstEncrypted, boolInt(provider.Enabled), provider.Priority, provider.Weight, provider.Notes, provider.PassthroughMode, provider.ClientPolicy, provider.MaxConcurrency, provider.RequestTimeoutMS, provider.FailureThreshold, provider.CooldownSeconds, groupID, provider.GroupSortOrder, providerNodeID, provider.DefaultModel, provider.KeySelectionMode, provider.ProtocolPolicy, provider.ProtocolPreference, now(), providerID); updateErr != nil {
+			if _, updateErr := tx.Exec(`UPDATE providers SET type=?,base_url=?,website_url=?,credential=?,enabled=?,priority=?,weight=?,status='unknown',notes=?,passthrough_mode=?,client_policy=?,max_concurrency=?,request_timeout_ms=?,failure_threshold=?,cooldown_seconds=?,consecutive_failures=0,circuit_open_until=NULL,last_error='',group_id=?,group_sort_order=?,ip_pool_node_id=?,default_model=?,key_selection_mode=?,protocol_policy=?,protocol_preference=?,multi_key_initialized=1,updated_at=? WHERE id=?`, provider.Type, provider.BaseURL, provider.WebsiteURL, firstEncrypted, boolInt(provider.Enabled), provider.Priority, provider.Weight, provider.Notes, provider.PassthroughMode, provider.ClientPolicy, provider.MaxConcurrency, provider.RequestTimeoutMS, provider.FailureThreshold, provider.CooldownSeconds, groupID, provider.GroupSortOrder, providerNodeID, provider.DefaultModel, provider.KeySelectionMode, provider.ProtocolPolicy, provider.ProtocolPreference, now(), providerID); updateErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", updateErr.Error())
 				return
 			}
