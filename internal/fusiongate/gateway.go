@@ -325,6 +325,35 @@ func normalizeProtocolPreference(value string) (string, bool) {
 	return strings.Join(ordered, ","), true
 }
 
+// validProviderProtocol rejects fixed modes that have no native bridge for the
+// provider. Legacy comma-separated preferences remain readable without rewriting.
+func validProviderProtocol(providerType, policy, preference string) bool {
+	if policy != protocolFixed {
+		return true
+	}
+	if preference == "" || strings.Contains(preference, ",") {
+		return false
+	}
+	switch providerType {
+	case "openai", "grok", "openrouter", "openai_compatible":
+		return preference == protocolChat || preference == protocolResponses
+	case "anthropic", "anthropic_compatible":
+		return preference == protocolMessages || preference == protocolResponses
+	case "opencode":
+		return preference == protocolChat || preference == protocolResponses || preference == protocolMessages
+	default:
+		return false
+	}
+}
+
+func fixedRouteProtocol(z resolvedRoute) string {
+	if strings.EqualFold(strings.TrimSpace(z.Provider.ProtocolPolicy), protocolFixed) {
+		first, _ := nextListItem(strings.ToLower(strings.TrimSpace(z.Provider.ProtocolPreference)))
+		return first
+	}
+	return ""
+}
+
 func routeProtocolEnabled(z resolvedRoute, protocol string) bool {
 	policy := strings.ToLower(strings.TrimSpace(z.Provider.ProtocolPolicy))
 	preference, valid := normalizeProtocolPreference(z.Provider.ProtocolPreference)
@@ -333,7 +362,7 @@ func routeProtocolEnabled(z resolvedRoute, protocol string) bool {
 	}
 	if policy == protocolFixed {
 		first, _ := nextListItem(preference)
-		return strings.EqualFold(first, protocol)
+		return first == protocol && (validProviderProtocol(z.Provider.Type, policy, preference) || strings.Contains(preference, ","))
 	}
 	// Auto mode is capability-driven. Preference orders protocols already
 	// known to work; it never invents support that discovery did not prove.
@@ -1144,15 +1173,47 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 		fail(w, http.StatusNotFound, "model_not_found", "no matching route is available")
 		return
 	}
-	a.runRoutes(w, r, key, routes, "openai_chat", requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+	compatible := routes[:0]
+	for _, z := range routes {
+		fixed := fixedRouteProtocol(z)
+		if fixed == "" || validProviderProtocol(z.Provider.Type, protocolFixed, fixed) && (z.Provider.Type != "opencode" || fixed == opencodeRouteProtocol(z) || fixed == protocolMessages && opencodeRouteProtocol(z) == opencodeProtocolAnthropic) {
+			compatible = append(compatible, z)
+		}
+	}
+	if len(compatible) == 0 {
+		fail(w, http.StatusNotImplemented, "protocol_not_supported", "no route supports the configured upstream protocol")
+		return
+	}
+	a.runRoutes(w, r, key, compatible, "openai_chat", requestReasoningEffort(body), stream, func(z resolvedRoute, rid string, onFirstByte func()) attemptResult {
+		fixed := fixedRouteProtocol(z)
 		switch z.Provider.Type {
 		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth":
+			if fixed == protocolResponses {
+				encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
+				if err != nil {
+					return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}
+				}
+				return a.proxyUpstream(w, r, z, proxyOptions{Endpoint: "/v1/responses", RawBody: encoded, Stream: stream, UsageFormat: "openai", GatewayID: rid, SafeTransportRetry: true, OnFirstByte: onFirstByte, UpstreamSSE: true, BufferSSE: true, SSETransform: func(body []byte) ([]byte, string, Usage, error) {
+					completed, usage, err := completedResponseFromSSE(body)
+					if err != nil {
+						return nil, "", usage, err
+					}
+					transformed, contentType, err := codexChatResponse(completed, stream, z.Route.PublicName)
+					return transformed, contentType, usage, err
+				}})
+			}
+			if fixed != "" && fixed != protocolChat {
+				return attemptResult{Status: http.StatusNotImplemented, Reason: "protocol_not_supported"}
+			}
 			return a.openAIProxy(w, r, raw, z, rid, "/v1/chat/completions", stream, true, onFirstByte)
 		case "grok_console":
 			return a.consoleChatProxy(w, r, raw, z, rid, stream, onFirstByte)
 		case "grok_web":
 			return a.webChatProxy(w, r, raw, z, rid, stream, onFirstByte)
 		case "opencode":
+			if fixed != "" && fixed != opencodeRouteProtocol(z) && !(fixed == protocolMessages && opencodeRouteProtocol(z) == opencodeProtocolAnthropic) {
+				return attemptResult{Status: http.StatusNotImplemented, Reason: "protocol_not_supported"}
+			}
 			switch opencodeRouteProtocol(z) {
 			case opencodeProtocolResponses:
 				encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
@@ -1193,7 +1254,10 @@ func (a *App) chat(w http.ResponseWriter, r *http.Request, key authKey) {
 				transformed, contentType, err := codexChatResponse(completed, stream, z.Route.PublicName)
 				return transformed, contentType, usage, err
 			}})
-		case "anthropic":
+		case "anthropic", "anthropic_compatible":
+			if fixed == protocolChat {
+				return attemptResult{Status: http.StatusNotImplemented, Reason: "protocol_not_supported"}
+			}
 			if routeProtocolEnabled(z, protocolResponses) {
 				encoded, err := codexResponsesBodyFromChat(raw, z.Route.UpstreamModel)
 				if err != nil {
@@ -1428,6 +1492,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 	}
 	compatible := routes[:0]
 	for _, z := range routes {
+		fixed := fixedRouteProtocol(z)
 		eligible := z.Provider.Type == "openai" || z.Provider.Type == "grok" || z.Provider.Type == "openrouter" || z.Provider.Type == "openai_compatible" || z.Provider.Type == "codex_oauth" || z.Provider.Type == "grok_oauth" || z.Provider.Type == "grok_console" || z.Provider.Type == "grok_web"
 		if isAnthropicProvider(z.Provider.Type) {
 			// Some Anthropic-compatible aggregators expose a native OpenAI
@@ -1437,6 +1502,22 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		}
 		if z.Provider.Type == "opencode" {
 			eligible = protocol == "openai_responses" && opencodeRouteProtocol(z) == opencodeProtocolResponses
+		}
+		if fixed != "" {
+			if protocol == "openai_responses" {
+				eligible = fixed == protocolChat || fixed == protocolResponses
+				if isAnthropicProvider(z.Provider.Type) {
+					eligible = fixed == protocolResponses
+				}
+				if z.Provider.Type == "opencode" {
+					eligible = fixed == protocolResponses && opencodeRouteProtocol(z) == opencodeProtocolResponses
+				}
+				if fixed == protocolChat && z.Provider.PassthroughMode == "transparent" {
+					eligible = false
+				}
+			} else if protocol == "openai_responses_compact" {
+				eligible = fixed == protocolResponses && !isAnthropicProvider(z.Provider.Type) && z.Provider.Type != "opencode"
+			}
 		}
 		if eligible {
 			compatible = append(compatible, z)
@@ -1457,15 +1538,25 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 		if protocol == "openai_images" && z.Provider.Type == "codex_oauth" {
 			return a.codexImageProxy(w, r, raw, z, rid, onFirstByte)
 		}
-		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" {
+		if protocol == "openai_responses" && fixedRouteProtocol(z) == protocolChat {
+			if z.Provider.PassthroughMode == "transparent" {
+				return attemptResult{Status: http.StatusNotImplemented, Reason: "protocol_not_supported"}
+			}
+			return a.compatibleResponsesProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
+		}
+		if protocol == "openai_responses" && z.Provider.Type == "openai_compatible" && z.Provider.PassthroughMode != "transparent" && fixedRouteProtocol(z) == "" {
 			return a.responsesFirstCompatibleProxy(w, r, raw, z, rid, stream, safeTransportRetry, onFirstByte)
 		}
 		if protocol == "openai_responses" && isAnthropicProvider(z.Provider.Type) && routeProtocolEnabled(z, protocolResponses) {
 			// Keep the provider typed as Anthropic for /v1/messages while using
 			// its explicitly declared native Responses endpoint for this route.
 			w.Header().Set("X-FusionGate-Upstream-Protocol", "responses")
-			result := a.openAIProxyWithRetryStatus(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte, responsesProtocolFallbackStatus)
-			if result.Reason == "upstream_protocol_unsupported" {
+			var retryStatus func(int) bool
+			if fixedRouteProtocol(z) == "" {
+				retryStatus = responsesProtocolFallbackStatus
+			}
+			result := a.openAIProxyWithRetryStatus(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte, retryStatus)
+			if result.Reason == "upstream_protocol_unsupported" && fixedRouteProtocol(z) == "" {
 				// Discovery is stale: remove only the learned capability. This
 				// prevents future requests from repeatedly probing a dead endpoint.
 				_, _ = a.db.ExecContext(r.Context(), `UPDATE model_routes SET capabilities=TRIM(REPLACE(','||capabilities||',', ',protocol:responses,', ','), ','),updated_at=? WHERE id=?`, now(), z.Route.ID)
@@ -1531,13 +1622,16 @@ func (a *App) messages(w http.ResponseWriter, r *http.Request, key authKey) {
 	for _, z := range routes {
 		switch z.Provider.Type {
 		case "anthropic", "anthropic_compatible", "claude_oauth":
-			compatible = append(compatible, z)
+			if fixedRouteProtocol(z) == "" || fixedRouteProtocol(z) == protocolMessages {
+				compatible = append(compatible, z)
+			}
 		case "opencode":
-			if opencodeRouteProtocol(z) == opencodeProtocolAnthropic || opencodeRouteProtocol(z) == opencodeProtocolChat && z.Provider.PassthroughMode != "transparent" {
+			native, fixed := opencodeRouteProtocol(z), fixedRouteProtocol(z)
+			if (fixed == "" || fixed == protocolMessages && native == opencodeProtocolAnthropic || fixed == protocolChat && native == opencodeProtocolChat) && (native == opencodeProtocolAnthropic || native == opencodeProtocolChat && z.Provider.PassthroughMode != "transparent") {
 				compatible = append(compatible, z)
 			}
 		case "openai", "grok", "openrouter", "openai_compatible", "grok_oauth", "grok_console", "grok_web":
-			if z.Provider.PassthroughMode != "transparent" {
+			if z.Provider.PassthroughMode != "transparent" && (fixedRouteProtocol(z) == "" || fixedRouteProtocol(z) == protocolChat) {
 				compatible = append(compatible, z)
 			}
 		}

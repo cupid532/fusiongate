@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
+import { ProviderProtocolLabel } from "@/components/ProtocolMethodSelect"
 import { useConfirm } from "@/components/ui/confirm"
 
 function formatDate(iso?: string) {
@@ -125,6 +126,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
             {!provider.enabled ? "已关闭" : quota?.allowed === false ? "不可用" : quota?.limit_reached ? "已达限" : "可用"}
           </Badge>
         </CardTitle>
+        <ProviderProtocolLabel provider={provider} />
         {plan && (
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <Badge variant="neutral">{plan}</Badge>

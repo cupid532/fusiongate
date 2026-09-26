@@ -687,6 +687,9 @@ func (a *App) applyDiscoveredProtocolCapabilities(parent context.Context, p disc
 	if len(models) == 0 || !isAnthropicProvider(p.Type) {
 		return models
 	}
+	if p.ProtocolPolicy == protocolFixed {
+		return models
+	}
 	probeModel := ""
 	for _, model := range models {
 		if model.Capabilities != "unsupported" && matchesCapability(model.Capabilities, "chat") {
@@ -919,6 +922,13 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		}
 		if p.Type == "grok_oauth" {
 			allModels = enrichGrokModels(allModels)
+		}
+		if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed {
+			for i := range allModels {
+				if providerProbeProtocol(p, allModels[i].UpstreamID, allModels[i].Capabilities) == "unsupported" {
+					allModels[i].Capabilities = "unsupported"
+				}
+			}
 		}
 		return allModels, nil
 	}

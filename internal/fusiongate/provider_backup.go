@@ -381,7 +381,7 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 		}
 		var validPreference bool
 		provider.ProtocolPreference, validPreference = normalizeProtocolPreference(provider.ProtocolPreference)
-		if !validPreference || provider.ProtocolPolicy == protocolFixed && provider.ProtocolPreference == "" {
+		if !validPreference || (!validProviderProtocol(provider.Type, provider.ProtocolPolicy, provider.ProtocolPreference) && !(provider.ProtocolPolicy == protocolFixed && strings.Contains(provider.ProtocolPreference, ","))) {
 			return fmt.Errorf("provider %q contains an invalid protocol preference", provider.Name)
 		}
 		if len(provider.Keys) == 0 || len(provider.Keys) > providerBackupMaxKeys {

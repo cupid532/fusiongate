@@ -329,7 +329,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		var validPreference bool
 		in.ProtocolPreference, validPreference = normalizeProtocolPreference(in.ProtocolPreference)
 		in.KeyName = strings.TrimSpace(in.KeyName)
-		if in.Name == "" || !validProviderType(in.Type) || in.Credential == "" || !validProtocolPolicy(in.ProtocolPolicy) || !validPreference || in.ProtocolPolicy == protocolFixed && in.ProtocolPreference == "" {
+		if in.Name == "" || !validProviderType(in.Type) || in.Credential == "" || !validProtocolPolicy(in.ProtocolPolicy) || !validPreference || !validProviderProtocol(in.Type, in.ProtocolPolicy, in.ProtocolPreference) {
 			fail(w, http.StatusBadRequest, "invalid_request", "name, supported type, and credential are required")
 			return
 		}
@@ -1065,8 +1065,12 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		in.ProtocolPreference = &value
 		currentProtocolPreference = value
 	}
-	if currentProtocolPolicy == protocolFixed && currentProtocolPreference == "" {
-		fail(w, http.StatusBadRequest, "invalid_request", "fixed protocol policy requires a protocol_preference")
+	providerType := currentType
+	if in.Type != nil {
+		providerType = *in.Type
+	}
+	if (in.ProtocolPolicy != nil || in.ProtocolPreference != nil || providerType != currentType) && !validProviderProtocol(providerType, currentProtocolPolicy, currentProtocolPreference) {
+		fail(w, http.StatusBadRequest, "invalid_request", "fixed policy requires one protocol supported by this provider type")
 		return
 	}
 	protocolChanged := in.ProtocolPolicy != nil || in.ProtocolPreference != nil

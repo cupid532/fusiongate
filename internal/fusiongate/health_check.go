@@ -276,6 +276,13 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 	}
 
 	// 特殊处理不同 API 格式
+	probeProtocol := providerProbeProtocol(p, probeModel, "")
+	if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed && probeModel != "" {
+		probeProtocol = p.ProtocolPreference
+	}
+	if probeProtocol == "unsupported" {
+		return healthCheckResult{Status: "unsupported", Mode: mode, Model: probeModel, Error: "model does not support the configured upstream protocol"}
+	}
 	endpoint := h.buildProbeEndpoint(p, probeModel)
 	req, err := h.buildProbeRequest(ctx, p, endpoint, reqBody)
 	if err != nil {
@@ -301,7 +308,7 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 
 	// 解析状态
 	status, errMsg := h.parseProbeResponse(resp.StatusCode, body)
-	if p.Type == "codex_oauth" || p.Type == "opencode" && opencodeModelProtocol(probeModel, "") == opencodeProtocolResponses {
+	if p.Type == "codex_oauth" || probeProtocol == protocolResponses && p.Type == "opencode" {
 		status, errMsg = h.parseCodexProbeResponse(resp.StatusCode, body)
 	}
 	return healthCheckResult{Status: status, Mode: mode, Model: probeModel, LatencyMS: latency, FirstByteMS: firstByte, Error: errMsg}
@@ -353,6 +360,9 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 	if !strings.Contains(target.Capabilities, "chat") {
 		return healthCheckResult{Status: "unsupported", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "only chat models support generation health checks"}
 	}
+	if providerProbeProtocol(p, target.UpstreamModel, target.Capabilities) == "unsupported" {
+		return healthCheckResult{Status: "unsupported", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, Error: "model does not support the configured upstream protocol"}
+	}
 	probe := newGenerationProbe()
 	req, err := h.buildRouteProbeRequest(ctx, p, target.UpstreamModel, target.Capabilities, probe.Prompt)
 	if err != nil {
@@ -377,7 +387,14 @@ func (h *HealthChecker) probeRoute(ctx context.Context, target healthCheckTarget
 		status, message := h.parseProbeResponse(resp.StatusCode, body)
 		return healthCheckResult{Status: status, Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: message}
 	}
-	content, err := extractProbeContent(p.Type, target.UpstreamModel, target.Capabilities, body)
+	responseType := p.Type
+	if providerProbeProtocol(p, target.UpstreamModel, target.Capabilities) == protocolResponses && (isAnthropicProvider(p.Type) || p.ProtocolPolicy == protocolFixed) && p.Type != "opencode" {
+		if completed, _, decodeErr := completedResponseFromSSE(body); decodeErr == nil {
+			body = completed
+		}
+		responseType = "openai"
+	}
+	content, err := extractProbeContent(responseType, target.UpstreamModel, target.Capabilities, body)
 	if err != nil {
 		return healthCheckResult{Status: "invalid_response", Mode: healthCheckModeGeneration, Model: target.UpstreamModel, LatencyMS: latency, FirstByteMS: firstByte, Error: sanitizeError(err.Error())}
 	}
@@ -396,7 +413,37 @@ func healthProbeURL(base, endpoint string) (string, error) {
 	return u.String(), nil
 }
 
+// providerProbeProtocol mirrors the configured upstream routing protocol.
+func providerProbeProtocol(p discoveryProvider, model, capabilities string) string {
+	native := protocolChat
+	switch {
+	case isAnthropicProvider(p.Type), p.Type == "claude_oauth":
+		native = protocolMessages
+	case p.Type == "codex_oauth", p.Type == "grok_oauth", p.Type == "grok_console":
+		native = protocolResponses
+	case p.Type == "opencode":
+		native = opencodeModelProtocol(model, capabilities)
+		if native == opencodeProtocolAnthropic {
+			native = protocolMessages
+		}
+	}
+	if p.ProtocolPolicy == protocolFixed {
+		if !validProviderProtocol(p.Type, p.ProtocolPolicy, p.ProtocolPreference) {
+			return "unsupported"
+		}
+		if p.Type == "opencode" && p.ProtocolPreference != native {
+			return "unsupported"
+		}
+		return p.ProtocolPreference
+	}
+	return native
+}
+
 func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryProvider, model, capabilities, prompt string) (*http.Request, error) {
+	selected := providerProbeProtocol(p, model, capabilities)
+	if selected == "unsupported" {
+		return nil, errors.New("model does not support the configured upstream protocol")
+	}
 	endpoint := "/v1/chat/completions"
 	body := map[string]any{
 		"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}},
@@ -406,7 +453,7 @@ func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryP
 	if p.Type == "opencode" {
 		protocol = opencodeModelProtocol(model, capabilities)
 	}
-	if isAnthropicProvider(p.Type) || p.Type == "claude_oauth" || protocol == opencodeProtocolAnthropic {
+	if selected == protocolMessages || protocol == opencodeProtocolAnthropic {
 		endpoint = "/v1/messages"
 		body = map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": prompt}}, "temperature": 0, "max_tokens": 32}
 	} else if p.Type == "gemini" || protocol == opencodeProtocolGemini {
@@ -415,7 +462,7 @@ func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryP
 			endpoint = "/v1/models/" + url.PathEscape(model) + ":generateContent"
 		}
 		body = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": prompt}}}}, "generationConfig": map[string]any{"temperature": 0, "maxOutputTokens": 32}}
-	} else if p.Type == "codex_oauth" || protocol == opencodeProtocolResponses {
+	} else if selected == protocolResponses || protocol == opencodeProtocolResponses {
 		endpoint = "/v1/responses"
 		if p.Type == "codex_oauth" {
 			endpoint = "/responses"
@@ -447,7 +494,7 @@ func (h *HealthChecker) buildRouteProbeRequest(ctx context.Context, p discoveryP
 	req.Header.Set("Content-Type", "application/json")
 	setDiscoveryAuth(req, p)
 	req.Header.Set("Accept", "application/json")
-	if p.Type == "codex_oauth" || protocol == opencodeProtocolResponses {
+	if p.Type == "codex_oauth" || selected == protocolResponses {
 		req.Header.Set("Accept", "text/event-stream")
 	}
 	if protocol == opencodeProtocolAnthropic {
@@ -541,6 +588,20 @@ func normalizeProbeAnswer(value string) string {
 }
 
 func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvider) string {
+	if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed {
+		rows, err := h.app.db.QueryContext(ctx, `SELECT upstream_model,capabilities FROM model_routes WHERE provider_id=? AND enabled=1 ORDER BY priority DESC,sort_order ASC,id ASC`, p.ID)
+		if err != nil {
+			return ""
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var model, capabilities string
+			if rows.Scan(&model, &capabilities) == nil && providerProbeProtocol(p, model, capabilities) != "unsupported" {
+				return model
+			}
+		}
+		return ""
+	}
 	var configured string
 	if err := h.app.db.QueryRowContext(ctx, `
 		SELECT upstream_model FROM model_routes
@@ -573,6 +634,10 @@ func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvide
 }
 
 func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider, model string) string {
+	selected := providerProbeProtocol(p, model, "")
+	if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed {
+		selected = p.ProtocolPreference
+	}
 	var endpoint string
 	switch p.Type {
 	case "anthropic", "anthropic_compatible", "claude_oauth":
@@ -599,6 +664,16 @@ func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider, model string) st
 	default:
 		endpoint = "/v1/chat/completions"
 	}
+	if p.ProtocolPolicy == protocolFixed && selected != "unsupported" {
+		switch selected {
+		case protocolMessages:
+			endpoint = "/v1/messages"
+		case protocolResponses:
+			endpoint = "/v1/responses"
+		case protocolChat:
+			endpoint = "/v1/chat/completions"
+		}
+	}
 	upstreamURL, err := healthProbeURL(p.BaseURL, endpoint)
 	if err != nil {
 		return strings.TrimRight(p.BaseURL, "/") + endpoint
@@ -607,12 +682,25 @@ func (h *HealthChecker) buildProbeEndpoint(p discoveryProvider, model string) st
 }
 
 func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvider, endpoint string, body map[string]interface{}) (*http.Request, error) {
+	selected := providerProbeProtocol(p, asString(body["model"]), "")
+	if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed {
+		selected = p.ProtocolPreference
+	}
+	if selected == "unsupported" {
+		return nil, errors.New("model does not support the configured upstream protocol")
+	}
 	opencodeProtocol := ""
 	if p.Type == "opencode" {
 		opencodeProtocol = opencodeModelProtocol(asString(body["model"]), "")
+		if p.ProtocolPolicy == protocolFixed {
+			opencodeProtocol = selected
+			if selected == protocolMessages {
+				opencodeProtocol = opencodeProtocolAnthropic
+			}
+		}
 	}
 	// Anthropic 使用不同的请求格式
-	if isAnthropicProvider(p.Type) || p.Type == "claude_oauth" {
+	if selected == protocolMessages && (isAnthropicProvider(p.Type) || p.Type == "claude_oauth") {
 		body = map[string]interface{}{
 			"model": body["model"],
 			"messages": []map[string]string{
@@ -620,7 +708,7 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 			},
 			"max_tokens": 1,
 		}
-	} else if p.Type == "codex_oauth" {
+	} else if p.Type == "codex_oauth" || selected == protocolResponses && p.Type != "opencode" {
 		body = map[string]interface{}{
 			"model": body["model"],
 			"input": []any{map[string]any{
@@ -661,7 +749,7 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 
 	// 设置认证头
 	req.Header.Set("Content-Type", "application/json")
-	if p.Type == "codex_oauth" || opencodeProtocol == opencodeProtocolResponses {
+	if p.Type == "codex_oauth" || selected == protocolResponses {
 		req.Header.Set("Accept", "text/event-stream")
 	} else {
 		req.Header.Set("Accept", "application/json")

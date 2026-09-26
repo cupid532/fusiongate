@@ -25,6 +25,8 @@ import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { useConfirmDelete } from "@/components/ui/confirm"
 import { notifyError } from "@/lib/notify"
+import { protocolMethod, protocolMethodPatch, protocolMethodLabel, supportsProtocolMethod, type ProtocolMethod } from "@/lib/protocol-methods"
+import { ProtocolMethodSelect } from "@/components/ProtocolMethodSelect"
 
 const providerTypes = [
   { value: "openai_compatible", label: "OpenAI 兼容" },
@@ -91,6 +93,7 @@ export function ProviderDialog({
   )
 
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [methodChanged, setMethodChanged] = useState(false)
   const [newKeys, setNewKeys] = useState<Array<{ name: string; api_key: string; egress_mode: string; ip_pool_node_id: number; cost_multiplier: number }>>([])
   const [form, setForm] = useState({
     name: "",
@@ -105,6 +108,7 @@ export function ProviderDialog({
     ip_pool_node_id: 0,
     group_id: 0,
     key_selection_mode: "configured" as ProviderKeySelectionMode,
+    protocol_method: "auto" as ProtocolMethod,
   })
 
   const { data: nodes = [] } = useQuery({
@@ -124,6 +128,7 @@ export function ProviderDialog({
   useEffect(() => {
     if (open) {
       setNewKeys([])
+      setMethodChanged(false)
       setForm({
         name: provider?.name ?? "",
         type: provider?.type ?? "openai_compatible",
@@ -137,6 +142,7 @@ export function ProviderDialog({
         ip_pool_node_id: provider?.ip_pool_node_id ?? 0,
         group_id: provider?.group_id ?? 0,
         key_selection_mode: provider?.key_selection_mode ?? "configured",
+        protocol_method: protocolMethod(provider?.protocol_policy, provider?.protocol_preference),
       })
     }
   }, [open, provider])
@@ -153,6 +159,7 @@ export function ProviderDialog({
         passthrough_mode: form.passthrough_mode,
         notes: form.notes,
         key_selection_mode: form.key_selection_mode,
+        ...(provider ? methodChanged ? protocolMethodPatch(form.protocol_method) : {} : protocolMethodPatch(form.protocol_method)),
         ip_pool_node_id: form.ip_pool_node_id || null,
       }
       if (form.group_id) body.group_id = form.group_id
@@ -215,7 +222,14 @@ export function ProviderDialog({
               <Label>类型</Label>
               <select
                 value={form.type}
-                onChange={(e) => set("type", e.target.value)}
+                onChange={(e) => {
+                  const type = e.target.value
+                  setForm((current) => ({
+                    ...current, type,
+                    protocol_method: supportsProtocolMethod(type, current.protocol_method) ? current.protocol_method : "auto",
+                  }))
+                  setMethodChanged(true)
+                }}
                 className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
               >
                 {providerTypes.map((t) => (
@@ -286,6 +300,19 @@ export function ProviderDialog({
                   <div id="provider-key-selection-mode-help" className="text-xs text-muted-foreground">
                     {PROVIDER_KEY_SELECTION_MODE_HELP[form.key_selection_mode]}
                   </div>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="provider-protocol-method">接口方式</Label>
+                  <ProtocolMethodSelect
+                    id="provider-protocol-method"
+                    type={form.type}
+                    value={form.protocol_method}
+                    onChange={(method) => { set("protocol_method", method); setMethodChanged(true) }}
+                  />
+                  <span className="text-xs text-muted-foreground">自适应根据渠道和模型能力选择上游文本接口；固定方式只使用所选文本接口。图片、音频等专用接口不受此设置影响。</span>
+                  {provider?.protocol_policy === "fixed" && provider.protocol_preference?.includes(",") && !methodChanged && (
+                    <span className="text-xs text-amber-600">现有配置：{protocolMethodLabel(provider.protocol_policy, provider.protocol_preference)}。选择新方式后才会替换。</span>
+                  )}
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label>转发模式</Label>

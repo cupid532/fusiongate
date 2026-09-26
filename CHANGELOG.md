@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.09
+
+- Add an upstream interface method setting for channels, with adaptive selection or a fixed Chat Completions, Responses, or Messages endpoint where supported. Validate unsupported combinations and use the selected endpoint for forwarding and health checks.
+
 ## V3.08
 
 - Show “当前瓶颈” on Codex authentication cards only when the tighter quota window has 40% or less remaining; healthy windows no longer carry a warning badge.

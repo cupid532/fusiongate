@@ -27,6 +27,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { CodexCard } from "@/components/CodexCard"
+import { ProviderProtocolLabel } from "@/components/ProtocolMethodSelect"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { ModelPicker } from "@/components/ModelPicker"
 import { AuthEgressDialog } from "@/components/AuthEgressDialog"
@@ -458,7 +459,7 @@ export function AuthFiles() {
                                 />
                               </td>
                             )}
-                            <td className="px-4 py-3 font-medium">{p.name}</td>
+                            <td className="px-4 py-3 font-medium">{p.name}<div><ProviderProtocolLabel provider={p} /></div></td>
                             <td className="px-4 py-3 text-xs text-muted-foreground">{p.auth_email || "—"}</td>
                             <td className="px-4 py-3">
                               <div className="flex items-center gap-1.5">

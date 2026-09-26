@@ -92,6 +92,8 @@ export interface Provider {
   api_key_count: number
   enabled_api_key_count: number
   key_selection_mode: ProviderKeySelectionMode
+  protocol_policy: string
+  protocol_preference: string
 }
 
 export interface Route {
