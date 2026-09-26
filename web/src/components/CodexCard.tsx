@@ -7,6 +7,7 @@ import type { CodexAccountQuota, Provider } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
 import {
   REMAINING_CRITICAL,
+  REMAINING_WARNING,
   bindingWindow,
   formatResetDuration,
   namedWindows,
@@ -167,7 +168,7 @@ export function CodexCard({ provider }: { provider: Provider }) {
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="flex min-w-0 items-center gap-1.5 text-xs font-medium">
                           {w.label}
-                          {binding?.slot === w.slot && windows.length >= 2 && (
+                          {binding?.slot === w.slot && windows.length >= 2 && remaining <= REMAINING_WARNING && (
                             <Badge variant={remaining <= REMAINING_CRITICAL ? "danger" : "warning"}>当前瓶颈</Badge>
                           )}
                         </span>

@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.08
+
+- Show “当前瓶颈” on Codex authentication cards only when the tighter quota window has 40% or less remaining; healthy windows no longer carry a warning badge.
+
 ## V3.07
 
 - Add a dedicated Anthropic-compatible provider type for third-party Messages API upstreams, including model discovery, health checks, native Messages routing and OpenAI Chat translation. Responses is only used when explicitly detected for the route.
