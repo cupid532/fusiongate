@@ -16,6 +16,7 @@ import { useConfirm } from "@/components/ui/confirm"
 import { QueryError } from "@/components/ui/query-error"
 import { useDebounced } from "@/lib/use-debounced"
 import { exactTimeRange, type TimeGranularity } from "@/lib/exact-time-range"
+import { attemptLabel, attemptsForGatewayRequest } from "@/lib/request-attempts"
 
 type StatusFilter = "all" | "running" | "success" | "failed"
 
@@ -258,6 +259,7 @@ export function Requests() {
     })
   }, [firstPage, pageState.pages, pagesMatch, exactValueInvalid])
   const models = useMemo(() => [...new Set(rows.map((r) => r.model))].sort(), [rows])
+  const visibleAttempts = useMemo(() => new Map(rows.map((r) => [r.id, attemptsForGatewayRequest(rows, r.gateway_request_id)])), [rows])
   const isLoading = requestsQuery.isLoading && !exactValueInvalid
   const isFetching = requestsQuery.isFetching && !exactValueInvalid
   const loadingMore = pagesMatch && pageState.loading
@@ -337,7 +339,7 @@ export function Requests() {
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">请求账本</h1>
-          <p className="mt-1 text-sm text-muted-foreground">观察每一次请求的状态、耗时与 Token 用量。</p>
+          <p className="mt-1 text-sm text-muted-foreground">观察请求状态、耗时与故障转移信息。纯透传不解析 Token 或结算费用；新请求用量和费用未知，历史统计保留。</p>
         </div>
         <Button variant="outline" disabled={exactValueInvalid} onClick={() => void refetch()}>
           <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
@@ -351,7 +353,7 @@ export function Requests() {
           { label: "成功", value: summary.ok.toLocaleString(), tone: "text-emerald-600" },
           { label: "失败", value: summary.failed.toLocaleString(), tone: summary.failed ? "text-destructive" : "text-muted-foreground" },
           { label: "综合缓存率", value: `${summary.cacheRate.toFixed(1)}%`, tone: summary.cacheRate >= 50 ? "text-emerald-600" : summary.cacheRate > 0 ? "text-amber-500" : "text-muted-foreground" },
-          { label: "总 Token · 费用", value: `${formatTokens(summary.tokens)} · ${formatCost(summary.cost)}`, tone: "text-primary" },
+          { label: "Token · 费用", value: "新请求未知", tone: "text-amber-600" },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border bg-card p-3">
             <div className="text-[11px] text-muted-foreground">{s.label}</div>
@@ -479,7 +481,7 @@ export function Requests() {
             <div className="ml-auto flex min-w-0 w-full flex-wrap items-center gap-2 sm:w-auto">
               <div className="relative min-w-0 flex-1 sm:flex-none">
                 <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input aria-label="搜索请求账本" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / 访问秘钥名称或前缀 / IP / 错误" className="h-8 w-full pl-8 text-xs sm:w-72" />
+                <Input aria-label="搜索请求账本" value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索模型 / 秘钥 / IP / 错误 / Gateway Request ID" className="h-8 w-full pl-8 text-xs sm:w-72" />
               </div>
               <Input
                 aria-label="按模型筛选请求"
@@ -671,11 +673,11 @@ export function Requests() {
                             if (r.output_tokens > 0) parts.push(`出 ${formatTokens(r.output_tokens)}`)
                             if (parts.length) return parts.join(" · ")
                             if (r.running) return ""
-                            return r.usage_reported ? "0" : "未采集"
+                            return r.usage_reported ? "0" : "未知"
                           })()}
                         </td>
                         <td className="px-4 py-3"><CacheRateBadge cached={r.cached_tokens} input={r.input_tokens} /></td>
-                        <td className="px-4 py-3 text-xs text-muted-foreground">{formatCost(r.cost_micros)}</td>
+                        <td className="px-4 py-3 text-xs text-muted-foreground">{r.usage_reported || r.cost_micros > 0 ? formatCost(r.cost_micros) : "未知"}</td>
                       </tr>
                       <AnimatePresence initial={false}>
                         {expandedId === r.request_id && (
@@ -691,7 +693,7 @@ export function Requests() {
                                 <div className="bg-muted/30 px-4 py-3">
                                   <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs md:grid-cols-4">
                                     <div><div className="text-muted-foreground">Request ID</div><div className="break-all font-mono">{r.request_id}</div></div>
-                                    <div><div className="text-muted-foreground">Gateway Request ID</div><div className="break-all font-mono">{r.gateway_request_id}</div></div>
+                                    <div><div className="text-muted-foreground">Gateway Request ID</div><div className="break-all font-mono">{r.gateway_request_id || "未知"}</div>{r.gateway_request_id && <Button type="button" variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => { setQ(r.gateway_request_id); setExpandedId(null) }}>按此 ID 搜索</Button>}</div>
                                     <div><div className="text-muted-foreground">Client IP</div><div className="font-mono">{r.client_ip}</div></div>
                                     <div><div className="text-muted-foreground">访问秘钥</div><div>{r.api_key_name || "---"}{r.api_key_prefix && <span className="ml-1 font-mono text-muted-foreground">({r.api_key_prefix})</span>}</div></div>
                                     {!r.success && !r.running && r.error_type && (
@@ -701,11 +703,17 @@ export function Requests() {
                                       <div><div className="text-muted-foreground">Retry Reason</div><div className="font-mono">{r.retry_reason}</div></div>
                                     )}
                                     <div><div className="text-muted-foreground">Attempt</div><div className="font-mono">{r.attempt}</div></div>
+                                    <div><div className="text-muted-foreground">Routing Strategy</div><div className="font-mono">{r.routing_strategy || "未知"}</div></div>
+                                    <div><div className="text-muted-foreground">候选渠道数</div><div className="font-mono">{r.candidate_count ?? "未知"}</div></div>
+                                    <div className="md:col-span-2"><div className="text-muted-foreground">本页尝试序列（可能不完整）</div><ol className="mt-1 list-inside list-decimal space-y-0.5 font-mono">{(visibleAttempts.get(r.id) ?? []).map((attempt) => <li key={attempt.id}>{attemptLabel(attempt)}{attempt.retry_reason ? ` · ${attempt.retry_reason}` : ""}</li>)}</ol><div className="mt-1 text-muted-foreground">账本未提供完整尝试链；这里只列出当前已加载页面中的相关记录。</div></div>
+                                    <div><div className="text-muted-foreground">当前尝试</div><div className="font-mono">{attemptLabel(r)}{r.retry_reason ? ` · ${r.retry_reason}` : ""}</div></div>
+                                    <div><div className="text-muted-foreground">候选排除原因</div><div className="font-mono">{r.candidate_exclusions || "未知"}</div></div>
+                                    <div><div className="text-muted-foreground">停止原因</div><div className="font-mono">{r.stop_reason || "未知"}</div></div>
                                     <div><div className="text-muted-foreground">Total Latency</div><div className="font-mono">{duration(r.latency_ms)}</div></div>
-                                    <div><div className="text-muted-foreground">Input Tokens</div><div className="font-mono">{formatTokens(r.input_tokens)}</div></div>
-                                    <div><div className="text-muted-foreground">Output Tokens</div><div className="font-mono">{formatTokens(r.output_tokens)}</div></div>
-                                    <div><div className="text-muted-foreground">Cached Tokens</div><div className="font-mono">{formatTokens(r.cached_tokens)}</div></div>
-                                    <div><div className="text-muted-foreground">Reasoning Tokens</div><div className="font-mono">{formatTokens(r.reasoning_tokens)}</div></div>
+                                    <div><div className="text-muted-foreground">Input Tokens</div><div className="font-mono">{r.usage_reported ? formatTokens(r.input_tokens) : "未知"}</div></div>
+                                    <div><div className="text-muted-foreground">Output Tokens</div><div className="font-mono">{r.usage_reported ? formatTokens(r.output_tokens) : "未知"}</div></div>
+                                    <div><div className="text-muted-foreground">Cached Tokens</div><div className="font-mono">{r.usage_reported ? formatTokens(r.cached_tokens) : "未知"}</div></div>
+                                    <div><div className="text-muted-foreground">Reasoning Tokens</div><div className="font-mono">{r.usage_reported ? formatTokens(r.reasoning_tokens) : "未知"}</div></div>
                                     <div><div className="text-muted-foreground">Stream</div><div className="font-mono">{r.stream ? "Yes" : "No"}</div></div>
                                     <div><div className="text-muted-foreground">Protocol</div><div className="font-mono">{r.protocol}</div></div>
                                   </div>
@@ -729,7 +737,7 @@ export function Requests() {
           {!isLoading && !requestsQuery.isError && rows.length > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3 text-xs text-muted-foreground">
               <span>
-                已加载 <span className="font-medium tabular-nums text-foreground">{rows.length}</span> 条
+                已加载 <span className="font-medium tabular-nums text-foreground">{rows.length}</span> 条（尝试序列仅覆盖已加载记录，可能不完整）
                 {totalRows > rows.length && (
                   <>，当前筛选共 <span className="font-medium tabular-nums text-foreground">{totalRows.toLocaleString()}</span> 条</>
                 )}

@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestNormalizeResponsesSSEAddsEventAndRemovesPrivateFields(t *testing.T) {
+func TestLegacyAdapterNormalizeResponsesSSEAddsEventAndRemovesPrivateFields(t *testing.T) {
 	raw := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"in_progress\",\"output\":[],\"moderation\":null,\"tool_usage\":{\"web_search\":{\"num_requests\":0}}}}\n\n" +
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n" +
 		"data: [DONE]\n\n")
@@ -28,7 +28,7 @@ func TestNormalizeResponsesSSEAddsEventAndRemovesPrivateFields(t *testing.T) {
 	}
 }
 
-func TestCopyUpstreamRequestHeadersDropsCodexInternalResponsesLiteHeader(t *testing.T) {
+func TestLegacyAdapterCopyUpstreamRequestHeadersDropsCodexInternalResponsesLiteHeader(t *testing.T) {
 	src := http.Header{
 		"X-OpenAI-Internal-Codex-Responses-Lite": []string{"1"},
 		"X-Client-Trace":                         []string{"trace"},
@@ -45,7 +45,7 @@ func TestCopyUpstreamRequestHeadersDropsCodexInternalResponsesLiteHeader(t *test
 	}
 }
 
-func TestNormalizedCompatibleChatBodyConvertsDeveloperRole(t *testing.T) {
+func TestLegacyAdapterNormalizedCompatibleChatBodyConvertsDeveloperRole(t *testing.T) {
 	encoded, err := normalizedCompatibleChatBody([]byte(`{"model":"m","messages":[{"role":"developer","content":"rules"},{"role":"user","content":"hello"}]}`))
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestNormalizedCompatibleChatBodyConvertsDeveloperRole(t *testing.T) {
 	}
 }
 
-func TestNormalizedCompatibleChatBodyOmitsDeprecatedClaude5Sampling(t *testing.T) {
+func TestLegacyAdapterNormalizedCompatibleChatBodyOmitsDeprecatedClaude5Sampling(t *testing.T) {
 	for _, model := range []string{"claude-fable-5", "claude-haiku-5", "claude-opus-5", "claude-sonnet-5", "claude-sonnet-5-20260801"} {
 		encoded, err := normalizedCompatibleChatBody([]byte(`{"model":"` + model + `","temperature":0,"top_p":0.9,"messages":[{"role":"user","content":"hello"}]}`))
 		if err != nil {
@@ -80,7 +80,7 @@ func TestNormalizedCompatibleChatBodyOmitsDeprecatedClaude5Sampling(t *testing.T
 	}
 }
 
-func TestNormalizedCompatibleChatBodyPreservesSamplingForOlderClaudeModels(t *testing.T) {
+func TestLegacyAdapterNormalizedCompatibleChatBodyPreservesSamplingForOlderClaudeModels(t *testing.T) {
 	for _, model := range []string{"claude-sonnet-4-6", "claude-3-5-sonnet", "gpt-5.6-sol"} {
 		encoded, err := normalizedCompatibleChatBody([]byte(`{"model":"` + model + `","temperature":0,"top_p":0.9,"messages":[{"role":"user","content":"hello"}]}`))
 		if err != nil {
@@ -99,7 +99,7 @@ func TestNormalizedCompatibleChatBodyPreservesSamplingForOlderClaudeModels(t *te
 	}
 }
 
-func TestCompatibleResponsesBodyFromRequest(t *testing.T) {
+func TestLegacyAdapterCompatibleResponsesBodyFromRequest(t *testing.T) {
 	raw := []byte(`{"model":"public","instructions":"Be concise","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"function_call_output","call_id":"call-1","output":"found"}],"tools":[{"type":"function","name":"lookup","description":"Lookup","parameters":{"type":"object"}}],"tool_choice":{"type":"function","name":"lookup"},"max_output_tokens":64,"reasoning":{"effort":"low"},"stream":true}`)
 	encoded, stream, err := compatibleResponsesBodyFromRequest(raw, "upstream")
 	if err != nil {
@@ -131,7 +131,7 @@ func TestCompatibleResponsesBodyFromRequest(t *testing.T) {
 	}
 }
 
-func TestCompatibleResponsesFromChatJSONAndSSE(t *testing.T) {
+func TestLegacyAdapterCompatibleResponsesFromChatJSONAndSSE(t *testing.T) {
 	chat := []byte(`{"id":"chatcmpl-1","created":123,"choices":[{"message":{"role":"assistant","content":"OK","reasoning_content":"checked","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":7,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}`)
 	encoded, contentType, err := compatibleResponsesFromChat(chat, "public", false)
 	if err != nil {
@@ -162,7 +162,7 @@ func TestCompatibleResponsesFromChatJSONAndSSE(t *testing.T) {
 	}
 }
 
-func TestAnthropicRouteCanOptIntoNativeResponses(t *testing.T) {
+func TestLegacyAdapterAnthropicRouteCanOptIntoNativeResponses(t *testing.T) {
 	var gotPath, gotAPIKey, gotAuthorization string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -186,7 +186,7 @@ func TestAnthropicRouteCanOptIntoNativeResponses(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	a.Router().ServeHTTP(rec, req)
+	legacyAdapterRouter(a).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -205,7 +205,7 @@ func TestAnthropicRouteCanOptIntoNativeResponses(t *testing.T) {
 	}
 }
 
-func TestAnthropicResponsesRouteBridgesChatThroughResponses(t *testing.T) {
+func TestLegacyAdapterAnthropicResponsesRouteBridgesChatThroughResponses(t *testing.T) {
 	var gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -227,7 +227,7 @@ func TestAnthropicResponsesRouteBridgesChatThroughResponses(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	a.Router().ServeHTTP(rec, req)
+	legacyAdapterRouter(a).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -248,7 +248,7 @@ func TestAnthropicResponsesRouteBridgesChatThroughResponses(t *testing.T) {
 	}
 }
 
-func TestAnthropicRouteWithoutResponsesCapabilityIsRejected(t *testing.T) {
+func TestLegacyAdapterAnthropicRouteWithoutResponsesCapabilityIsRejected(t *testing.T) {
 	calls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -269,13 +269,13 @@ func TestAnthropicRouteWithoutResponsesCapabilityIsRejected(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	a.Router().ServeHTTP(rec, req)
+	legacyAdapterRouter(a).ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotImplemented || calls != 0 || !strings.Contains(rec.Body.String(), "protocol_not_supported") {
 		t.Fatalf("status=%d calls=%d body=%s", rec.Code, calls, rec.Body.String())
 	}
 }
 
-func TestResponsesFirstCompatibleProxyUsesNativeResponses(t *testing.T) {
+func TestLegacyAdapterResponsesFirstCompatibleProxyUsesNativeResponses(t *testing.T) {
 	paths := make([]string, 0, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -319,7 +319,7 @@ func TestResponsesFirstCompatibleProxyUsesNativeResponses(t *testing.T) {
 	}
 }
 
-func TestResponsesFirstCompatibleProxyFallsBackToChat(t *testing.T) {
+func TestLegacyAdapterResponsesFirstCompatibleProxyFallsBackToChat(t *testing.T) {
 	paths := make([]string, 0, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -370,7 +370,7 @@ func TestResponsesFirstCompatibleProxyFallsBackToChat(t *testing.T) {
 	}
 }
 
-func TestResponsesFirstCompatibleProxyDoesNotRetryAuthFailureAsChat(t *testing.T) {
+func TestLegacyAdapterResponsesFirstCompatibleProxyDoesNotRetryAuthFailureAsChat(t *testing.T) {
 	paths := make([]string, 0, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -403,7 +403,7 @@ func TestResponsesFirstCompatibleProxyDoesNotRetryAuthFailureAsChat(t *testing.T
 	}
 }
 
-func TestCompatibleResponsesProxyDecodesGzipAndBridgesChat(t *testing.T) {
+func TestLegacyAdapterCompatibleResponsesProxyDecodesGzipAndBridgesChat(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path=%q", r.URL.Path)
@@ -456,7 +456,7 @@ func TestCompatibleResponsesProxyDecodesGzipAndBridgesChat(t *testing.T) {
 	}
 }
 
-func TestCompatibleResponsesNonStreamUsesChatSSEUpstream(t *testing.T) {
+func TestLegacyAdapterCompatibleResponsesNonStreamUsesChatSSEUpstream(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
@@ -513,7 +513,7 @@ func cacheControlTTLs(node any) []string {
 	return ttls
 }
 
-func TestNormalizedCompatibleChatBodyDowngradesLateOneHourCacheTTL(t *testing.T) {
+func TestLegacyAdapterNormalizedCompatibleChatBodyDowngradesLateOneHourCacheTTL(t *testing.T) {
 	// Claude Code sends a multi block system prompt where a one hour cache
 	// marker trails a five minute one, which Anthropic upstreams reject with
 	// "a ttl='1h' cache_control block must not come after a ttl='5m' block".
@@ -550,7 +550,7 @@ func TestNormalizedCompatibleChatBodyDowngradesLateOneHourCacheTTL(t *testing.T)
 	}
 }
 
-func TestNormalizedCompatibleChatBodyKeepsCompliantCacheTTLOrder(t *testing.T) {
+func TestLegacyAdapterNormalizedCompatibleChatBodyKeepsCompliantCacheTTLOrder(t *testing.T) {
 	encoded, err := normalizedCompatibleChatBody([]byte(`{
 		"model": "claude-opus-5",
 		"tools": [{"type": "function", "function": {"name": "read"}, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
@@ -578,7 +578,7 @@ func TestNormalizedCompatibleChatBodyKeepsCompliantCacheTTLOrder(t *testing.T) {
 	}
 }
 
-func TestNormalizedCompatibleChatBodyOrdersSystemMessagesFirst(t *testing.T) {
+func TestLegacyAdapterNormalizedCompatibleChatBodyOrdersSystemMessagesFirst(t *testing.T) {
 	// Anthropic bridges lift system messages into the system array, so a one
 	// hour system marker must survive a five minute marker that appears
 	// earlier in the OpenAI message list.
@@ -602,7 +602,7 @@ func TestNormalizedCompatibleChatBodyOrdersSystemMessagesFirst(t *testing.T) {
 	}
 }
 
-func TestNormalizeAnthropicCacheControlTTLWalksToolsSystemThenMessages(t *testing.T) {
+func TestLegacyAdapterNormalizeAnthropicCacheControlTTLWalksToolsSystemThenMessages(t *testing.T) {
 	var body map[string]any
 	if err := json.Unmarshal([]byte(`{
 		"model": "claude-opus-5",
@@ -626,7 +626,7 @@ func TestNormalizeAnthropicCacheControlTTLWalksToolsSystemThenMessages(t *testin
 	}
 }
 
-func TestNormalizeAnthropicCacheControlTTLLeavesCompliantRequestsAlone(t *testing.T) {
+func TestLegacyAdapterNormalizeAnthropicCacheControlTTLLeavesCompliantRequestsAlone(t *testing.T) {
 	for _, raw := range []string{
 		`{"messages":[{"role":"user","content":"hi"}]}`,
 		`{"system":[{"type":"text","text":"a","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral","ttl":"5m"}}]}]}`,

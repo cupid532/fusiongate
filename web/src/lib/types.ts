@@ -52,7 +52,8 @@ export interface Provider {
   priority: number
   sort_order: number
   weight: number
-  passthrough_mode: string
+  passthrough_supported?: boolean
+  passthrough_reason?: string
   client_policy: string
   health_check_enabled: boolean
   max_concurrency: number
@@ -93,8 +94,6 @@ export interface Provider {
   api_key_count: number
   enabled_api_key_count: number
   key_selection_mode: ProviderKeySelectionMode
-  protocol_policy: string
-  protocol_preference: string
 }
 
 export interface Route {
@@ -133,6 +132,8 @@ export interface Route {
   health_check_error?: string
   health_check_latency_ms: number
   health_check_first_byte_ms: number
+  eligible_provider_count?: number
+  routing_warning?: string
 }
 
 export interface ModelAlias {
@@ -212,6 +213,10 @@ export interface RequestLedgerRow {
   usage_reported: boolean
   reasoning_effort: string
   stale?: boolean
+  routing_strategy?: string
+  candidate_count?: number
+  stop_reason?: string
+  candidate_exclusions?: string
 }
 
 export interface RequestLedgerTotals {

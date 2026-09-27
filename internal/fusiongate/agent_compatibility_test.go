@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestOpenCodeProviderSupportsResponsesTools(t *testing.T) {
+func TestLegacyAdapterOpenCodeProviderSupportsResponsesTools(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {
@@ -36,7 +36,7 @@ func TestOpenCodeProviderSupportsResponsesTools(t *testing.T) {
 	providerID := insertTestProvider(t, a, "opencode", "opencode", upstream.URL+"/v1", "opencode-secret", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "open-model", "gpt-5.6-sol", "chat,stream,tools,protocol:responses", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/responses", key, `{"model":"open-model","input":"inspect","tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],"stream":false}`, "opencode/1")
+	rec := legacyAdapterRequest(t, a, "/v1/responses", key, `{"model":"open-model","input":"inspect","tools":[{"type":"function","name":"read_file","parameters":{"type":"object"}}],"stream":false}`, "opencode/1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -52,7 +52,7 @@ func TestOpenCodeProviderSupportsResponsesTools(t *testing.T) {
 	}
 }
 
-func TestOpenCodeProviderUsesNativeMessagesForClaudeModels(t *testing.T) {
+func TestLegacyAdapterOpenCodeProviderUsesNativeMessagesForClaudeModels(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
@@ -75,13 +75,13 @@ func TestOpenCodeProviderUsesNativeMessagesForClaudeModels(t *testing.T) {
 	providerID := insertTestProvider(t, a, "opencode-claude", "opencode", upstream.URL+"/v1", "opencode-secret", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "claude-agent", "claude-sonnet-4-6", "chat,stream,tools,protocol:anthropic", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/messages", key, `{"model":"claude-agent","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`, "claude-cli/2.1.231")
+	rec := legacyAdapterRequest(t, a, "/v1/messages", key, `{"model":"claude-agent","max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`, "claude-cli/2.1.231")
 	if rec.Code != http.StatusOK || received["model"] != "claude-sonnet-4-6" || !strings.Contains(rec.Body.String(), `"model":"claude-agent"`) {
 		t.Fatalf("status=%d request=%#v body=%s", rec.Code, received, rec.Body.String())
 	}
 }
 
-func TestOpenCodeProviderUsesChatCompletionsForOpenModels(t *testing.T) {
+func TestLegacyAdapterOpenCodeProviderUsesChatCompletionsForOpenModels(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path=%q", r.URL.Path)
@@ -97,13 +97,13 @@ func TestOpenCodeProviderUsesChatCompletionsForOpenModels(t *testing.T) {
 	providerID := insertTestProvider(t, a, "opencode-chat", "opencode", upstream.URL+"/v1", "opencode-secret", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "glm-agent", "glm-5.2", "chat,stream,tools,protocol:chat", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"glm-agent","messages":[{"role":"user","content":"hello"}]}`, "opencode/1")
+	rec := legacyAdapterRequest(t, a, "/v1/chat/completions", key, `{"model":"glm-agent","messages":[{"role":"user","content":"hello"}]}`, "opencode/1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestCodexResponsesCompactForwardsUnaryPayloadAndTurnState(t *testing.T) {
+func TestLegacyAdapterCodexResponsesCompactForwardsUnaryPayloadAndTurnState(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses/compact" {
@@ -125,7 +125,7 @@ func TestCodexResponsesCompactForwardsUnaryPayloadAndTurnState(t *testing.T) {
 	providerID := insertTestProvider(t, a, "codex-compatible", "openai_compatible", upstream.URL, "secret", 1, 100, "normalized", "codex", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "gpt-agent", "gpt-upstream", "chat,stream,tools", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/responses/compact", key, `{"model":"gpt-agent","input":[{"role":"user","content":[]}],"instructions":"compact","parallel_tool_calls":true}`, "codex-cli/0.147.0")
+	rec := legacyAdapterRequest(t, a, "/v1/responses/compact", key, `{"model":"gpt-agent","input":[{"role":"user","content":[]}],"instructions":"compact","parallel_tool_calls":true}`, "codex-cli/0.147.0")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -137,7 +137,7 @@ func TestCodexResponsesCompactForwardsUnaryPayloadAndTurnState(t *testing.T) {
 	}
 }
 
-func TestCodexOAuthResponsesCompactUsesBackendPath(t *testing.T) {
+func TestLegacyAdapterCodexOAuthResponsesCompactUsesBackendPath(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses/compact" {
 			t.Errorf("path=%q", r.URL.Path)
@@ -162,13 +162,13 @@ func TestCodexOAuthResponsesCompactUsesBackendPath(t *testing.T) {
 	providerID, _ := res.LastInsertId()
 	insertTestRoute(t, a, providerID, "gpt-agent", "gpt-upstream", "chat,stream,tools", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/responses/compact", key, `{"model":"gpt-agent","input":[{"role":"user","content":[]}]}`, "codex-cli/0.147.0")
+	rec := legacyAdapterRequest(t, a, "/v1/responses/compact", key, `{"model":"gpt-agent","input":[{"role":"user","content":[]}]}`, "codex-cli/0.147.0")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
-func TestAnthropicTokenCountAndErrorsUseClaudeProtocol(t *testing.T) {
+func TestLegacyAdapterAnthropicTokenCountAndErrorsUseClaudeProtocol(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestAnthropicTokenCountAndErrorsUseClaudeProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/messages/count_tokens", key, `{"model":"claude-agent","messages":[{"role":"user","content":"hello"}]}`, "claude-cli/2.1.231")
+	rec := legacyAdapterRequest(t, a, "/v1/messages/count_tokens", key, `{"model":"claude-agent","messages":[{"role":"user","content":"hello"}]}`, "claude-cli/2.1.231")
 	if rec.Code != http.StatusOK || rec.Header().Get("request-id") == "" {
 		t.Fatalf("status=%d request-id=%q body=%s", rec.Code, rec.Header().Get("request-id"), rec.Body.String())
 	}
@@ -197,7 +197,7 @@ func TestAnthropicTokenCountAndErrorsUseClaudeProtocol(t *testing.T) {
 	bad := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"messages":[]}`))
 	bad.Header.Set("Authorization", "Bearer "+key)
 	badRec := httptest.NewRecorder()
-	a.Router().ServeHTTP(badRec, bad)
+	legacyAdapterRouter(a).ServeHTTP(badRec, bad)
 	var response map[string]any
 	if err := json.Unmarshal(badRec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
@@ -207,7 +207,7 @@ func TestAnthropicTokenCountAndErrorsUseClaudeProtocol(t *testing.T) {
 	}
 }
 
-func TestAnthropicTokenCountUsesNativeEndpoint(t *testing.T) {
+func TestLegacyAdapterAnthropicTokenCountUsesNativeEndpoint(t *testing.T) {
 	var model string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages/count_tokens" {
@@ -234,13 +234,13 @@ func TestAnthropicTokenCountUsesNativeEndpoint(t *testing.T) {
 	providerID := insertTestProvider(t, a, "anthropic-native", "anthropic", upstream.URL, "anthropic-secret", 1, 100, "normalized", "claude_code", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "claude-agent", "claude-upstream", "chat,stream,tools", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/messages/count_tokens", key, `{"model":"claude-agent","messages":[{"role":"user","content":"hello"}]}`, "claude-cli/2.1.231")
+	rec := legacyAdapterRequest(t, a, "/v1/messages/count_tokens", key, `{"model":"claude-agent","messages":[{"role":"user","content":"hello"}]}`, "claude-cli/2.1.231")
 	if rec.Code != http.StatusOK || model != "claude-upstream" || rec.Header().Get("request-id") != "req_upstream" {
 		t.Fatalf("status=%d model=%q request-id=%q body=%s", rec.Code, model, rec.Header().Get("request-id"), rec.Body.String())
 	}
 }
 
-func TestAnthropicNativeClientErrorUsesClaudeEnvelope(t *testing.T) {
+func TestLegacyAdapterAnthropicNativeClientErrorUsesClaudeEnvelope(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"bad tools"}}`)
@@ -254,7 +254,7 @@ func TestAnthropicNativeClientErrorUsesClaudeEnvelope(t *testing.T) {
 	providerID := insertTestProvider(t, a, "anthropic-error", "anthropic", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "claude-agent", "claude-upstream", "chat", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/messages", key, `{"model":"claude-agent","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, "claude-cli/2.1.231")
+	rec := legacyAdapterRequest(t, a, "/v1/messages", key, `{"model":"claude-agent","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, "claude-cli/2.1.231")
 	var response map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)

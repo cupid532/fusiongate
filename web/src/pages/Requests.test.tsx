@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { apiDownload } from "@/lib/api"
 import { exactTimeRange } from "@/lib/exact-time-range"
+import { attemptsForGatewayRequest } from "@/lib/request-attempts"
 import { notifySuccess } from "@/lib/notify"
 import type { RequestLedgerPayload, RequestLedgerRow } from "@/lib/types"
 import { Requests } from "./Requests"
@@ -85,6 +86,20 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+describe("request attempt sequences", () => {
+  it("groups same gateway request rows by attempt and labels a partial page honestly", () => {
+    const sequence = [
+      { ...row(3), gateway_request_id: "gateway-shared", attempt: 3 },
+      { ...row(9), gateway_request_id: "another", attempt: 1 },
+      { ...row(1), gateway_request_id: "gateway-shared", attempt: 1 },
+      { ...row(2), gateway_request_id: "gateway-shared", attempt: 2, retry_reason: "503" },
+    ]
+    expect(attemptsForGatewayRequest(sequence, "gateway-shared").map((item) => item.attempt)).toEqual([1, 2, 3])
+    expect(attemptsForGatewayRequest(sequence.slice(0, 1), "gateway-shared").map((item) => item.attempt)).toEqual([3])
+    expect(attemptsForGatewayRequest(sequence, "missing")).toEqual([])
+  })
+})
+
 describe("Requests filters", () => {
   it("blocks invalid exact times, hides cached rows and discards a pending page", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
@@ -151,6 +166,26 @@ describe("Requests filters", () => {
 
     fireEvent.change(screen.getByLabelText("按模型筛选请求"), { target: { value: "another-retired-model" } })
     await waitFor(() => expect(lastParams().get("model")).toBe("another-retired-model"))
+  })
+
+  it("searches by gateway request ID using the existing server q filter", async () => {
+    list.mockImplementation((params) => params.get("q") === "gateway-5" ? page([5], 1) : page([5, 4]))
+    mount()
+    await screen.findByText("model-5")
+    fireEvent.click(screen.getByText("model-5").closest("tr")!)
+    fireEvent.click(await screen.findByRole("button", { name: "按此 ID 搜索" }))
+    await waitFor(() => expect(lastParams().get("q")).toBe("gateway-5"))
+    expect(screen.getByLabelText<HTMLInputElement>("搜索请求账本").value).toBe("gateway-5")
+  })
+
+  it("keeps unreported token counts unknown in expanded details and preserves reported zeros", async () => {
+    list.mockReturnValue({ ...page([5, 4], 2), items: [{ ...row(5), usage_reported: false, input_tokens: 0, output_tokens: 0, total_tokens: 0 }, { ...row(4), usage_reported: true, input_tokens: 0, output_tokens: 0, total_tokens: 0 }] })
+    mount()
+    await screen.findByText("model-5")
+    fireEvent.click(screen.getByText("model-5").closest("tr")!)
+    expect(screen.getAllByText("未知").length).toBeGreaterThanOrEqual(4)
+    fireEvent.click(screen.getByText("model-4").closest("tr")!)
+    expect(screen.getAllByText("0", { selector: "div.font-mono" }).length).toBeGreaterThanOrEqual(4)
   })
 
   it("keeps quick-range bounds identical after time passes, filters change and pages load", async () => {

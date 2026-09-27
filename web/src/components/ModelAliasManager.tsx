@@ -43,6 +43,7 @@ export function ModelAliasManager({ model, aliases, upstreamModels }: { model: s
             {modelAliases.map((item) => (
               <span key={item.alias} className="inline-flex items-center gap-1 rounded-full border bg-background py-0.5 pl-2.5 pr-1">
                 <span className={`font-mono text-xs ${item.enabled ? "text-foreground" : "text-muted-foreground line-through"}`}>{item.alias}</span>
+                <Badge variant="warning">不改写模型</Badge>
                 <button
                   className="rounded-full p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   onClick={() => update.mutate({ name: item.alias, enabled: !item.enabled })}
@@ -60,7 +61,7 @@ export function ModelAliasManager({ model, aliases, upstreamModels }: { model: s
               </span>
             ))}
           </div>
-          <p className="mt-1.5 text-xs text-muted-foreground">这些名称进入同一个轮询、熔断与故障转移组；上游仍使用下方各渠道自己的模型名。</p>
+          <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">纯透传不会重写请求中的模型名；这些历史别名保留在此管理，但不参与推理模型改写。请为模型配置上游原生支持的同名路由。</p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           {availableSlashAliases.length > 0 && (
@@ -69,9 +70,9 @@ export function ModelAliasManager({ model, aliases, upstreamModels }: { model: s
               onChange={(event) => { if (event.target.value) create.mutate(event.target.value) }}
               disabled={create.isPending}
               className="h-8 max-w-72 rounded-md border border-input bg-transparent px-2 font-mono text-xs"
-              title="在规范模型名或上游模型名前添加 /，作为新的调用名称"
+              title="保存旧式 / 调用别名；纯透传不会重写请求模型名"
             >
-              <option value="">添加 / 前缀调用名…</option>
+              <option value="">添加 / 前缀别名（不改写模型）…</option>
               {availableSlashAliases.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           )}
@@ -88,6 +89,7 @@ export function ModelAliasManager({ model, aliases, upstreamModels }: { model: s
             onChange={(event) => setAlias(event.target.value)}
             onKeyDown={(event) => { if (event.key === "Enter" && alias.trim()) create.mutate(alias) }}
             placeholder={`例如 /${model}`}
+            aria-label="自定义调用别名（不改写请求模型）"
             className="h-8 font-mono text-xs"
             autoFocus
           />

@@ -87,8 +87,8 @@ func TestFailoverRecordsAttempts(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "primary", "openai_compatible", first.URL, "one", 2, 100, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "backup", "openai_compatible", second.URL, "two", 1, 100, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "smart", "upstream", "chat,stream", 1)
-	insertTestRoute(t, a, p2, "smart", "upstream", "chat,stream", 1)
+	insertTestRoute(t, a, p1, "smart", "smart", "chat,stream", 1)
+	insertTestRoute(t, a, p2, "smart", "smart", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"smart","messages":[{"role":"user","content":"ping"}]}`, "test-client/1")
@@ -288,8 +288,8 @@ func TestStreamingDoesNotFailOverAfterResponseStarts(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "stream-primary", "openai_compatible", first.URL, "one", 2, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "stream-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "stream-model", "upstream", "chat,stream", 1)
-	insertTestRoute(t, a, p2, "stream-model", "upstream", "chat,stream", 1)
+	insertTestRoute(t, a, p1, "stream-model", "stream-model", "chat,stream", 1)
+	insertTestRoute(t, a, p2, "stream-model", "stream-model", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"stream-model","stream":true,"messages":[]}`, "test/1")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "partial") {
@@ -300,7 +300,7 @@ func TestStreamingDoesNotFailOverAfterResponseStarts(t *testing.T) {
 	}
 }
 
-func TestStreamingFailsOverBeforeFirstByte(t *testing.T) {
+func TestStreamingReadFailureAfterHeadersDoesNotFailOver(t *testing.T) {
 	first := abruptServer(t, "", 100)
 	defer first.Close()
 	var backupCalls atomic.Int32
@@ -317,15 +317,22 @@ func TestStreamingFailsOverBeforeFirstByte(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "empty-primary", "openai_compatible", first.URL, "one", 2, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "empty-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "stream-model", "upstream", "chat,stream", 1)
-	insertTestRoute(t, a, p2, "stream-model", "upstream", "chat,stream", 1)
+	insertTestRoute(t, a, p1, "stream-model", "stream-model", "chat,stream", 1)
+	insertTestRoute(t, a, p2, "stream-model", "stream-model", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"stream-model","stream":true,"messages":[]}`, "test/1")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "backup") {
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
 		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	if backupCalls.Load() != 1 {
+	if backupCalls.Load() != 0 {
 		t.Fatalf("backup calls = %d", backupCalls.Load())
+	}
+
+	a.flushLedgerWrites()
+	var success int
+	var stop string
+	if err := a.db.QueryRow(`SELECT success,stop_reason FROM request_ledger LIMIT 1`).Scan(&success, &stop); err != nil || success != 0 || stop != "response_interrupted" {
+		t.Fatalf("success=%d stop=%q err=%v", success, stop, err)
 	}
 }
 
@@ -370,8 +377,8 @@ func TestClientErrorDoesNotFailOver(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "client-error", "openai_compatible", primary.URL, "one", 2, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "unused-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "model", "upstream", "chat", 1)
-	insertTestRoute(t, a, p2, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, p1, "model", "model", "chat", 1)
+	insertTestRoute(t, a, p2, "model", "model", "chat", 1)
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"model","messages":[]}`, "test/1")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "bad input") {
@@ -400,14 +407,14 @@ func TestRetryAfterPropagatesAfterAllProvidersRateLimit(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "limited-one", "openai_compatible", first.URL, "one", 1, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "limited-two", "openai_compatible", second.URL, "two", 2, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "model", "upstream", "chat", 1)
-	insertTestRoute(t, a, p2, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, p1, "model", "model", "chat", 1)
+	insertTestRoute(t, a, p2, "model", "model", "chat", 1)
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"model","messages":[]}`, "test/1")
-	if rec.Code != http.StatusServiceUnavailable {
+	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if rec.Header().Get("Retry-After") != "17" {
+	if rec.Header().Get("Retry-After") != "7" {
 		t.Fatalf("Retry-After = %q", rec.Header().Get("Retry-After"))
 	}
 }
@@ -437,8 +444,8 @@ func TestImageTransportFailureFailsOverBeforeClientResponse(t *testing.T) {
 	}
 	p1 := insertTestProvider(t, a, "image-primary", "openai_compatible", broken.URL, "one", 2, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "image-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "image-model", "upstream", "image", 1)
-	insertTestRoute(t, a, p2, "image-model", "upstream", "image", 1)
+	insertTestRoute(t, a, p1, "image-model", "image-model", "image", 1)
+	insertTestRoute(t, a, p2, "image-model", "image-model", "image", 1)
 	key := insertTestKey(t, a, true)
 	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"image-model","prompt":"cat"}`, "test/1")
 	if rec.Code != http.StatusOK {
@@ -452,7 +459,7 @@ func TestImageTransportFailureFailsOverBeforeClientResponse(t *testing.T) {
 	}
 }
 
-func TestEmptyStreamFailsOverBeforeHeadersAreCommitted(t *testing.T) {
+func TestEmptySuccessfulStreamPassesThrough(t *testing.T) {
 	var primaryCalls, backupCalls atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		primaryCalls.Add(1)
@@ -474,23 +481,15 @@ func TestEmptyStreamFailsOverBeforeHeadersAreCommitted(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "empty-stream", "openai_compatible", primary.URL, "one", 2, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "stream-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "model", "upstream", "chat,stream", 1)
-	insertTestRoute(t, a, p2, "model", "upstream", "chat,stream", 1)
+	insertTestRoute(t, a, p1, "model", "model", "chat,stream", 1)
+	insertTestRoute(t, a, p2, "model", "model", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"model","stream":true,"messages":[]}`, "test/1")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "backup") {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
 	}
-	if primaryCalls.Load() != 1 || backupCalls.Load() != 1 {
+	if primaryCalls.Load() != 1 || backupCalls.Load() != 0 {
 		t.Fatalf("calls primary=%d backup=%d", primaryCalls.Load(), backupCalls.Load())
-	}
-	a.flushLedgerWrites()
-	var retryReason string
-	if err := a.db.QueryRow(`SELECT retry_reason FROM request_ledger WHERE attempt=2`).Scan(&retryReason); err != nil {
-		t.Fatal(err)
-	}
-	if retryReason != "upstream_empty_stream" {
-		t.Fatalf("retry reason = %q", retryReason)
 	}
 }
 
@@ -515,8 +514,8 @@ func TestRetryAfterImmediatelyOpensProviderCircuit(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "rate-limited", "openai_compatible", primary.URL, "one", 2, 1, "normalized", "any", 0, 5, 30)
 	p2 := insertTestProvider(t, a, "rate-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 5, 30)
-	insertTestRoute(t, a, p1, "model", "upstream", "chat", 1)
-	insertTestRoute(t, a, p2, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, p1, "model", "model", "chat", 1)
+	insertTestRoute(t, a, p2, "model", "model", "chat", 1)
 	key := insertTestKey(t, a, false)
 
 	for range 2 {
@@ -577,8 +576,8 @@ func TestRateLimitWithoutRetryAfterImmediatelyOpensProviderCircuit(t *testing.T)
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "rate-limited-no-retry-after", "openai_compatible", primary.URL, "one", 2, 1, "normalized", "any", 0, 5, 30)
 	p2 := insertTestProvider(t, a, "rate-backup-no-retry-after", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 5, 30)
-	insertTestRoute(t, a, p1, "model", "upstream", "chat", 1)
-	insertTestRoute(t, a, p2, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, p1, "model", "model", "chat", 1)
+	insertTestRoute(t, a, p2, "model", "model", "chat", 1)
 	key := insertTestKey(t, a, false)
 
 	for range 2 {
@@ -884,7 +883,7 @@ func TestProviderFailuresOpenCircuitWithoutChangingManualToggle(t *testing.T) {
 	defer a.Close()
 
 	providerID := insertTestProvider(t, a, "temporary-circuit", "openai_compatible", "http://provider.test", "secret", 1, 1, "normalized", "any", 0, 5, 30)
-	insertTestRoute(t, a, providerID, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, providerID, "model", "model", "chat", 1)
 	z := resolvedRoute{
 		Route:    Route{ID: 1, ProviderID: providerID, PublicName: "model", UpstreamModel: "upstream"},
 		Provider: Provider{ID: providerID, FailureThreshold: 5, CooldownSeconds: 30},
@@ -938,8 +937,8 @@ func TestConnectionFailureFailsOverBeforeAnyResponse(t *testing.T) {
 	defer a.Close()
 	p1 := insertTestProvider(t, a, "offline-primary", "openai_compatible", primaryURL, "one", 2, 1, "normalized", "any", 0, 3, 30)
 	p2 := insertTestProvider(t, a, "live-backup", "openai_compatible", backup.URL, "two", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, p1, "model", "upstream", "chat", 1)
-	insertTestRoute(t, a, p2, "model", "upstream", "chat", 1)
+	insertTestRoute(t, a, p1, "model", "model", "chat", 1)
+	insertTestRoute(t, a, p2, "model", "model", "chat", 1)
 	key := insertTestKey(t, a, false)
 
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"model","messages":[]}`, "test/1")
@@ -959,13 +958,13 @@ func TestConnectionFailureFailsOverBeforeAnyResponse(t *testing.T) {
 	}
 }
 
-func TestNonStreamingChatUsesUpstreamSSEAndReturnsJSON(t *testing.T) {
+func TestNonStreamingChatPreservesUnexpectedUpstreamSSE(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
 			t.Fatal(err)
 		}
-		if r.Header.Get("Accept") != "text/event-stream" {
+		if r.Header.Get("Accept") != "" {
 			t.Errorf("accept=%q", r.Header.Get("Accept"))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -982,26 +981,16 @@ func TestNonStreamingChatUsesUpstreamSSEAndReturnsJSON(t *testing.T) {
 	}
 	defer a.Close()
 	providerID := insertTestProvider(t, a, "streamed-chat", "openai_compatible", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, providerID, "public", "upstream", "chat,stream", 1)
+	insertTestRoute(t, a, providerID, "public", "public", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"public","stream":false,"messages":[{"role":"user","content":"hello"}]}`, "test/1")
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/event-stream") {
 		t.Fatalf("status=%d type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
-	if received["stream"] != true || asMap(received["stream_options"])["include_usage"] != true {
+	if received["stream"] != false || received["stream_options"] != nil {
 		t.Fatalf("upstream request=%#v", received)
 	}
-	var completed map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &completed); err != nil {
-		t.Fatal(err)
-	}
-	choice := asMap(anySlice(completed["choices"])[0])
-	message := asMap(choice["message"])
-	function := asMap(asMap(anySlice(message["tool_calls"])[0])["function"])
-	if message["content"] != "long answer" || choice["finish_reason"] != "tool_calls" || function["arguments"] != `{"q":1}` {
-		t.Fatalf("completed=%#v", completed)
-	}
-	if asInt64(asMap(completed["usage"])["prompt_tokens"]) != 11 || asInt64(asMap(completed["usage"])["completion_tokens"]) != 7 {
-		t.Fatalf("usage=%#v", completed["usage"])
+	if !strings.Contains(rec.Body.String(), `"delta":{"role":"assistant","content":"long "}`) || !strings.Contains(rec.Body.String(), `"tool_calls"`) || !strings.Contains(rec.Body.String(), `"prompt_tokens":11`) {
+		t.Fatalf("upstream stream was not forwarded unchanged: %s", rec.Body.String())
 	}
 }

@@ -29,7 +29,7 @@ func codexCompletedSSEText(id, text string) string {
 		"data: [DONE]\n\n", id, text, id)
 }
 
-func TestNormalizedCodexResponsesBody(t *testing.T) {
+func TestLegacyAdapterNormalizedCodexResponsesBody(t *testing.T) {
 	encoded, err := normalizedCodexResponsesBody([]byte(`{"model":"public","input":"hello","stream":false,"store":true,"max_output_tokens":12,"stream_options":{"include_usage":true}}`), "upstream")
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestNormalizedCodexResponsesBody(t *testing.T) {
 	}
 }
 
-func TestCodexChatRequestAndResponseConversion(t *testing.T) {
+func TestLegacyAdapterCodexChatRequestAndResponseConversion(t *testing.T) {
 	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"system","content":"Be concise"},{"role":"user","content":"Hello"},{"role":"assistant","content":"Checking","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{\"q\":1}"}}]},{"role":"tool","tool_call_id":"call-1","content":"found"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup","parameters":{"type":"object"}}}],"reasoning_effort":"low","stream":false}`), "upstream")
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestCodexChatRequestAndResponseConversion(t *testing.T) {
 	}
 }
 
-func TestCodexChatRequestAcceptsResponsesReasoningShape(t *testing.T) {
+func TestLegacyAdapterCodexChatRequestAcceptsResponsesReasoningShape(t *testing.T) {
 	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":"Hello"}],"reasoning":{"effort":"xhigh"}}`), "upstream")
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +127,7 @@ func TestCodexChatRequestAcceptsResponsesReasoningShape(t *testing.T) {
 	}
 }
 
-func TestCodexChatReasoningEffortPrefersExplicitChatField(t *testing.T) {
+func TestLegacyAdapterCodexChatReasoningEffortPrefersExplicitChatField(t *testing.T) {
 	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":"Hello"}],"reasoning_effort":"low","reasoning":{"effort":"high"}}`), "upstream")
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestCodexChatReasoningEffortPrefersExplicitChatField(t *testing.T) {
 	}
 }
 
-func TestCodexChatRequestPreservesImageInput(t *testing.T) {
+func TestLegacyAdapterCodexChatRequestPreservesImageInput(t *testing.T) {
 	encoded, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":[{"type":"text","text":"What is shown?"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8=","detail":"high"}}]}]}`), "upstream")
 	if err != nil {
 		t.Fatal(err)
@@ -161,14 +161,14 @@ func TestCodexChatRequestPreservesImageInput(t *testing.T) {
 	}
 }
 
-func TestCodexChatRequestRejectsMalformedImageInput(t *testing.T) {
+func TestLegacyAdapterCodexChatRequestRejectsMalformedImageInput(t *testing.T) {
 	_, err := codexResponsesBodyFromChat([]byte(`{"model":"public","messages":[{"role":"user","content":[{"type":"image_url","image_url":{}}]}]}`), "upstream")
 	if err == nil || !strings.Contains(err.Error(), "image_url.url") {
 		t.Fatalf("err=%v", err)
 	}
 }
 
-func TestCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
+func TestLegacyAdapterCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {
@@ -199,7 +199,7 @@ func TestCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
 	insertTestRoute(t, a, providerID, "gpt-plus", "gpt-upstream", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 
-	recorder := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"gpt-plus","messages":[{"role":"user","content":"Hello"}],"stream":false}`, "")
+	recorder := legacyAdapterRequest(t, a, "/v1/chat/completions", key, `{"model":"gpt-plus","messages":[{"role":"user","content":"Hello"}],"stream":false}`, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -226,7 +226,7 @@ func TestCodexChatCompletionsUsesResponsesBridge(t *testing.T) {
 	}
 }
 
-func TestCodexChatCompletionsBridgesSSEWithoutContentType(t *testing.T) {
+func TestLegacyAdapterCodexChatCompletionsBridgesSSEWithoutContentType(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {
@@ -258,7 +258,7 @@ func TestCodexChatCompletionsBridgesSSEWithoutContentType(t *testing.T) {
 	insertTestRoute(t, a, providerID, "gpt-plus-noc", "gpt-upstream", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 
-	recorder := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"gpt-plus-noc","messages":[{"role":"user","content":"Hello"}],"stream":false}`, "")
+	recorder := legacyAdapterRequest(t, a, "/v1/chat/completions", key, `{"model":"gpt-plus-noc","messages":[{"role":"user","content":"Hello"}],"stream":false}`, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -276,7 +276,7 @@ func TestCodexChatCompletionsBridgesSSEWithoutContentType(t *testing.T) {
 	}
 }
 
-func TestUpstreamIsEventStreamTreatsMissingContentTypeAsSSE(t *testing.T) {
+func TestLegacyAdapterUpstreamIsEventStreamTreatsMissingContentTypeAsSSE(t *testing.T) {
 	if !upstreamIsEventStream("text/event-stream", false) {
 		t.Fatal("text/event-stream should be SSE")
 	}
@@ -297,7 +297,7 @@ func TestUpstreamIsEventStreamTreatsMissingContentTypeAsSSE(t *testing.T) {
 	}
 }
 
-func TestCompletedCodexResponseReassemblesMultipleOutputItems(t *testing.T) {
+func TestLegacyAdapterCompletedCodexResponseReassemblesMultipleOutputItems(t *testing.T) {
 	stream := `event: response.output_item.done
 ` +
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"reasoning-1","type":"reasoning","summary":[{"type":"summary_text","text":"brief"}]}}
@@ -336,7 +336,7 @@ func TestCompletedCodexResponseReassemblesMultipleOutputItems(t *testing.T) {
 	}
 }
 
-func TestCompletedCodexResponsePreservesExistingOutput(t *testing.T) {
+func TestLegacyAdapterCompletedCodexResponsePreservesExistingOutput(t *testing.T) {
 	stream := `event: response.output_item.done
 ` +
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"event-item","type":"message","role":"assistant","content":[]}}
@@ -363,7 +363,7 @@ func TestCompletedCodexResponsePreservesExistingOutput(t *testing.T) {
 	}
 }
 
-func TestCodexResponsesIncompleteSSEIsRetryable(t *testing.T) {
+func TestLegacyAdapterCodexResponsesIncompleteSSEIsRetryable(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"incomplete\"}}\n\n"))
@@ -387,7 +387,7 @@ func TestCodexResponsesIncompleteSSEIsRetryable(t *testing.T) {
 	}
 }
 
-func TestOpenAICompatibleResponsesPreserveMaxOutputTokens(t *testing.T) {
+func TestLegacyAdapterOpenAICompatibleResponsesPreserveMaxOutputTokens(t *testing.T) {
 	encoded, err := normalizedOpenAIBody([]byte(`{"model":"public","input":"hello","max_output_tokens":12}`), "upstream", false, true)
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +401,7 @@ func TestOpenAICompatibleResponsesPreserveMaxOutputTokens(t *testing.T) {
 	}
 }
 
-func TestNormalizedOpenAIBodyDoesNotAddStreamToNonStreamingEndpointBody(t *testing.T) {
+func TestLegacyAdapterNormalizedOpenAIBodyDoesNotAddStreamToNonStreamingEndpointBody(t *testing.T) {
 	encoded, err := normalizedOpenAIBody([]byte(`{"model":"public","prompt":"draw a fox"}`), "upstream", false, true)
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +415,7 @@ func TestNormalizedOpenAIBodyDoesNotAddStreamToNonStreamingEndpointBody(t *testi
 	}
 }
 
-func TestCodexResponsesNonStreamBuffersCompletedEvent(t *testing.T) {
+func TestLegacyAdapterCodexResponsesNonStreamBuffersCompletedEvent(t *testing.T) {
 	var received map[string]any
 	var accept string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -471,7 +471,7 @@ func TestCodexResponsesNonStreamBuffersCompletedEvent(t *testing.T) {
 	}
 }
 
-func TestCodexResponsesStreamRemainsSSE(t *testing.T) {
+func TestLegacyAdapterCodexResponsesStreamRemainsSSE(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -503,7 +503,7 @@ func TestCodexResponsesStreamRemainsSSE(t *testing.T) {
 	}
 }
 
-func TestCodexResponsesUpstreamErrorIsPreserved(t *testing.T) {
+func TestLegacyAdapterCodexResponsesUpstreamErrorIsPreserved(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)

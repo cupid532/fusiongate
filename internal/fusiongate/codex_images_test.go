@@ -28,7 +28,7 @@ func insertCodexOAuthTestProvider(t *testing.T, a *App, baseURL string) int64 {
 	return providerID
 }
 
-func TestCodexOAuthImageGenerationUsesResponsesImageTool(t *testing.T) {
+func TestLegacyAdapterCodexOAuthImageGenerationUsesResponsesImageTool(t *testing.T) {
 	encodedImage := base64.StdEncoding.EncodeToString([]byte("valid-image-bytes"))
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {
@@ -94,7 +94,7 @@ func TestCodexOAuthImageGenerationUsesResponsesImageTool(t *testing.T) {
 	insertTestRoute(t, a, providerID, "gpt-image-2", "gpt-5.5", "image", 10)
 	key := insertTestKey(t, a, true)
 
-	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw a cat","n":1,"size":"1024x1024","quality":"high","response_format":"b64_json","output_format":"png"}`, "browser-client/1")
+	rec := legacyAdapterRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw a cat","n":1,"size":"1024x1024","quality":"high","response_format":"b64_json","output_format":"png"}`, "browser-client/1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -115,7 +115,7 @@ func TestCodexOAuthImageGenerationUsesResponsesImageTool(t *testing.T) {
 	}
 }
 
-func TestCodexOAuthImageGenerationRejectsUnsupportedShapeBeforeUpstream(t *testing.T) {
+func TestLegacyAdapterCodexOAuthImageGenerationRejectsUnsupportedShapeBeforeUpstream(t *testing.T) {
 	calls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -132,7 +132,7 @@ func TestCodexOAuthImageGenerationRejectsUnsupportedShapeBeforeUpstream(t *testi
 	insertTestRoute(t, a, providerID, "gpt-image-2", "gpt-5.5", "image", 10)
 	key := insertTestKey(t, a, true)
 
-	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","n":2}`, "test/1")
+	rec := legacyAdapterRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","n":2}`, "test/1")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "n=1") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -140,7 +140,7 @@ func TestCodexOAuthImageGenerationRejectsUnsupportedShapeBeforeUpstream(t *testi
 		t.Fatalf("upstream calls=%d", calls)
 	}
 
-	rec = gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","response_format":"url"}`, "test/1")
+	rec = legacyAdapterRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw cats","response_format":"url"}`, "test/1")
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "b64_json") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -149,7 +149,7 @@ func TestCodexOAuthImageGenerationRejectsUnsupportedShapeBeforeUpstream(t *testi
 	}
 }
 
-func TestParseCodexImageSSEDoesNotExposeTextFallbackAsImage(t *testing.T) {
+func TestLegacyAdapterParseCodexImageSSEDoesNotExposeTextFallbackAsImage(t *testing.T) {
 	raw := []byte("data: {\"type\":\"response.output_text.done\",\"text\":\"<svg>not an image tool result</svg>\"}\n\n" +
 		"data: {\"type\":\"response.completed\",\"response\":{}}\n\n")
 	_, err := parseCodexImageSSE(raw)
@@ -158,7 +158,7 @@ func TestParseCodexImageSSEDoesNotExposeTextFallbackAsImage(t *testing.T) {
 	}
 }
 
-func TestCodexOAuthImageGenerationFailsOverWhenPrimaryReturnsRetryableError(t *testing.T) {
+func TestLegacyAdapterCodexOAuthImageGenerationFailsOverWhenPrimaryReturnsRetryableError(t *testing.T) {
 	var primaryCalls, backupCalls atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		primaryCalls.Add(1)
@@ -191,7 +191,7 @@ func TestCodexOAuthImageGenerationFailsOverWhenPrimaryReturnsRetryableError(t *t
 	insertTestRoute(t, a, backupID, "gpt-image-2", "gpt-5.5", "image", 1)
 	key := insertTestKey(t, a, true)
 
-	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw a cat","n":1,"response_format":"b64_json"}`, "test/1")
+	rec := legacyAdapterRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"draw a cat","n":1,"response_format":"b64_json"}`, "test/1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -203,7 +203,7 @@ func TestCodexOAuthImageGenerationFailsOverWhenPrimaryReturnsRetryableError(t *t
 	}
 }
 
-func TestCodexOAuthImageGenerationUsesRaisedTimeoutFloor(t *testing.T) {
+func TestLegacyAdapterCodexOAuthImageGenerationUsesRaisedTimeoutFloor(t *testing.T) {
 	started := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(started)
@@ -228,7 +228,7 @@ func TestCodexOAuthImageGenerationUsesRaisedTimeoutFloor(t *testing.T) {
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		done <- gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"slow cat","n":1,"response_format":"b64_json"}`, "test/1")
+		done <- legacyAdapterRequest(t, a, "/v1/images/generations", key, `{"model":"gpt-image-2","prompt":"slow cat","n":1,"response_format":"b64_json"}`, "test/1")
 	}()
 	select {
 	case <-started:

@@ -277,9 +277,6 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 
 	// 特殊处理不同 API 格式
 	probeProtocol := providerProbeProtocol(p, probeModel, "")
-	if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed && probeModel != "" {
-		probeProtocol = p.ProtocolPreference
-	}
 	if probeProtocol == "unsupported" {
 		return healthCheckResult{Status: "unsupported", Mode: mode, Model: probeModel, Error: "model does not support the configured upstream protocol"}
 	}
@@ -426,15 +423,6 @@ func providerProbeProtocol(p discoveryProvider, model, capabilities string) stri
 		if native == opencodeProtocolAnthropic {
 			native = protocolMessages
 		}
-	}
-	if p.ProtocolPolicy == protocolFixed {
-		if !validProviderProtocol(p.Type, p.ProtocolPolicy, p.ProtocolPreference) {
-			return "unsupported"
-		}
-		if p.Type == "opencode" && p.ProtocolPreference != native {
-			return "unsupported"
-		}
-		return p.ProtocolPreference
 	}
 	return native
 }
@@ -588,7 +576,7 @@ func normalizeProbeAnswer(value string) string {
 }
 
 func (h *HealthChecker) selectProbeModel(ctx context.Context, p discoveryProvider) string {
-	if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed {
+	if p.Type == "opencode" {
 		rows, err := h.app.db.QueryContext(ctx, `SELECT upstream_model,capabilities FROM model_routes WHERE provider_id=? AND enabled=1 ORDER BY priority DESC,sort_order ASC,id ASC`, p.ID)
 		if err != nil {
 			return ""
@@ -692,12 +680,6 @@ func (h *HealthChecker) buildProbeRequest(ctx context.Context, p discoveryProvid
 	opencodeProtocol := ""
 	if p.Type == "opencode" {
 		opencodeProtocol = opencodeModelProtocol(asString(body["model"]), "")
-		if p.ProtocolPolicy == protocolFixed {
-			opencodeProtocol = selected
-			if selected == protocolMessages {
-				opencodeProtocol = opencodeProtocolAnthropic
-			}
-		}
 	}
 	// Anthropic 使用不同的请求格式
 	if selected == protocolMessages && (isAnthropicProvider(p.Type) || p.Type == "claude_oauth") {

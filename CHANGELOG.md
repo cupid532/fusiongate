@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.12
+
+- Replace public inference protocol adapters with raw HTTP passthrough: preserve request/response payloads, native paths, compression and SSE bytes; no Chat/Responses/Messages conversion or semantic output inspection. Dedicated OAuth/web adapters and model mappings requiring rewrites no longer participate in inference; accounts and historical data are retained.
+- Make failover channel-first, preserve terminal upstream HTTP errors, stop retries on cancellation or downstream commitment, and expose strategy/candidate/stop diagnostics. A model with only one eligible channel has no failover destination.
+- Stop implicit generation probes during model discovery; candidate diagnostics do not advance API-key rotation.
+- Remove upstream interface-method controls. Mark new token usage and cost as unknown; existing balances and monetary budgets cannot account for new passthrough spending. Keep historical accounting.
+- Keep gateway access control, upstream credential replacement, IP egress isolation, cooldowns and circuit recovery. HTTP-level failure handling is not exactly-once execution: a timed-out upstream may already have incurred charges.
+
 ## V3.11
 
 - Let API channels store an optional merchant website address. Channel name links open that full address when provided and fall back to the API host otherwise; preserve it in provider backups.

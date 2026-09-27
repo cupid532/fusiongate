@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestFixedProtocolRoutingAndProbe(t *testing.T) {
+func TestLegacyAdapterFixedProtocolRoutingAndProbe(t *testing.T) {
 	for _, tc := range []struct {
 		name, providerType, fixed, path, payload, response string
 	}{
@@ -50,7 +50,7 @@ func TestFixedProtocolRoutingAndProbe(t *testing.T) {
 			req.Header.Set("Authorization", "Bearer "+key)
 			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
-			a.Router().ServeHTTP(rec, req)
+			legacyAdapterRouter(a).ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status=%d body=%s paths=%v", rec.Code, rec.Body.String(), paths)
 			}
@@ -66,14 +66,18 @@ func TestFixedProtocolRoutingAndProbe(t *testing.T) {
 			}
 			p := discoveryProvider{Type: tc.providerType, BaseURL: upstream.URL, Credential: "secret", ProtocolPolicy: protocolFixed, ProtocolPreference: tc.fixed}
 			probe, err := NewHealthChecker(a, 0, 1).buildRouteProbeRequest(context.Background(), p, "upstream-model", "chat", "hi")
-			if err != nil || probe.URL.Path != paths[0] {
+			expectedProbe := "/v1/chat/completions"
+			if isAnthropicProvider(tc.providerType) {
+				expectedProbe = "/v1/messages"
+			}
+			if err != nil || probe.URL.Path != expectedProbe {
 				t.Fatalf("probe=%v err=%v", probe, err)
 			}
 		})
 	}
 }
 
-func TestFixedResponsesDoesNotRetryAsChat(t *testing.T) {
+func TestLegacyAdapterFixedResponsesDoesNotRetryAsChat(t *testing.T) {
 	calls := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -97,13 +101,13 @@ func TestFixedResponsesDoesNotRetryAsChat(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"fixed-model","input":"hi"}`))
 	req.Header.Set("Authorization", "Bearer "+key)
 	rec := httptest.NewRecorder()
-	a.Router().ServeHTTP(rec, req)
+	legacyAdapterRouter(a).ServeHTTP(rec, req)
 	if calls != 1 {
 		t.Fatalf("calls=%d status=%d", calls, rec.Code)
 	}
 }
 
-func TestOpenCodeFixedDiscoveryAndHealthModel(t *testing.T) {
+func TestOpenCodeDiscoveryAndHealthIgnoreLegacyProtocolPreference(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			http.NotFound(w, r)
@@ -131,11 +135,11 @@ func TestOpenCodeFixedDiscoveryAndHealthModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 2 || models[0].Capabilities != "unsupported" || models[1].Capabilities == "unsupported" {
+	if len(models) != 2 || models[0].Capabilities == "unsupported" || models[1].Capabilities == "unsupported" {
 		t.Fatalf("models=%+v", models)
 	}
 	checker := NewHealthChecker(a, 0, 1)
-	if selected := checker.selectProbeModel(context.Background(), p); selected != "gpt-example" {
+	if selected := checker.selectProbeModel(context.Background(), p); selected != "claude-example" {
 		t.Fatalf("selected=%s", selected)
 	}
 	probe, err := checker.buildProbeRequest(context.Background(), p, checker.buildProbeEndpoint(p, "gpt-example"), map[string]interface{}{"model": "gpt-example"})
@@ -144,7 +148,7 @@ func TestOpenCodeFixedDiscoveryAndHealthModel(t *testing.T) {
 	}
 }
 
-func TestFixedProtocolMatrix(t *testing.T) {
+func TestLegacyAdapterFixedProtocolMatrix(t *testing.T) {
 	for _, tc := range []struct {
 		typ, protocol string
 		valid         bool
@@ -162,7 +166,7 @@ func TestFixedProtocolMatrix(t *testing.T) {
 }
 
 // A fixed text protocol does not change specialized media endpoints.
-func TestFixedTextProtocolDoesNotDisableImages(t *testing.T) {
+func TestLegacyAdapterFixedTextProtocolDoesNotDisableImages(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/images/generations" {
 			t.Errorf("upstream path=%s", r.URL.Path)
@@ -181,7 +185,7 @@ func TestFixedTextProtocolDoesNotDisableImages(t *testing.T) {
 	}
 	insertTestRoute(t, a, id, "image-model", "upstream-image", "image", 1)
 	key := insertTestKey(t, a, true)
-	rec := gatewayRequest(t, a, "/v1/images/generations", key, `{"model":"image-model","prompt":"cat"}`, "test/1")
+	rec := legacyAdapterRequest(t, a, "/v1/images/generations", key, `{"model":"image-model","prompt":"cat"}`, "test/1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}

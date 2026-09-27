@@ -6,8 +6,6 @@ import {
   PROVIDER_KEY_SELECTION_MODE_HELP, PROVIDER_KEY_SELECTION_MODE_LABELS,
   type IPPoolNode, type Provider, type ProviderGroup, type ProviderKeySelectionMode,
 } from "@/lib/types"
-import { protocolMethod, protocolMethodLabel, protocolMethodPatch, supportsProtocolMethod } from "@/lib/protocol-methods"
-import { ProtocolMethodSelect } from "@/components/ProtocolMethodSelect"
 import { ProviderManagementCard } from "@/components/ProviderManagementCard"
 import { ProviderKeysPanel } from "@/components/ProviderKeysDialog"
 import { ProviderModelsPanel } from "@/components/ProviderModelManagementDialog"
@@ -42,13 +40,11 @@ function providerForm(provider: Provider | null) {
     priority: provider?.priority ?? 1,
     max_concurrency: provider?.max_concurrency ?? 0,
     request_timeout_ms: provider?.request_timeout_ms ?? 120000,
-    passthrough_mode: provider?.passthrough_mode ?? "normalized",
     notes: provider?.notes ?? "",
     ip_pool_node_id: provider?.ip_pool_node_id ?? 0,
     group_id: provider?.group_id ?? 0,
     key_selection_mode: (provider?.key_selection_mode ?? "configured") as ProviderKeySelectionMode,
     health_check_enabled: provider?.health_check_enabled ?? true,
-    protocol_method: protocolMethod(provider?.protocol_policy, provider?.protocol_preference),
   }
 }
 
@@ -68,7 +64,6 @@ export function ProviderDialog({
   const [active, setActive] = useState<Provider | null>(provider)
   const [form, setForm] = useState(() => providerForm(provider))
   const [savedForm, setSavedForm] = useState(() => providerForm(provider))
-  const [methodChanged, setMethodChanged] = useState(false)
   const [modelsDirty, setModelsDirty] = useState(false)
   const [initialKey, setInitialKey] = useState("")
   const [initialKeyName, setInitialKeyName] = useState("")
@@ -81,7 +76,6 @@ export function ProviderDialog({
     const initial = providerForm(provider)
     setForm(initial)
     setSavedForm(initial)
-    setMethodChanged(false)
     setModelsDirty(false)
     setInitialKey("")
     setInitialKeyName("")
@@ -108,13 +102,12 @@ export function ProviderDialog({
       const body: Record<string, unknown> = {
         name: submitted.name.trim(), type: submitted.type, baseURL: submitted.baseURL.trim(), website_url: submitted.websiteURL.trim(),
         priority: submitted.priority, max_concurrency: submitted.max_concurrency,
-        request_timeout_ms: submitted.request_timeout_ms, passthrough_mode: submitted.passthrough_mode,
+        request_timeout_ms: submitted.request_timeout_ms,
         notes: submitted.notes, key_selection_mode: submitted.key_selection_mode, health_check_enabled: submitted.health_check_enabled,
         ip_pool_node_id: submitted.ip_pool_node_id || null,
       }
       if (submitted.group_id) body.group_id = submitted.group_id
       else if (active) body.clear_group = true
-      if (!active || methodChanged) Object.assign(body, protocolMethodPatch(submitted.protocol_method))
       if (active) {
         await api(`/api/admin/providers/${active.id}`, { method: "PATCH", body: JSON.stringify(body) })
         return { id: active.id, submitted, created: false }
@@ -141,7 +134,6 @@ export function ProviderDialog({
         setInitialKey("")
       }
       setSavedForm({ ...submitted })
-      setMethodChanged(false)
       setNotice("渠道参数已保存；其他卡片的操作各自生效。")
     },
   })
@@ -182,17 +174,16 @@ export function ProviderDialog({
             <ProviderManagementCard id="provider-connection" title="连接信息" summary={`${form.name || "新渠道"} · ${form.type}${active ? active.archived ? " · 已归档" : active.enabled ? " · 参与调度" : " · 已停用" : ""}`} expanded={section === "connection"} onToggle={() => toggle("connection")}>
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5"><Label htmlFor="provider-name">名称</Label><Input id="provider-name" value={form.name} onChange={(event) => set("name", event.target.value)} placeholder="例如：粥API" /></div>
-                <div className="space-y-1.5"><Label htmlFor="provider-type">类型</Label><select id="provider-type" value={form.type} onChange={(event) => { const type = event.target.value; setForm((current) => ({ ...current, type, protocol_method: supportsProtocolMethod(type, current.protocol_method) ? current.protocol_method : "auto" })); setMethodChanged(true) }} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm">{providerTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
+                <div className="space-y-1.5"><Label htmlFor="provider-type">类型</Label><select id="provider-type" value={form.type} onChange={(event) => set("type", event.target.value)} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm">{providerTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></div>
                 <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="provider-url">API 地址</Label><Input id="provider-url" value={form.baseURL} onChange={(event) => set("baseURL", event.target.value)} placeholder={form.type === "anthropic" ? "https://api.anthropic.com" : "https://api.example.com/v1"} className="font-mono text-xs" /><p className="text-xs text-muted-foreground">填写服务根地址，可带 /v1；不要填写 /messages 等接口路径。</p></div>
                 <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="provider-website">商家地址（选填）</Label><Input id="provider-website" type="url" value={form.websiteURL} onChange={(event) => set("websiteURL", event.target.value)} placeholder="https://example.com/account" className="font-mono text-xs" /><p className="text-xs text-muted-foreground">填写后点击渠道名称将打开此地址；留空则打开 API 地址所在网站。</p></div>
                 <div className="space-y-1.5 sm:col-span-2"><Label htmlFor="provider-notes">备注</Label><Textarea id="provider-notes" value={form.notes} onChange={(event) => set("notes", event.target.value)} rows={2} /></div>
               </div>
             </ProviderManagementCard>
 
-            <ProviderManagementCard id="provider-routing" title="转发与调度" summary={`${protocolMethodLabel(methodChanged ? form.protocol_method === "auto" ? "auto" : "fixed" : active?.protocol_policy, methodChanged ? form.protocol_method === "auto" ? "" : form.protocol_method : active?.protocol_preference)} · 优先级 ${form.priority}`} expanded={section === "routing"} onToggle={() => toggle("routing")}>
+            <ProviderManagementCard id="provider-routing" title="转发与调度" summary={`原样透传 · 优先级 ${form.priority}`} expanded={section === "routing"} onToggle={() => toggle("routing")}>
               <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-1.5"><Label htmlFor="provider-protocol-method">接口方式</Label><ProtocolMethodSelect id="provider-protocol-method" type={form.type} value={form.protocol_method} onChange={(method) => { set("protocol_method", method); setMethodChanged(true) }} /><p className="text-xs text-muted-foreground">固定方式只使用选定的上游文本接口；图片、音频等专用接口不受影响。</p>{active?.protocol_policy === "fixed" && active.protocol_preference?.includes(",") && !methodChanged && <p className="text-xs text-amber-600">旧配置：{protocolMethodLabel(active.protocol_policy, active.protocol_preference)}。选择新方式后才会替换。</p>}</div>
-                <div className="space-y-1.5"><Label htmlFor="provider-passthrough">转发模式</Label><select id="provider-passthrough" value={form.passthrough_mode} onChange={(event) => set("passthrough_mode", event.target.value)} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option value="normalized">标准化（转换协议）</option><option value="transparent">透传（原样转发）</option></select></div>
+                <div className="space-y-1.5"><Label>转发方式</Label><p className="text-sm font-medium">原样透传</p><p className="text-xs text-muted-foreground">请求路径、模型名、正文和响应均不做协议转换。</p>{active?.passthrough_supported === false && <p className="text-xs text-amber-700 dark:text-amber-400">{active.passthrough_reason || "纯透传不支持此专用渠道；该渠道不会参与推理路由。"}</p>}</div>
                 <div className="space-y-1.5"><Label htmlFor="provider-priority">优先级（数字越大越优先）</Label><Input id="provider-priority" type="number" min={0} value={form.priority} onChange={(event) => set("priority", Number(event.target.value))} /></div>
                 <div className="space-y-1.5"><Label htmlFor="provider-key-mode">Key 优选策略</Label><select id="provider-key-mode" value={form.key_selection_mode} onChange={(event) => set("key_selection_mode", event.target.value as ProviderKeySelectionMode)} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm">{Object.entries(PROVIDER_KEY_SELECTION_MODE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><p className="text-xs text-muted-foreground">{PROVIDER_KEY_SELECTION_MODE_HELP[form.key_selection_mode]}</p></div>
                 <div className="space-y-1.5"><Label htmlFor="provider-egress">IP 出口</Label><select id="provider-egress" value={form.ip_pool_node_id} onChange={(event) => set("ip_pool_node_id", Number(event.target.value))} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option value={0}>本机直连</option>{nodes.map((node) => <option key={node.id} value={node.id}>{node.name}（{node.protocol}）</option>)}</select></div>

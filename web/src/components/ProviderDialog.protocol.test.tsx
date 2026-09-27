@@ -9,7 +9,7 @@ function provider(overrides: Partial<Provider> = {}): Provider {
   return {
     id: 7, name: "测试渠道", type: "openai_compatible", base_url: "https://upstream.example",
     protocol_policy: "auto", protocol_preference: "", key_selection_mode: "configured",
-    priority: 1, max_concurrency: 0, request_timeout_ms: 120000, passthrough_mode: "normalized",
+    priority: 1, max_concurrency: 0, request_timeout_ms: 120000,
     notes: "", ...overrides,
   } as Provider
 }
@@ -37,26 +37,14 @@ function show(p: Provider | null) {
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-describe("ProviderDialog interface method", () => {
-  it("saves a fixed Responses method for an OpenAI compatible channel", async () => {
+describe("ProviderDialog passthrough", () => {
+  it("shows raw passthrough and never writes legacy protocol choices", async () => {
     setup()
-    show(provider())
+    show(provider({ passthrough_supported: true }))
     fireEvent.click(screen.getByRole("button", { name: /转发与调度/ }))
-    const select = screen.getByRole("combobox", { name: "接口方式" }) as HTMLSelectElement
-    expect(select.value).toBe("auto")
-    expect((screen.getByRole("option", { name: /Anthropic Messages/ }) as HTMLOptionElement).disabled).toBe(true)
-    fireEvent.change(select, { target: { value: "responses" } })
-    fireEvent.click(screen.getByRole("button", { name: "保存渠道参数" }))
-    await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7")?.body).toMatchObject({
-      protocol_policy: "fixed", protocol_preference: "responses",
-    }))
-  })
-
-  it("preserves a legacy preference when saving unrelated fields", async () => {
-    setup()
-    show(provider({ protocol_policy: "fixed", protocol_preference: "responses,chat" }))
-    fireEvent.click(screen.getByRole("button", { name: /转发与调度/ }))
-    expect(screen.getByText(/旧配置/).textContent).toContain("Responses")
+    expect(screen.getByText("原样透传")).toBeTruthy()
+    expect(screen.queryByRole("combobox", { name: "接口方式" })).toBeNull()
+    expect(screen.queryByText(/标准化（转换协议）/)).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: /连接信息/ }))
     fireEvent.change(screen.getByRole("textbox", { name: "备注" }), { target: { value: "更新备注" } })
     fireEvent.click(screen.getByRole("button", { name: "保存渠道参数" }))
@@ -64,6 +52,14 @@ describe("ProviderDialog interface method", () => {
     const saved = requests.find((r) => r.url === "/api/admin/providers/7")!.body
     expect(saved).not.toHaveProperty("protocol_policy")
     expect(saved).not.toHaveProperty("protocol_preference")
+    expect(saved).not.toHaveProperty("passthrough_mode")
+  })
+
+  it("shows a server-provided unsupported channel reason", async () => {
+    setup()
+    show(provider({ passthrough_supported: false, passthrough_reason: "OAuth 专用协议" }))
+    fireEvent.click(screen.getByRole("button", { name: /转发与调度/ }))
+    expect(screen.getByText("OAuth 专用协议")).toBeTruthy()
   })
 
   it("saves channel health-check enablement with channel parameters", async () => {

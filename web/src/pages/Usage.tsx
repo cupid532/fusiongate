@@ -93,7 +93,7 @@ export function Usage() {
   const series = data?.series ?? []
 
   const stats = [
-    { label: "估算费用", value: formatCost(data?.totals.cost_micros ?? 0), tone: "text-amber-600", icon: <Coins className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.cost_micros)} className="text-amber-400/60" /> : undefined },
+    { label: "历史估算费用", value: formatCost(data?.totals.cost_micros ?? 0), tone: "text-amber-600", icon: <Coins className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.cost_micros)} className="text-amber-400/60" /> : undefined },
     { label: "总 Token", value: formatTokens(data?.totals.total_tokens ?? 0), tone: "text-primary", icon: <Boxes className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.total_tokens)} className="text-primary/40" /> : undefined },
     { label: "输入 Token", value: formatTokens(data?.totals.input_tokens ?? 0), tone: "text-blue-600", icon: <BarChart3 className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.input_tokens)} className="text-blue-400/60" /> : undefined },
     { label: "输出 Token", value: formatTokens(data?.totals.output_tokens ?? 0), tone: "text-orange-600", icon: <Activity className="h-4 w-4" />, sub: hasSpark ? <Sparkline data={series.map(s => s.output_tokens)} className="text-orange-400/60" /> : undefined },
@@ -106,7 +106,7 @@ export function Usage() {
       <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">用量与费用</h1>
-          <p className="mt-1 text-sm text-muted-foreground">按时间、模型、密钥与渠道多维分析 Token 用量与估算费用。</p>
+          <p className="mt-1 text-sm text-muted-foreground">历史统计继续保留。纯透传不解析新请求 Token/usage，也不结算费用；新请求金额预算与余额无法准确执行。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <select aria-label="按渠道筛选用量" value={providerId} onChange={(e) => setProviderId(e.target.value)} className={inputStyles}>
@@ -149,6 +149,7 @@ export function Usage() {
         <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
       ) : (
         <div className="space-y-5">
+          <div role="note" className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-800 dark:text-amber-300">纯透传不解析 Token/usage，也不做新请求费用结算。未知用量和费用不能视为零消费；依赖金额的预算、余额扣减和费用统计无法准确反映新请求。下面的历史统计保留。</div>
           {/* ===== 总览 ===== */}
           {tab === "overview" && (
             <>
@@ -457,7 +458,7 @@ function CostEfficiencyCard({ totals }: { totals: TokenUsageMetrics }) {
           <div className="grid grid-cols-3 gap-4">
             <div>
               <div className="text-xs text-muted-foreground">实际费用</div>
-              <div className="mt-1 text-2xl font-bold tabular-nums text-amber-600">{formatCost(totals.cost_micros)}</div>
+              <div className="mt-1 text-2xl font-bold tabular-nums text-amber-600">{formatCost(totals.cost_micros)}</div><div className="text-[10px] text-muted-foreground">历史账本统计；新请求费用未知</div>
             </div>
             <div>
               <div className="text-xs text-muted-foreground">每成功请求成本</div>

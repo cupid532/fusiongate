@@ -135,7 +135,7 @@ func TestLiveRequestLedgerAndFirstByteTiming(t *testing.T) {
 	}
 	defer a.Close()
 	providerID := insertTestProvider(t, a, "slow-stream", "openai_compatible", upstream.URL, "secret", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, providerID, "live-model", "upstream-model", "chat,stream", 1)
+	insertTestRoute(t, a, providerID, "live-model", "live-model", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"live-model","stream":true,"messages":[]}`))

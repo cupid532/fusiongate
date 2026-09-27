@@ -2,9 +2,9 @@
 
 根目录 [`VERSION`](VERSION) 是发布入口，并且必须与 [`internal/fusiongate/version.go`](internal/fusiongate/version.go) 完全一致。所有 Agent 和贡献者在更新前必须遵循 [AGENTS.md](AGENTS.md) 中的版本递增规则。
 
-面向个人和小型可信团队的**自托管 AI 账号与 API 聚合网关**。它将多个上游渠道映射成统一模型名，并通过一把下游 API Key 提供 OpenAI 与 Anthropic 兼容访问和完整请求账本。
+面向个人和小型可信团队的**自托管纯 HTTP AI 聚合网关**。通过一把下游 API Key 访问多个原生上游，保留鉴权、路由、IP 出口、故障转移与请求元数据账本，不转换协议或改写生成内容。
 
-已实现 API Key 渠道与基础协议适配，并支持 Codex、Claude 与 Grok 的官方 OAuth 授权及常见 OAuth JSON 迁移。FusionGate 只接收用户主动完成的官方授权或用户主动导出的凭据文件，不保存账号密码、不抓取 Cookie，也不绕过服务商访问控制。
+> **V3.12 行为变化**：所有公开推理入口统一原样透传；移除 Chat/Responses/Messages 隐式转换和接口方式选择。依赖专用适配的 OAuth/Codex/网页渠道退出推理候选，账号与历史数据仍保留。新请求不解析 token/usage，费用为未知，金额预算和余额不能准确约束新消费。上线前请确认客户端使用上游原生路径、原生模型名，以及至少两个确实支持该请求的备用渠道。
 
 ## 快速导航
 
@@ -22,61 +22,25 @@
 
 | 能力 | 说明 |
 |---|---|
-| 统一模型入口 | 对外提供 OpenAI Chat、Responses、Images 与 Anthropic Messages 接口。 |
-| 多渠道故障转移 | 支持优先级、轮询、智能轮询和自适应调度；冷却结束后由真实请求进行半开恢复，手动关闭的渠道不会被自动开启。 |
-| 渠道多 Key | 每张 Key 独立识别和勾选模型、检活、排序、启停并配置网络出口；Key × 模型检活结果逐项展示。 |
-| OAuth 账号接入 | 支持 Codex、Claude 官方浏览器授权，Grok 设备授权和兼容 OAuth JSON 迁移。 |
-| 固定网络出口 | 支持常见代理分享链接与 sing-box outbound JSON；节点失败时严格故障转移，不静默回落直连。 |
-| 请求与费用可观测 | 实时请求账本支持精确到秒的开始/结束时间、状态、渠道、关键词和条数筛选，并统计 Token、延迟和估算费用；管理员运行指标接口提供并发、重试、故障转移和首字节概览。 |
-| 安全默认值 | SQLite 单机部署、字段级 AES-256-GCM 加密、CSRF、安全响应头、SSRF 防护和非 root 只读容器。 |
-
-```text
-OpenCode / SDK / 应用
-          │  OpenAI / Anthropic API
-          ▼
-     FusionGate
-       ├── 模型别名与权限
-       ├── Key 选择与固定出口
-       ├── 熔断、恢复与故障转移
-       └── 请求、Token 与费用账本
-          │
-          ├── API Key Provider
-          ├── Codex / Claude / Grok OAuth
-          └── OpenAI Compatible / OpenRouter / Gemini
-```
+| 原样转发 | Chat、Responses、Messages、Images、Audio、Embeddings 等已有推理入口；不增加任意 URL 代理。 |
+| 多渠道故障转移 | 优先级、配置顺序固定起点、按请求渠道轮换和自适应调度；保留冷却、熔断与半开恢复。 |
+| 渠道多 Key | Key 独立启停、模型权限与 IP 出口；优先尝试其他渠道，再尝试未用备用 Key。 |
+| 请求元数据账本 | 渠道、Key 脱敏标识、策略、候选、尝试序列、停止原因及延迟；不保存 prompt/completion。 |
+| 账号与历史管理 | 保留 OAuth 授权/导入/导出及历史用量，专用适配账号不参与纯透传推理。 |
+| 安全默认值 | AES-256-GCM 凭据加密、网关 Key 权限、限流、CSRF、SSRF 防护与固定网络出口。 |
 
 ## 详细能力
 
-- Go 单二进制 + SQLite（WAL、busy timeout），无 Redis 依赖。
-- 管理员会话、CSRF 校验、安全响应头；管理员密码以 PBKDF2-HMAC-SHA256 哈希存储。
-- 上游凭据采用 **AES-256-GCM 字段加密**；下游 API Key 使用 SHA-256 哈希鉴权，同时保存 AES-256-GCM 加密副本，管理员可在控制台按需再次复制（升级前创建的旧 Key 仍不可恢复）。
-- Provider 管理：OpenAI 官方 Key、Grok / xAI 官方 Key（默认 `https://api.x.ai`）、OpenRouter、任意 OpenAI Compatible、Anthropic 官方与 Anthropic 兼容渠道、Gemini，以及 Codex / Claude / Grok OAuth；官方 API Key 与 OAuth 认证文件是独立渠道类型。普通 API 渠道可随时编辑名称、类型、Base URL、API Key 与调度设置，更换 Key 无需删除渠道或重建模型路由；保存后自动读取上游模型候选，由管理员勾选后批量创建路由；OAuth 认证文件在授权或 JSON 导入完成后会自动识别并默认添加全部可用模型，之后仍可手动编辑或删除路由；公开模型名与保存的上游模型 ID 统一规范为小写。
-- IP 池与固定出口：默认所有渠道使用服务器本机直连；管理员可粘贴 SOCKS4/5、HTTP(S)、Shadowsocks、Trojan、VLESS（含 Reality）、VMess、Hysteria/Hysteria2、TUIC、AnyTLS 分享链接，或单个受支持的 sing-box outbound JSON，并为普通 API 渠道或 OAuth 认证文件指定节点。转发、模型识别、检活、OAuth 续签和额度查询使用同一渠道出口；节点故障时严格失败并交给现有渠道故障转移，不会静默泄漏到本机直连。
-- 授权接入：支持 Codex / Claude 官方浏览器 OAuth（PKCE）、Grok 设备授权，以及常见工具导出的 Codex / Claude / Grok OAuth JSON。JSON 可一次选择多个文件，必须先识别再勾选，默认不选择账号；重复账号可跳过或只更新凭据。认证文件支持按厂商筛选、批量选择和敏感凭据 JSON 导出。
-- 安全检活：后台仅对允许检活的 OAuth 渠道做低成本模型列表连通性探测，结果显示为“可连接”而非“可用”；管理员手动启动模型检活时才发送真实最小生成请求并记录首字节/总耗时。普通 API 渠道除渠道总开关外，每张 Key 还有独立检活开关；结果按 Key × 模型持久保存，某张 Key 的失败或停检不会污染同渠道其他 Key。禁止后不发送探测请求，但真实业务请求仍参与失败统计和熔断。任务采用低并发、单项超时、重复探测互斥、可取消和逐项结果展示。
-- 公共模型 / 别名与多条候选路由；既可删除单条渠道映射，也可从模型页一次删除某个公开模型的全部映射。“上游渠道”列表支持拖拽或上下按钮调整全局渠道位置，刷新后保留，并统一用于 API 渠道与 OAuth 认证渠道调度。渠道可通过直观开关整体开启或关闭，并设置默认 `1` 的渠道优先级；可在渠道页全局选择优先级、逐个轮询、智能轮询或智能选择。
-- 渠道支持归档：归档用于“余额耗尽但是优秀的站点”。归档渠道只出现在“归档”列表，不会出现在“全部渠道”“已开启”或“熔断冷却”列表，也不会参与新请求调度。
-- 被动健康感知：可配置最大并发、单次请求超时、失败阈值和冷却时间；支持熔断、冷却结束后的真实请求半开恢复、指数冷却和 `Retry-After`。模型列表连通性只显示为“可连接”，不会把它当作真实模型可用性，也不会用它恢复熔断渠道。自动熔断不会改写管理员开关，手动关闭的渠道不会自动开启。429 会显示为“限流”并立即进入至少 5 分钟冷却，不会因短耗时错误响应污染自适应延迟统计。
-- 安全故障转移：连接/超时、429、部分路由错误与 5xx 可切换备用；空流或首字节前断流可切换，首字节发出后绝不拼接第二家响应；图片请求在尚未向客户端写出响应前也会自动切换备用渠道（例如 input 超时/5xx 后无缝落到 Codex Plus），不会固定某一家。
-- 健康状态只处罚可归因于上游的失败；下游客户端主动取消不会污染 Provider 健康度。智能选择优先依据成功请求的首字节 EWMA，而不是被输出长度放大的完整响应耗时；请求账本会对 2 万/4 万以上输入 Token 标记“大上下文/超大上下文”。
-- `/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/images/generations`。
-  - 所有 `/v1/*` 网关接口支持浏览器跨域调用、无需鉴权的 `OPTIONS` 预检和常用 SDK 自定义请求头；管理后台接口不开放跨域。
-  - OpenAI Compatible：Chat、Responses、Images、Audio、Embeddings；Chat / Responses 支持安全流式转发。Responses 请求会优先调用上游 `/v1/responses`，仅在尚未向客户端提交输出且该协议失败时回退到 Chat Completions，并通过 `X-FusionGate-Upstream-Protocol` 标明最终上游协议。
-  - Codex OAuth Plus 生图兼容：发现到 `gpt-5.5` 时自动提供 `gpt-image-1` 与 `gpt-image-2` 图像别名；标准 `POST /v1/images/generations` 会转换成 Codex Responses 的 `image_generation` 内置工具调用，并把 SSE 中的真实图片结果转换回 OpenAI `b64_json` 响应。Codex OAuth 路径每次只支持 `n=1`（ChatGPT 账号侧工具一次只出一张，且并发 fan-out 易被限流/拖垮）；需要多图时请对 OpenAI Compatible 生图渠道传 `n`，或对 Codex 路径发起多次请求。支持上游接受的 `size`、`output_format`、`output_compression`、`background`、`moderation` 与 `partial_images` 参数；不伪造 URL 或透明背景能力。Codex 生图默认至少 180s 超时下限。
-  - Provider 可选择“标准适配”或“原样透明转发”。透明模式不改写 JSON 正文，保留真实 User-Agent 与允许的端到端头部，只替换上游凭据并过滤 hop-by-hop、Cookie、转发链和网关内部头。
-  - Anthropic / Gemini：OpenAI Chat 的文本消息非流式转换；Anthropic Messages 支持 Anthropic 官方与兼容上游的原生代理，也可安全转换到 OpenAI / OpenRouter / OpenAI Compatible / Grok Chat，覆盖文本、图片、工具调用、工具结果以及 Anthropic SSE 流。
-- 下游 API Key 可从实时可用模型中勾选白名单/拒绝规则，并支持 RPM 限流、图片权限、到期时间、USD 费用预算与安全再次复制；到期或累计估算费用达到预算后会停止接受新请求。预算只是记账上限，**不会限制并发**：只要预算还有余额，任意数量的并发请求都会被放行。费用在上游返回 usage 后结算，因此预算用尽时仍在途的请求会照常结算，可能产生少量超额；删除会物理移除密钥记录，同时保留已脱敏的历史请求账本。
-- 请求账本实时显示进行中请求、逐秒读数的动态运行时间（区分“等待首字节”与“输出中”）、Token 明细（输入/缓存/推理/输出）、每次故障转移尝试及上游首字节耗时；多 Key 渠道会按尝试显示实际选中的 Key 名称和脱敏提示，不保存明文上游凭据。滞留的进行中记录会被标记为“疑强停滞”，启动与周期清扫会自动关账遗留的开行，避免僵尸记录永久显示进行中。
-- 请求账本支持精确到秒的本地日期时间范围、状态、渠道、模型/协议/请求 ID/错误关键词与 50/100/200 条返回数量组合筛选；筛选在服务端执行，实时轮询保持当前条件。
-- 官方价格同步：默认每 1 小时读取 OpenAI、xAI、Gemini、Claude 官方定价页面与 OpenRouter 兜底目录，并按公开模型和上游模型 ID 更新非手动价格路由；管理台可随时手动同步。可通过 `FUSIONGATE_PRICING_SYNC_INTERVAL` 调整周期，设为 `0`、`off` 或 `false` 可关闭后台自动同步。支持缓存输入价格和长上下文分档。费用是基于上游 usage 的估算值，最终账单仍以上游服务商为准。
-- 独立用量与费用中心：支持近 7/30/90 天和近一年范围，按日期、下游 Key、渠道、公开模型与实际上游模型统计请求数、尝试次数、输入、输出、缓存、推理、总 Token 和估算费用，包含趋势图、排行、筛选、分页、usage 采集覆盖率与官方价格覆盖率。请求、Token 和费用明细自动保留一年。
-- 标准 OpenAI Chat/Responses 与 Anthropic Messages 的非透明响应会被动读取 usage（包含流式末尾事件），Gemini 转换响应同步采集 usage；透明转发保持原样，不读取或修改响应载荷，控制台会明确标记为未采集而不是伪造为 0。
-- 请求尝试账本按 `gateway_request_id` 聚合，记录 attempt、Provider、重试来源、状态、Token 与延迟，不记录 prompt / completion 正文。
-- Codex Chat → Responses 桥接保留 OpenCode / OpenAI Compatible 的 `reasoning_effort`，并转换为 `reasoning.effort`，避免推理强度回落为上游默认值。
-- SSRF 默认保护：只接受 HTTPS 上游；解析并校验全部 DNS 地址，阻止 localhost、私网、链路本地、未指定和组播地址，限制重定向且禁止跨主机携带凭据。
-- 默认白色管理主题，并支持一键切换深色主题；主题偏好保存在浏览器本地。所有随主题变化的颜色、渐变、边框和阴影都集中在 `internal/fusiongate/ui/app.css` 顶部的两个 token 块（`:root` 为深色，`html[data-theme="light"]` 为浅色）。整站换风格只需修改这两个块；新增第三套主题可复制浅色块并改写 `data-theme` 取值，无需改动任何组件规则。
-- 管理台由三个内嵌资源组成：`ui/index.html`（页面骨架）、`ui/app.css`（样式与主题 token）、`ui/app.js`（交互逻辑）。三者一起编入单二进制，浏览器按 `?v=<版本>` 请求，升级后自动失效旧缓存。
-- Docker Compose 与非 root 容器配置。
+- Go 单二进制 + SQLite；React 管理台资源内嵌。普通 API 渠道可编辑 Base URL、凭据、调度与出口，不必重建渠道。
+- 原始请求体不重新序列化：模型名、工具字段、未知字段和 `stream` 原样保留。只读提取路由所需元数据；multipart 和二进制输出不做协议转换。
+- 原样保留端到端响应头、状态、压缩正文和 SSE 字节；不隐式解压或跟随 3xx，不伪造结束事件，不把未知事件或空 2xx 判成网关 502。
+- 必要代理例外：目标 Host、上游鉴权替换、hop-by-hop/Connection 指定头过滤、传输分帧及网关安全控制。不会向上游泄露网关 Key、管理员 Cookie。应用层字节一致不等于 TCP 分包、HTTP 头大小写完全一致。
+- `/v1/models` 是可参与纯透传路由的聚合目录，而非任何一家上游目录的原样副本。不能把“目录存在”视为任意接口都可用。
+- 路由必须使用上游原生模型名；需要重写模型的旧别名/映射不参与推理。旧协议偏好字段仅为数据兼容保留，不再改变实际调用路径。
+- 管理员显式检活可能产生上游费用；检活结果只描述其测试路径，不改变真实请求协议。不会自动开启用户关闭的渠道。
+- 下游 Key 保留模型权限、图片/音频权限、RPM、过期撤销与安全复制。历史金额预算仍可能基于已记录支出拒绝请求，但**不能统计或限制新增透传消费**；金额额度请在上游控制。
+- 新请求 token/usage 与费用标记为未知；历史统计与价格管理保留，不能把未采集费用解释为免费或零消费。
+- IP 池支持现有 sing-box 出口；节点失败不静默回落直连。SSRF 与加密凭据保护继续有效。
 
 ## Codex / Claude / Grok 授权与迁移
 
@@ -85,7 +49,7 @@ OpenCode / SDK / 应用
 - **批量导出**：可按厂商筛选并勾选最多 200 份认证文件，二次确认后下载兼容迁移 JSON。导出文件包含完整 Token，仅用于管理员主动迁移，不会写入页面、浏览器存储或应用日志。
 - **安全保存**：Access Token、Refresh Token 与 ID Token 作为一个凭据对象使用 AES-256-GCM 加密后写入 SQLite；预览、管理 API、页面和错误信息均不回显 Token。
 - **自动续期**：有 Refresh Token 时会在到期前自动刷新并保存轮换后的 Refresh Token；同一实例内的并发刷新会合并。刷新失败只标记授权状态并允许故障转移，不删除渠道。
-- **路由**：Codex OAuth 支持 OpenAI Responses 路径适配；Claude OAuth 支持 Anthropic Messages 所需授权头。模型识别仍需管理员确认，系统不会在导入账号后自动创建模型路由。
+- **V3.12 推理边界**：以上账号管理功能继续保留，但需要专用协议/身份适配的渠道不参与纯透传推理。导入或续期成功不代表该账号可作为原生 API 备用渠道。
 
 请只导入你本人或你有权管理的账号凭据，并遵守对应服务商条款。FusionGate 不提供 Cookie 抓取、会话劫持或访问控制规避功能。
 
@@ -104,20 +68,21 @@ go run ./cmd/fusiongate
 
 打开 `http://127.0.0.1:8787`，登录后依次：
 
-1. 添加普通 API Provider（例如 `OpenAI`、`https://api.openai.com` 与 API Key），或在“授权接入”中完成 Codex / Claude 浏览器授权、导入兼容 OAuth JSON。系统只识别候选模型，不会直接添加；在候选弹窗中勾选需要的模型并确认导入。公开模型名与保存的上游模型 ID 会统一转为小写。需要固定出口时，可先在“IP 池”添加节点，再在渠道的“网络出口”中选择；不选择即保持本机直连。
-2. 为每个规范模型建立故障转移组：同一公开模型名下可以加入多个“渠道 + 上游模型”成员，例如把渠道 A 的 `deepseek-v4-flash` 和渠道 B 的 `deepseek/deepseek-v4-flash` 都加入公开组 `deepseek-v4-flash`。如客户端要求不同调用名，再在组卡片添加调用别名；“添加 / 前缀调用名”可直接选择为规范模型名或某个上游模型名加 `/`。别名只是调用入口，不会凭空创建上游渠道成员。
-3. 创建下游 API Key，从实时模型列表勾选允许/拒绝权限；完整 Key 可在管理员控制台查看后再次一键复制。客户端所需的 Base URL 可在“概览”的“连接信息”中直接复制。
+1. 添加普通 API Provider（例如 OpenAI、`https://api.openai.com` 与上游 API Key），识别并确认导入原生模型。需要固定出口时先在 IP 池添加节点，再指定渠道出口。
+2. 同一原生模型名下配置多个支持相同请求路径的渠道；公开模型名、请求模型名与上游模型名保持一致，不再通过别名实现模型改写。检查有效备用渠道数量；只有一个候选时无法故障转移。
+3. 创建下游访问 Key 并设置模型权限、RPM 与到期时间。新消费的金额限额在上游设置。
+
 ### 3. 发起第一个请求
 
 ```bash
 curl http://127.0.0.1:8787/v1/chat/completions \
   -H "Authorization: Bearer fg_..." -H "Content-Type: application/json" \
-  -d '{"model":"smart","messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"YOUR_NATIVE_MODEL_ID","messages":[{"role":"user","content":"你好"}]}'
 ```
 
 ## 渠道优先级、故障转移与透明模式
 
-故障转移只需要在“上游渠道”管理，不需要为每个模型重复设置：
+起始渠道策略全局配置，但每个原生模型必须有自己的有效候选渠道：
 
 - 每个渠道都有一个开启/关闭开关。关闭后，该渠道下的所有模型立即停止参与新请求；重新开启即可恢复。
 - 添加渠道时优先级默认是 `1`，之后可直接修改。数字越大越优先；相同优先级按“上游渠道”列表可拖拽调整的全局位置使用。
@@ -126,9 +91,13 @@ curl http://127.0.0.1:8787/v1/chat/completions \
 
 “上游渠道”页面的拖拽手柄和上下按钮会即时保存全局渠道位置；配置顺序固定和渠道间轮换直接使用该顺序，优先级固定则先比较渠道优先级，再使用该顺序。注意 `ordered_round_robin` 名称里有 round robin 但并不会主动轮换——它只是固定的顺序起点；会轮换的是 `smart_round_robin`。模型路由页面按规范模型组展示公开模型名、调用别名与实际渠道成员，并可设置同一渠道内多条映射的次级顺序。每一次故障转移都会写入独立 attempt，并保留上一跳失败原因。熔断中的渠道、正在执行半开探针的渠道，以及达到最大并发的渠道会被自动跳过。
 
-调用别名与规范模型名共享同一个候选池、轮询游标和自适应权重状态，同时响应和请求账本仍保留客户端实际请求的名称。例如 `/deepseek/deepseek-v4-flash` 指向 `deepseek-v4-flash` 后，两种调用名进入同一调度组；如果还希望某个渠道的上游模型 `deepseek/deepseek-v4-flash` 成为该组的故障转移成员，必须把那条渠道路由的公开模型名设置为 `deepseek-v4-flash`，上游模型名则保持不变。
+所有推理请求均原样透传。客户端请求 `/v1/chat/completions` 就转发同一路径，不会替换为 `/v1/responses`。上游不支持该原生请求时，只能尝试另一家支持它的渠道；不能靠切换网关策略创造协议兼容性。
 
-透明模式用于上游要求原生协议字段或未知扩展字段的场景：请求正文按原始字节转发，不修改字段顺序、模型名、`user` 或 `stream_options`。因此透明路由要求公开模型名与上游模型名完全一致。它**不会伪造 Codex / Claude Code 身份，也不会隐藏真实客户端来绕过上游限制**；`client_policy` 只会检查真实传入的 User-Agent，并可将某个 Provider 限定为真实 Codex 或 Claude Code 请求。
+默认可重试状态为 401/403/404/408/425/429 和 5xx，以及可重放请求的连接失败或超时。400/422 和 2xx 正文交给客户端解释，不根据错误文本猜测重试。所有候选失败时尽量返回最后一个上游原始 HTTP 错误；从未收到上游响应才使用网关本地错误。错误体与请求体处理受资源和超时限制，不无限缓冲。
+
+**响应提交后不再切换渠道**，中途断流不能拼接另一家内容。客户端取消立即停止后续调用。生成重放不是 exactly-once：上游可能已经计算或计费，即使网关仅收到超时。
+
+网关不会自动启用禁用渠道、增加未经确认的模型支持或将新消费算作零费用。`client_policy` 只检查真实 User-Agent，不伪造客户端身份。
 
 ## Docker Compose
 
@@ -215,8 +184,8 @@ sudo bash install.sh
 | `FUSIONGATE_DATA_DIR` | SQLite 数据目录，默认 `./data`。 |
 | `FUSIONGATE_MAX_FAILOVER_ATTEMPTS` | 可选保险丝：单次请求最多尝试的上游渠道数。默认不限（逐个试完请求内全部候选渠道后才返回失败），渠道越多尝试越多；设为 N（N≥1）时恢复固定上限，用于避免失效渠道造成重试风暴。 |
 | `FUSIONGATE_MAX_CONCURRENT_REQUESTS` | 网关同时处理的 API 请求上限，默认 `64`；达到上限返回 `503` 并带 `Retry-After`。 |
-| `FUSIONGATE_STREAM_START_TIMEOUT` | 流式响应等待首个有效模型事件的时间，默认 `30s`；适合首字节较慢的 Claude 等推理渠道。 |
-| `FUSIONGATE_STREAM_IDLE_TIMEOUT` | 流式响应有效事件之间的最大空闲时间，默认 `5m`。 |
+| `FUSIONGATE_STREAM_START_TIMEOUT` | 流式响应等待上游开始响应的时间（不解析模型事件），默认 `30s`；适合首字节较慢的 Claude 等推理渠道。 |
+| `FUSIONGATE_STREAM_IDLE_TIMEOUT` | 流式响应读取字节之间的最大空闲时间（不解析模型事件），默认 `5m`。 |
 | `FUSIONGATE_CORS_ORIGINS` | 可选的逗号分隔浏览器 Origin 白名单；留空保持兼容的通配行为。 |
 | `FUSIONGATE_PRICING_SYNC_INTERVAL` | 官方价格同步间隔，默认 `1h`，最低 `5m`；低于 `5m` 的值回退为 `1h`，设为 `0`、`off` 或 `false` 可关闭。 |
 | `FUSIONGATE_HEALTH_CHECK_INTERVAL` | OAuth 后台模型列表连通性探测间隔，默认 `15m`；设为 `0`、`off` 或 `false` 可关闭后台任务，不影响真实业务请求和手动真实生成检活。 |
@@ -225,7 +194,7 @@ sudo bash install.sh
 | `FUSIONGATE_ALLOW_PRIVATE_UPSTREAMS` | 仅可信开发环境可设 `true`，允许私有网络上游。 |
 | `FUSIONGATE_SING_BOX_PATH` | 可选，sing-box 可执行文件路径；官方 Docker 镜像已内置固定版本，本机运行仅在启用 IP 池节点时需要安装。 |
 
-OpenAI-compatible 与 Anthropic 文本生成路由会始终向上游请求流式响应。协议不变且客户端请求 `stream=true` 时实时透传；请求 `stream=false` 时，FusionGate 在内部消费 SSE 并重建原协议 JSON。这样长回答不再受上游整段生成的固定总超时限制，同时保持现有非流式客户端兼容。透明透传路由与图片等非文本生成接口不会改写请求模式。非流式客户端仍需等待完整 JSON，因此外层反向代理不能设置短响应头总时限；仓库提供的 Caddy 模板只限制连接建立，不限制响应头等待时间。
+网关不改变客户端的 `stream`。上游按客户端请求返回 SSE 或普通响应，网关按原始字节转发；慢生成请合理配置渠道超时和外层反向代理时限。收到心跳只说明连接仍有字节，不代表模型已输出结果。
 
 ## IP 池与渠道网络出口
 
@@ -245,4 +214,4 @@ IP 池由 FusionGate 管理节点元数据与渠道绑定，实际多协议网�
 
 ## 已知范围和后续工作
 
-FusionGate 的费用统计与密钥预算属于管理侧估算和访问限制，不包含支付、充值、用户注册、兑换码或商业计费模块。Gemini CLI OAuth、图像编辑、跨协议结构化输出的完整等价转换、PostgreSQL、定时模型同步和备份 UI 仍需后续阶段实现。不要将订阅账号的等价 API 价值误称为实际上游扣费，最终费用以上游账单为准。
+FusionGate 不包含支付、充值、用户注册、兑换码或商业计费模块。V3.12 不解析新请求 token 或费用，历史估算不代表当前支出；最终费用以上游账单为准。跨协议转换不再是网关目标；任意有状态资源 API、图像编辑、PostgreSQL 与备份 UI 不在本次范围内。

@@ -206,7 +206,7 @@ export function Keys() {
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">访问密钥</h1>
-          <p className="mt-1 text-sm text-muted-foreground">签发下游 API Key，按权限访问渠道和模型。</p>
+          <p className="mt-1 text-sm text-muted-foreground">签发下游 API Key，按权限访问渠道和模型。纯透传不结算新请求费用，金额预算无法准确限制新消费。</p>
         </div>
         <Button onClick={() => setCreating((v) => !v)}>
           <Plus className="h-4 w-4" />
@@ -357,8 +357,8 @@ export function Keys() {
                       </td>
                       <td className="px-4 py-3 text-xs">
                         {k.budget_micros > 0 ? (
-                          <span className={k.spent_micros >= k.budget_micros ? "font-semibold text-destructive" : ""}>
-                            {formatCost(k.spent_micros)} / {formatCost(k.budget_micros)}
+                          <span title="历史已记录支出 / 配置金额；纯透传新请求不结算，不能据此准确限制新消费">
+                            {formatCost(k.spent_micros)} / {formatCost(k.budget_micros)} · 新支出未知
                           </span>
                         ) : (
                           <span className="text-muted-foreground">无限制</span>

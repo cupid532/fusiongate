@@ -22,6 +22,7 @@ type providerRuntime struct {
 
 type attemptResult struct {
 	Status     int
+	Response   *http.Response // retained until the route plan decides whether to fail over
 	Usage      Usage
 	Handled    bool
 	Retryable  bool
@@ -164,6 +165,27 @@ func (a *App) prepareRoutes(routes []resolvedRoute, strategy RoutingStrategy) []
 		rotated = append(rotated, groups[(start+offset)%len(groups)]...)
 	}
 	return rotated
+}
+
+// Walk providers once before trying any provider’s remaining credentials.
+func interleaveProviderKeys(routes []resolvedRoute) []resolvedRoute {
+	groups := make(map[int64][]resolvedRoute, len(routes))
+	order := make([]int64, 0, len(routes))
+	for _, z := range routes {
+		if _, exists := groups[z.Provider.ID]; !exists {
+			order = append(order, z.Provider.ID)
+		}
+		groups[z.Provider.ID] = append(groups[z.Provider.ID], z)
+	}
+	out := make([]resolvedRoute, 0, len(routes))
+	for depth := 0; len(out) < len(routes); depth++ {
+		for _, id := range order {
+			if depth < len(groups[id]) {
+				out = append(out, groups[id][depth])
+			}
+		}
+	}
+	return out
 }
 
 func (a *App) routeSelectableLocked(z resolvedRoute, state *providerRuntime, nowTime time.Time, availability *routeAvailability) bool {
@@ -435,6 +457,10 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		state.Inflight--
 	}
 	state.HalfOpenProbe = false
+	if isNeutralResult(result) {
+		a.routeMu.Unlock()
+		return
+	}
 	keyFailure := z.ProviderKeyID > 0 && isProviderFailure(result)
 	if keyFailure {
 		cooldown := time.Duration(z.Provider.CooldownSeconds) * time.Second

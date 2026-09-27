@@ -93,12 +93,13 @@ export function Routes() {
   const [routeOpen, setRouteOpen] = useState(false)
   const { data: routes = [], isLoading } = useQuery({ queryKey: ["routes"], queryFn: () => api<Route[]>("/api/admin/routes") })
   const { data: aliases = [] } = useQuery({ queryKey: ["model-aliases"], queryFn: () => api<ModelAlias[]>("/api/admin/model-aliases") })
-  const { data: routing } = useQuery({ queryKey: ["routing"], queryFn: () => api<{ strategy: RoutingStrategy }>("/api/admin/routing") })
+  const routingQuery = useQuery({ queryKey: ["routing"], queryFn: () => api<{ strategy: RoutingStrategy }>("/api/admin/routing") })
+  const { data: routing } = routingQuery
   const { data: pricing } = useQuery({ queryKey: ["pricing"], queryFn: () => api<PricingStatus>("/api/admin/pricing") })
-  const strategy = routing?.strategy ?? "priority_failover"
+  const strategy = routing?.strategy
 
   const syncPricing = useMutation({ mutationFn: () => api<PricingSyncResult>("/api/admin/pricing", { method: "POST" }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["pricing"] }); qc.invalidateQueries({ queryKey: ["routes"] }) } })
-  const setStrategy = useMutation({ mutationFn: (next: RoutingStrategy) => api("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy: next }) }), onSuccess: () => qc.invalidateQueries({ queryKey: ["routing"] }) })
+  const setStrategy = useMutation({ mutationFn: (next: RoutingStrategy) => api<{ strategy: RoutingStrategy }>("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy: next }) }), onSuccess: (result) => { qc.setQueryData(["routing"], result); void qc.invalidateQueries({ queryKey: ["routing"] }) } })
   const updateRoute = useMutation({
     mutationFn: ({ id, patch }: { id: number; patch: Record<string, unknown> }) => api(`/api/admin/routes/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["routes"] }); qc.invalidateQueries({ queryKey: ["model-aliases"] }) },
@@ -110,7 +111,7 @@ export function Routes() {
     for (const route of routes) map.set(route.public_name, [...(map.get(route.public_name) ?? []), route])
     const keyword = q.trim().toLowerCase()
     return [...map.entries()]
-      .map(([name, list]) => [name, sortRoutes(list, strategy)] as [string, Route[]])
+      .map(([name, list]) => [name, strategy ? sortRoutes(list, strategy) : list] as [string, Route[]])
       .filter(([name, list]) => {
         if (!keyword) return true
         const groupAliases = aliases.filter((item) => item.target_model === name)
@@ -146,12 +147,17 @@ export function Routes() {
       <Card className="mb-4 overflow-hidden">
         <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">起始渠道选择策略</div><Badge variant="default">{strategyLabels[strategy]}</Badge></div>
-            <div className="mt-1 text-xs text-muted-foreground">{strategyHelp[strategy]} 所有策略都带请求内故障转移：起点失败后自动依次尝试其余渠道，并受熔断与半开探活保护；调用别名与规范名称共享同一调度状态。</div>
+            <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">起始渠道选择策略</div>{strategy ? <Badge variant="default">{strategyLabels[strategy]}</Badge> : <Badge variant="warning">未知</Badge>}</div>
+            <div className="mt-1 text-xs text-muted-foreground">{strategy ? strategyHelp[strategy] : "策略值尚未读取，当前候选顺序未知。"} 故障转移会按服务端实际候选计划执行。</div>
           </div>
-          <select aria-label="全局起始渠道选择策略" value={strategy} onChange={(event) => setStrategy.mutate(event.target.value as RoutingStrategy)} disabled={setStrategy.isPending} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm">
-            {(Object.keys(strategyLabels) as RoutingStrategy[]).map((value) => <option key={value} value={value}>{strategyLabels[value]}</option>)}
-          </select>
+          <div className="flex flex-col items-end gap-1">
+            <select aria-label="全局起始渠道选择策略" value={strategy ?? ""} onChange={(event) => setStrategy.mutate(event.target.value as RoutingStrategy)} disabled={!strategy || setStrategy.isPending} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm">
+              <option value="" disabled>{routingQuery.isLoading ? "正在读取策略…" : "策略未知"}</option>
+              {(Object.keys(strategyLabels) as RoutingStrategy[]).map((value) => <option key={value} value={value}>{strategyLabels[value]}</option>)}
+            </select>
+            {routingQuery.isError && <div className="flex items-center gap-2 text-xs text-destructive"><span>策略读取失败</span><Button variant="outline" size="sm" onClick={() => void routingQuery.refetch()} disabled={routingQuery.isFetching}>重试</Button></div>}
+            {setStrategy.isError && <span role="alert" className="text-xs text-destructive">策略保存失败：{setStrategy.error.message}</span>}
+          </div>
         </CardContent>
       </Card>
 
@@ -166,17 +172,16 @@ export function Routes() {
         <div className="space-y-4">{groups.map(([name, list]) => {
           const route = list[0]
           const groupAliases = aliases.filter((item) => item.target_model === name)
-          const states = list.map(routeState)
-          const eligible = states.filter((item) => item.eligible).length
+          const eligible = route.eligible_provider_count
           return <Card key={name} className="overflow-hidden"><CardContent className="p-0">
             <div className="border-b px-4 py-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-sm font-semibold">{name}</span>
                   <Badge variant="neutral">{list.length} 条路由</Badge>
-                  <Badge variant={eligible > 1 ? "success" : eligible === 1 ? "warning" : "danger"}>{eligible} 个可调度成员</Badge>
+                  <Badge variant={eligible == null ? "neutral" : eligible > 1 ? "success" : eligible === 1 ? "warning" : "danger"}>{eligible == null ? "可用候选数未知" : `${eligible} 个候选 · ${Math.max(eligible - 1, 0)} 个备用`}</Badge>
                   {groupAliases.length > 0 && <Badge variant="outline">{groupAliases.length} 个调用别名</Badge>}
-                  {eligible < 2 && <span className="text-xs text-amber-700 dark:text-amber-400">当前无法形成轮询冗余</span>}
+                  {route.routing_warning ? <span className="text-xs text-amber-700 dark:text-amber-400">{route.routing_warning}</span> : eligible === 1 ? <span className="text-xs text-amber-700 dark:text-amber-400">单候选：无备用渠道，无法故障转移</span> : eligible === 0 ? <span className="text-xs text-amber-700 dark:text-amber-400">当前没有可用候选渠道</span> : null}
                   {route.input_price_micros || route.output_price_micros ? <Badge variant={route.pricing_source === "manual" ? "warning" : "success"}>输入 {price(route.input_price_micros)} · 输出 {price(route.output_price_micros)} · {pricingSource(route.pricing_source)}</Badge> : <Badge variant="neutral">未定价</Badge>}
                 </div>
                 <Button variant="ghost" size="sm" onClick={() => { setPricingModel(name); setPricingOpen(true) }}><Coins />定价</Button>
@@ -221,7 +226,7 @@ export function Routes() {
       )}
       <RouteDialog open={routeOpen} onOpenChange={setRouteOpen} />
       <PricingDialog open={pricingOpen} onOpenChange={setPricingOpen} model={pricingModel} routes={selectedRoutes} />
-      {(updateRoute.error || setStrategy.error) && <div className="fixed bottom-4 right-4 max-w-md rounded-lg border border-destructive/30 bg-background px-4 py-3 text-sm text-destructive shadow-lg">{(updateRoute.error ?? setStrategy.error)?.message}</div>}
+      {updateRoute.error && <div role="alert" className="fixed bottom-4 right-4 max-w-md rounded-lg border border-destructive/30 bg-background px-4 py-3 text-sm text-destructive shadow-lg">{updateRoute.error.message}</div>}
     </motion.div>
   )
 }

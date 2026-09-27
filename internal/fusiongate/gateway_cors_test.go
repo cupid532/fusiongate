@@ -120,7 +120,7 @@ func TestImageGenerationWorksFromCrossOriginBrowserClient(t *testing.T) {
 	}
 	defer a.Close()
 	providerID := insertTestProvider(t, a, "image", "openai_compatible", upstream.URL, "upstream-secret", 1, 100, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, providerID, "gpt-image-test", "upstream-image", "image", 1)
+	insertTestRoute(t, a, providerID, "gpt-image-test", "gpt-image-test", "image", 1)
 	key := insertTestKey(t, a, true)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/images/generations", strings.NewReader(`{"model":"gpt-image-test","prompt":"cat"}`))
@@ -165,7 +165,7 @@ func TestUpstreamCannotOverwriteGatewayResponsePolicyHeaders(t *testing.T) {
 	}
 	defer a.Close()
 	providerID := insertTestProvider(t, a, "header-policy", "openai_compatible", upstream.URL, "secret", 1, 100, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, providerID, "header-model", "upstream-model", "chat", 1)
+	insertTestRoute(t, a, providerID, "header-model", "header-model", "chat", 1)
 	key := insertTestKey(t, a, false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"header-model","messages":[]}`))
 	req.Header.Set("Authorization", "Bearer "+key)

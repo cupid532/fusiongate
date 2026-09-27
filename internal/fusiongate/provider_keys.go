@@ -350,6 +350,10 @@ func (a *App) selectProviderKeys(ctx context.Context, providerID int64, upstream
 }
 
 func (a *App) selectProviderKeysBatch(ctx context.Context, requests []providerKeySelectionRequest) (map[providerKeySelectionKey]providerKeySelectionResult, error) {
+	return a.resolveProviderKeysBatch(ctx, requests, true)
+}
+
+func (a *App) resolveProviderKeysBatch(ctx context.Context, requests []providerKeySelectionRequest, advanceRotation bool) (map[providerKeySelectionKey]providerKeySelectionResult, error) {
 	selected := make(map[providerKeySelectionKey]providerKeySelectionResult, len(requests))
 	selectionModes := make(map[providerKeySelectionKey]string, len(requests))
 	type initializedRequest struct {
@@ -480,7 +484,9 @@ ORDER BY c.ordinal,k.sort_order,k.id`)
 			a.routeMu.Lock()
 			keyName := fmt.Sprintf("%d\x00%s", key.providerID, key.upstreamModel)
 			start := a.providerKeyRoundRobin[keyName] % len(result.keys)
-			a.providerKeyRoundRobin[keyName] = (start + 1) % len(result.keys)
+			if advanceRotation {
+				a.providerKeyRoundRobin[keyName] = (start + 1) % len(result.keys)
+			}
 			a.routeMu.Unlock()
 			rotated := append([]selectedProviderKey(nil), result.keys[start:]...)
 			result.keys = append(rotated, result.keys[:start]...)

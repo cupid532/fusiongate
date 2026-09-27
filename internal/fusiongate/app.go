@@ -160,6 +160,8 @@ type Provider struct {
 	ProtocolPreference      string  `json:"protocol_preference"`
 	APIKeyCount             int     `json:"api_key_count"`
 	EnabledAPIKeyCount      int     `json:"enabled_api_key_count"`
+	PassthroughSupported    bool    `json:"passthrough_supported"`
+	PassthroughReason       string  `json:"passthrough_reason"`
 }
 
 type ProviderGroup struct {
@@ -204,6 +206,8 @@ type Route struct {
 	ProviderFailures         int    `json:"provider_failures"`
 	ProviderInflight         int    `json:"provider_inflight"`
 	HealthScore              int    `json:"health_score"`
+	EligibleProviderCount    int    `json:"eligible_provider_count"`
+	RoutingWarning           string `json:"routing_warning"`
 	LastHealthCheckAt        string `json:"last_health_check_at,omitempty"`
 	HealthCheckStatus        string `json:"health_check_status"`
 	HealthCheckError         string `json:"health_check_error,omitempty"`
@@ -711,6 +715,10 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "routing_strategy", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "candidate_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"request_ledger", "stop_reason", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "candidate_exclusions", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "first_byte_ms", "INTEGER"},
 		{"request_ledger", "usage_reported", "INTEGER NOT NULL DEFAULT 0"},
 		{"request_ledger", "api_key_name", "TEXT NOT NULL DEFAULT ''"},
@@ -1121,15 +1129,15 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/auth/oauth/complete", a.admin(a.oauthComplete))
 	mux.HandleFunc("/api/admin/auth/quota/", a.admin(a.authQuota))
 	mux.HandleFunc("/v1/models", a.api(a.models))
-	mux.HandleFunc("/v1/chat/completions", a.api(a.chat))
-	mux.HandleFunc("/v1/responses", a.api(a.responses))
-	mux.HandleFunc("/v1/responses/compact", a.api(a.responsesCompact))
-	mux.HandleFunc("/v1/messages", a.api(a.messages))
-	mux.HandleFunc("/v1/messages/count_tokens", a.api(a.messageTokenCount))
-	mux.HandleFunc("/v1/images/generations", a.api(a.images))
-	mux.HandleFunc("/v1/audio/speech", a.api(a.audioSpeech))
-	mux.HandleFunc("/v1/audio/transcriptions", a.api(a.audioTranscriptions))
-	mux.HandleFunc("/v1/embeddings", a.api(a.embeddings))
+	mux.HandleFunc("/v1/chat/completions", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/responses", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/responses/compact", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/messages", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/messages/count_tokens", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/images/generations", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/audio/speech", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/audio/transcriptions", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/embeddings", a.api(a.passthroughInference))
 	return a.security(mux)
 }
 func (a *App) security(next http.Handler) http.Handler {

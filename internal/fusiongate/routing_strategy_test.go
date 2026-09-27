@@ -325,8 +325,8 @@ func TestModelsAdvertiseReasoningAndImageInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	providerID := insertTestProvider(t, a, "codex", "codex_oauth", "http://codex.test", "token", 1, 1, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, providerID, "gpt-5.4", "gpt-5.4", "chat,stream", 0)
+	providerID := insertTestProvider(t, a, "native", "openai_compatible", "http://native.test", "token", 1, 1, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "gpt-5.4", "gpt-5.4", "chat,stream,image,reasoning:low,reasoning:medium,reasoning:high,reasoning:xhigh", 1)
 	rec := httptest.NewRecorder()
 	a.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil), authKey{AllowAll: true})
 	if rec.Code != http.StatusOK {

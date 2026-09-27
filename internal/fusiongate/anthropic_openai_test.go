@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func TestAnthropicMessagesRequestToOpenAIConvertsToolsAndResults(t *testing.T) {
+func TestLegacyAdapterAnthropicMessagesRequestToOpenAIConvertsToolsAndResults(t *testing.T) {
 	body := map[string]any{
 		"system":      []any{map[string]any{"type": "text", "text": "Be precise."}},
 		"max_tokens":  float64(2048),
@@ -70,7 +70,7 @@ func TestAnthropicMessagesRequestToOpenAIConvertsToolsAndResults(t *testing.T) {
 	}
 }
 
-func TestAnthropicMessagesRequestToOpenAISupportsDynamicSystemMessages(t *testing.T) {
+func TestLegacyAdapterAnthropicMessagesRequestToOpenAISupportsDynamicSystemMessages(t *testing.T) {
 	body := map[string]any{
 		"system": []any{map[string]any{"type": "text", "text": "Static instructions."}},
 		"messages": []any{
@@ -103,7 +103,7 @@ func TestAnthropicMessagesRequestToOpenAISupportsDynamicSystemMessages(t *testin
 	}
 }
 
-func TestWriteOpenAIAsAnthropicConvertsToolUseAndUsage(t *testing.T) {
+func TestLegacyAdapterWriteOpenAIAsAnthropicConvertsToolUseAndUsage(t *testing.T) {
 	rec := httptest.NewRecorder()
 	result := writeOpenAIAsAnthropic(rec, strings.NewReader(`{
 		"choices":[{"message":{"role":"assistant","content":"I will inspect it.","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.go\"}"}}]},"finish_reason":"tool_calls"}],
@@ -129,7 +129,7 @@ func TestWriteOpenAIAsAnthropicConvertsToolUseAndUsage(t *testing.T) {
 	}
 }
 
-func TestStreamOpenAIAsAnthropicEmitsClaudeSSE(t *testing.T) {
+func TestLegacyAdapterStreamOpenAIAsAnthropicEmitsClaudeSSE(t *testing.T) {
 	upstream := strings.Join([]string{
 		`data: {"id":"chatcmpl-1","choices":[{"delta":{"role":"assistant","content":"Hello "},"finish_reason":null}]}`,
 		"",
@@ -166,7 +166,7 @@ func TestStreamOpenAIAsAnthropicEmitsClaudeSSE(t *testing.T) {
 	}
 }
 
-func TestStreamOpenAIAsAnthropicWaitsForToolArgumentsBeforeStartingBlock(t *testing.T) {
+func TestLegacyAdapterStreamOpenAIAsAnthropicWaitsForToolArgumentsBeforeStartingBlock(t *testing.T) {
 	upstream := strings.Join([]string{
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":""}}]},"finish_reason":null}]}`,
 		"",
@@ -186,7 +186,7 @@ func TestStreamOpenAIAsAnthropicWaitsForToolArgumentsBeforeStartingBlock(t *test
 	}
 }
 
-func TestStreamOpenAIAsAnthropicEmptyStreamDoesNotCommit(t *testing.T) {
+func TestLegacyAdapterStreamOpenAIAsAnthropicEmptyStreamDoesNotCommit(t *testing.T) {
 	rec := httptest.NewRecorder()
 	result := streamOpenAIAsAnthropic(rec, strings.NewReader(""), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "empty", time.Second, time.Second)
 	if result.Status != http.StatusBadGateway || !result.Retryable || result.Handled || result.Reason != "upstream_empty_stream" {
@@ -197,7 +197,7 @@ func TestStreamOpenAIAsAnthropicEmptyStreamDoesNotCommit(t *testing.T) {
 	}
 }
 
-func TestStreamOpenAIAsAnthropicAcceptsCRLF(t *testing.T) {
+func TestLegacyAdapterStreamOpenAIAsAnthropicAcceptsCRLF(t *testing.T) {
 	upstream := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\r\n\r\ndata: [DONE]\r\n\r\n"
 	rec := httptest.NewRecorder()
 	result := streamOpenAIAsAnthropic(rec, strings.NewReader(upstream), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "crlf", time.Second, time.Second)
@@ -209,7 +209,7 @@ func TestStreamOpenAIAsAnthropicAcceptsCRLF(t *testing.T) {
 	}
 }
 
-func TestStreamOpenAIAsAnthropicOutputStartTimeoutDoesNotCommit(t *testing.T) {
+func TestLegacyAdapterStreamOpenAIAsAnthropicOutputStartTimeoutDoesNotCommit(t *testing.T) {
 	reader, writer := io.Pipe()
 	defer writer.Close()
 	rec := httptest.NewRecorder()
@@ -223,7 +223,7 @@ func TestStreamOpenAIAsAnthropicOutputStartTimeoutDoesNotCommit(t *testing.T) {
 	_ = reader.Close()
 }
 
-func TestStreamOpenAIAsAnthropicIdleTimeoutAndInterruption(t *testing.T) {
+func TestLegacyAdapterStreamOpenAIAsAnthropicIdleTimeoutAndInterruption(t *testing.T) {
 	valid := `data: {"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n"
 	tests := []struct {
 		name   string
@@ -259,7 +259,7 @@ func TestStreamOpenAIAsAnthropicIdleTimeoutAndInterruption(t *testing.T) {
 	}
 }
 
-func TestMessagesUsesOpenAICompatibleRoute(t *testing.T) {
+func TestLegacyAdapterMessagesUsesOpenAICompatibleRoute(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("path=%s", r.URL.Path)
@@ -309,7 +309,7 @@ func TestMessagesUsesOpenAICompatibleRoute(t *testing.T) {
 	// this explicit header so net/http can transparently decode upstream gzip.
 	req.Header.Set("Accept-Encoding", "gzip")
 	rec := httptest.NewRecorder()
-	a.Router().ServeHTTP(rec, req)
+	legacyAdapterRouter(a).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -335,7 +335,7 @@ func TestMessagesUsesOpenAICompatibleRoute(t *testing.T) {
 	}
 }
 
-func TestMessagesNonStreamUsesOpenAIUpstreamSSE(t *testing.T) {
+func TestLegacyAdapterMessagesNonStreamUsesOpenAIUpstreamSSE(t *testing.T) {
 	var received map[string]any
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
@@ -359,7 +359,7 @@ func TestMessagesNonStreamUsesOpenAIUpstreamSSE(t *testing.T) {
 	providerID := insertTestProvider(t, a, "streamed-openai-claude", "openai_compatible", upstream.URL, "upstream-secret", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "claude-test", "provider-claude", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/messages", key, `{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`, "claude-cli/1")
+	rec := legacyAdapterRequest(t, a, "/v1/messages", key, `{"model":"claude-test","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`, "claude-cli/1")
 	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
 		t.Fatalf("status=%d type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
 	}
@@ -380,11 +380,11 @@ func TestMessagesNonStreamUsesOpenAIUpstreamSSE(t *testing.T) {
 	}
 }
 
-func TestMessagesKeepsNativeAnthropicRoute(t *testing.T) {
+func TestLegacyAdapterMessagesKeepsNativeAnthropicRoute(t *testing.T) {
 	testNativeAnthropicCompatibleMessagesRoute(t, "anthropic")
 }
 
-func TestMessagesKeepsNativeAnthropicCompatibleRoute(t *testing.T) {
+func TestLegacyAdapterMessagesKeepsNativeAnthropicCompatibleRoute(t *testing.T) {
 	testNativeAnthropicCompatibleMessagesRoute(t, "anthropic_compatible")
 }
 
@@ -425,7 +425,7 @@ func testNativeAnthropicCompatibleMessagesRoute(t *testing.T, providerType strin
 	providerID := insertTestProvider(t, a, "native", providerType, upstream.URL, "anthropic-secret", 1, 100, "normalized", "any", 0, 3, 30)
 	insertTestRoute(t, a, providerID, "claude-native", "native-claude", "chat,stream", 1)
 	key := insertTestKey(t, a, false)
-	rec := gatewayRequest(t, a, "/v1/messages", key, `{"model":"claude-native","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`, "claude-cli/1")
+	rec := legacyAdapterRequest(t, a, "/v1/messages", key, `{"model":"claude-native","max_tokens":64,"messages":[{"role":"user","content":"ping"}]}`, "claude-cli/1")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "native") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}

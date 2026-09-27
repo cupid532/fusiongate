@@ -163,7 +163,7 @@ func mustJSONMap(t *testing.T, raw []byte) map[string]any {
 
 // End to end through the gateway: two turns of one conversation reach an
 // OpenCode upstream with the same derived session and the client's own UA.
-func TestOpenCodeGatewayRequestsCarrySessionHeader(t *testing.T) {
+func TestOpenCodeGatewayDoesNotInventSessionHeader(t *testing.T) {
 	var sessions, agents []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sessions = append(sessions, r.Header.Get("x-opencode-session"))
@@ -177,7 +177,7 @@ func TestOpenCodeGatewayRequestsCarrySessionHeader(t *testing.T) {
 	}
 	defer a.Close()
 	providerID := insertTestProvider(t, a, "opencode-session", "opencode", upstream.URL+"/v1", "opencode-secret", 1, 100, "normalized", "any", 0, 3, 30)
-	insertTestRoute(t, a, providerID, "glm-agent", "glm-5.2", "chat,stream,tools,protocol:chat", 1)
+	insertTestRoute(t, a, providerID, "glm-agent", "glm-agent", "chat,stream,tools,protocol:chat", 1)
 	key := insertTestKey(t, a, false)
 	turn1 := `{"model":"glm-agent","messages":[{"role":"system","content":"terse"},{"role":"user","content":"plan it"}]}`
 	turn2 := `{"model":"glm-agent","messages":[{"role":"system","content":"terse"},{"role":"user","content":"plan it"},{"role":"assistant","content":"1."},{"role":"user","content":"go"}]}`
@@ -186,8 +186,8 @@ func TestOpenCodeGatewayRequestsCarrySessionHeader(t *testing.T) {
 			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 		}
 	}
-	if len(sessions) != 2 || sessions[0] == "" || sessions[0] != sessions[1] {
-		t.Fatalf("upstream saw sessions %q, want one stable non-empty id", sessions)
+	if len(sessions) != 2 || sessions[0] != "" || sessions[1] != "" {
+		t.Fatalf("upstream saw sessions %q, want no invented session id", sessions)
 	}
 	if agents[0] != "opencode/1" {
 		t.Fatalf("client User-Agent not preserved: %q", agents)

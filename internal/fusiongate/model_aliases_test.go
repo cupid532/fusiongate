@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestModelAliasRoutesToCanonicalFailoverGroup(t *testing.T) {
+func TestModelAliasExcludedWithoutCallingCanonicalUpstream(t *testing.T) {
 	var upstreamModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -35,15 +35,8 @@ func TestModelAliasRoutesToCanonicalFailoverGroup(t *testing.T) {
 	}
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"/glm5.2","messages":[{"role":"user","content":"ping"}]}`, "opencode/1")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if upstreamModel != "vendor-glm-5.2" {
-		t.Fatalf("upstream model=%q", upstreamModel)
-	}
-	var response map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || response["model"] != "/glm5.2" {
-		t.Fatalf("response=%#v err=%v", response, err)
+	if rec.Code != http.StatusNotFound || upstreamModel != "" {
+		t.Fatalf("status=%d upstream model=%q body=%s", rec.Code, upstreamModel, rec.Body.String())
 	}
 	a.flushLedgerWrites()
 	var publicModel string
@@ -114,7 +107,7 @@ func TestModelAliasSharesCanonicalAdaptiveState(t *testing.T) {
 	}
 }
 
-func TestModelAliasFailsOverAcrossCanonicalProviders(t *testing.T) {
+func TestModelAliasDoesNotInvokeCanonicalProviders(t *testing.T) {
 	firstCalls := 0
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		firstCalls++
@@ -149,10 +142,10 @@ func TestModelAliasFailsOverAcrossCanonicalProviders(t *testing.T) {
 	}
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"/canonical","messages":[{"role":"user","content":"ping"}]}`, "opencode/1")
-	if rec.Code != http.StatusOK {
+	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if firstCalls != 1 || secondCalls != 1 {
+	if firstCalls != 0 || secondCalls != 0 {
 		t.Fatalf("upstream calls first=%d second=%d", firstCalls, secondCalls)
 	}
 	a.flushLedgerWrites()
@@ -160,7 +153,7 @@ func TestModelAliasFailsOverAcrossCanonicalProviders(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT COUNT(*),MAX(attempt) FROM request_ledger WHERE public_model='/canonical'`).Scan(&attempts, &maxAttempt); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != 2 || maxAttempt != 2 {
+	if attempts != 1 || maxAttempt != 0 {
 		t.Fatalf("ledger attempts=%d max=%d", attempts, maxAttempt)
 	}
 }

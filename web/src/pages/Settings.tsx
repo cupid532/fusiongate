@@ -106,21 +106,23 @@ export function Settings() {
 
 function RoutingTab() {
   const qc = useQueryClient()
-  const { data } = useQuery({
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["routing"],
     queryFn: () => api<{ strategy: RoutingStrategy }>("/api/admin/routing"),
   })
 
   const mutation = useMutation({
     mutationFn: (strategy: RoutingStrategy) =>
-      api("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy }) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["routing"] })
+      api<{ strategy: RoutingStrategy }>("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy }) }),
+    onSuccess: async (result) => {
+      qc.setQueryData(["routing"], result)
+      await qc.invalidateQueries({ queryKey: ["routing"] })
       notifySuccess("路由策略已更新")
     },
+    onError: (err: Error) => notifyError("路由策略保存失败", err.message),
   })
 
-  const current = data?.strategy ?? "priority_failover"
+  const current = data?.strategy
 
   return (
     <div className="space-y-6">
@@ -133,14 +135,14 @@ function RoutingTab() {
           决定每个新请求从哪个上游渠道开始。所有策略都带请求内故障转移。
         </p>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        {isLoading ? <div role="status" className="py-8 text-center text-sm text-muted-foreground">正在读取路由策略…</div> : isError ? <div role="alert" className="space-y-3 text-sm text-destructive"><p>路由策略读取失败：{error instanceof Error ? error.message : "未知错误"}</p><Button variant="outline" onClick={() => void refetch()}>重试</Button></div> : <div className="grid gap-3 sm:grid-cols-2">
           {strategies.map((s) => {
             const active = s === current
             return (
               <button
                 key={s}
                 onClick={() => mutation.mutate(s)}
-                disabled={mutation.isPending}
+                disabled={mutation.isPending || !current}
                 className={cn(
                   "group relative rounded-xl p-4 text-left transition-all",
                   active
@@ -171,7 +173,8 @@ function RoutingTab() {
               </button>
             )
           })}
-        </div>
+        </div>}
+        {mutation.isError && <div role="alert" className="mt-4 text-sm text-destructive">保存路由策略失败：{mutation.error instanceof Error ? mutation.error.message : "未知错误"}</div>}
       </div>
     </div>
   )

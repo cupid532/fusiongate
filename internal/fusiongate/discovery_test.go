@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func TestAnthropicDiscoveryAutomaticallyDetectsResponses(t *testing.T) {
+func TestAnthropicDiscoveryDoesNotProbeGenerationProtocols(t *testing.T) {
 
 	var responseProbes atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +41,7 @@ func TestAnthropicDiscoveryAutomaticallyDetectsResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if responseProbes.Load() != 1 || len(discovery.Models) != 1 || !matchesCapability(discovery.Models[0].Capabilities, "protocol:responses") {
+	if responseProbes.Load() != 0 || len(discovery.Models) != 1 || matchesCapability(discovery.Models[0].Capabilities, "protocol:responses") {
 		t.Fatalf("probes=%d models=%#v", responseProbes.Load(), discovery.Models)
 	}
 	result, err := a.importDiscoveredModels(context.Background(), providerID, discovery.Models, false)
@@ -55,7 +55,7 @@ func TestAnthropicDiscoveryAutomaticallyDetectsResponses(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT capabilities FROM model_routes WHERE provider_id=?`, providerID).Scan(&capabilities); err != nil {
 		t.Fatal(err)
 	}
-	if !matchesCapability(capabilities, "protocol:responses") {
+	if matchesCapability(capabilities, "protocol:responses") {
 		t.Fatalf("capabilities=%q", capabilities)
 	}
 }

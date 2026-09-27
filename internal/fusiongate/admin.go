@@ -270,6 +270,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 				v := ipPoolNodeID.Int64
 				p.IPPoolNodeID = &v
 			}
+			p.PassthroughSupported, p.PassthroughReason = providerPassthroughSupport(p.Type)
 			p.Inflight = a.providerInflight(p.ID)
 			p.HealthScore = calculateHealthScore(p)
 			if manualBalance.Valid {
@@ -1368,6 +1369,35 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			}
 			out = append(out, x)
 		}
+		if err := rows.Err(); err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
+		}
+		rows.Close() // release the single writer connection before resolving credentials
+		counts := map[string]int{}
+		warnings := map[string]string{}
+		for _, item := range out {
+			if _, seen := counts[item.PublicName]; seen {
+				continue
+			}
+			resolved, err := a.resolveRoutes(r.Context(), item.PublicName, "passthrough", false)
+			count, _ := a.passthroughDiagnostics(r.Context(), item.PublicName, resolved, nil)
+			counts[item.PublicName] = count
+			if errors.Is(err, errRouteResolution) {
+				warnings[item.PublicName] = "候选解析失败，请检查渠道凭据"
+			} else if count == 0 {
+				warnings[item.PublicName] = "没有可用的原生透传候选渠道"
+			} else if count == 1 {
+				warnings[item.PublicName] = "无备用渠道，无法故障转移"
+			}
+		}
+		for i := range out {
+			out[i].EligibleProviderCount = counts[out[i].PublicName]
+			out[i].RoutingWarning = warnings[out[i].PublicName]
+			if out[i].PublicName != out[i].UpstreamModel {
+				out[i].RoutingWarning = "此映射需要改写模型名，不参与纯透传"
+			}
+		}
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in struct {
@@ -2137,7 +2167,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 
 	args = append(args, limit)
-	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(l.api_key_id,0),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id WHERE ` + whereClause + ` ORDER BY l.id DESC LIMIT ?`
+	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.routing_strategy,l.candidate_count,l.stop_reason,l.candidate_exclusions,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(l.api_key_id,0),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id WHERE ` + whereClause + ` ORDER BY l.id DESC LIMIT ?`
 	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
@@ -2150,10 +2180,13 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		var id, attempt, stream, success, status, latency, usageReported int
 		var apiKeyID, providerKeyID int64
 		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, apiKeyName, apiKeyPrefix, providerKeyName, providerKeyHint, clientIP, reasoningEffort string
+		var routingStrategy, stopReason, candidateExclusions string
+		var candidateCount int
+		var candidateCountValue any
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
 		var requestTimeoutMS int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyID, &apiKeyName, &apiKeyPrefix, &providerKeyID, &providerKeyName, &providerKeyHint, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &routingStrategy, &candidateCount, &stopReason, &candidateExclusions, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyID, &apiKeyName, &apiKeyPrefix, &providerKeyID, &providerKeyName, &providerKeyHint, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -2165,7 +2198,10 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		if completed == "" {
 			rowStale = ledgerRowStale(created, requestTimeoutMS, serverNow)
 		}
-		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "provider_name": providerName, "api_key_id": apiKeyID, "api_key_name": apiKeyName, "api_key_prefix": apiKeyPrefix, "provider_key_id": providerKeyID, "provider_key_name": providerKeyName, "provider_key_hint": providerKeyHint, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported), "reasoning_effort": reasoningEffort, "stale": rowStale})
+		if routingStrategy != "" {
+			candidateCountValue = candidateCount
+		}
+		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "routing_strategy": routingStrategy, "candidate_count": candidateCountValue, "stop_reason": stopReason, "candidate_exclusions": candidateExclusions, "provider_name": providerName, "api_key_id": apiKeyID, "api_key_name": apiKeyName, "api_key_prefix": apiKeyPrefix, "provider_key_id": providerKeyID, "provider_key_name": providerKeyName, "provider_key_hint": providerKeyHint, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported), "reasoning_effort": reasoningEffort, "stale": rowStale})
 	}
 	if err := rows.Err(); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())

@@ -91,7 +91,7 @@ func TestOpenAICompatibleGatewayFlow(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body["model"] != "provider-model" {
+		if body["model"] != "smart" {
 			t.Errorf("forwarded model = %#v", body["model"])
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"id": "upstream-id", "object": "chat.completion", "model": "provider-model", "choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": "pong"}, "finish_reason": "stop"}}, "usage": map[string]any{"prompt_tokens": 7, "completion_tokens": 3}})
@@ -104,7 +104,7 @@ func TestOpenAICompatibleGatewayFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	providerID, _ := result.LastInsertId()
-	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,input_price_micros,output_price_micros,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, "smart", providerID, "provider-model", "chat,stream", 1, 1, 1_000_000, 2_000_000, nowv, nowv); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,input_price_micros,output_price_micros,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, "smart", providerID, "smart", "chat,stream", 1, 1, 1_000_000, 2_000_000, nowv, nowv); err != nil {
 		t.Fatal(err)
 	}
 	key := "fg_integration_key"
@@ -135,7 +135,12 @@ func TestOpenAICompatibleGatewayFlow(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT success,input_tokens,output_tokens,cost_micros FROM request_ledger`).Scan(&success, &input, &output, &cost); err != nil {
 		t.Fatal(err)
 	}
-	if success != 1 || input != 7 || output != 3 || cost != 13 {
+	var costType string
+	var reported int
+	if err := a.db.QueryRow(`SELECT cost_type,usage_reported FROM request_ledger`).Scan(&costType, &reported); err != nil || costType != "unknown" || reported != 0 {
+		t.Fatalf("cost=%s reported=%d err=%v", costType, reported, err)
+	}
+	if success != 1 || input != 0 || output != 0 || cost != 0 {
 		t.Fatalf("ledger success=%d input=%d output=%d cost=%d", success, input, output, cost)
 	}
 }

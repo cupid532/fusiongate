@@ -2,6 +2,24 @@
 
 The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and proxies requests to FusionGate over an isolated Docker network; the application container is not published directly on the host.
 
+## V3.12 raw-passthrough upgrade
+
+This release changes inference semantics. Before upgrading:
+
+- Use each upstream's native endpoint and exact model name. Chat, Responses and Messages are no longer converted; old interface preferences do not select or rewrite endpoints.
+- Specialized OAuth/Codex/web adapters and model mappings requiring payload rewrites are excluded from inference, while accounts, credentials and historical records remain stored. Do not enable disabled providers or invent model support to create backups.
+- Verify at least two eligible channels for each model that needs failover. Four start-selection strategies cannot rotate a single candidate. Inspect candidate/attempt/stop diagnostics rather than assuming a saved strategy guarantees a backup.
+- New token usage and cost are unknown. Historical budgets/balances cannot account for new spending; enforce monetary limits at upstreams. No response payload parsing is performed for billing.
+- Retrying an uncommitted generation can duplicate upstream work/charges after a timeout. Once a response is committed downstream, interruptions cannot fail over without corrupting the stream.
+
+For self-managed upgrades, commit and push first, then use `deploy/deploy-from-origin.sh` with the correct `FUSIONGATE_REPO_DIR`, `FUSIONGATE_COMPOSE_FILE` and `FUSIONGATE_HEALTH_URL`. Never edit deployed build artifacts or bypass its clean-tree/origin/version checks.
+
+Before replacing the live container, create a SQLite online backup (Python `sqlite3.Connection.backup` or SQLite `.backup`, not a bare copy of a live WAL database), verify `PRAGMA integrity_check`, and record the current image ID, commit, Compose file and protected configuration. Keep secret-bearing backups outside Git and mode 0700/0600. Retain the old image until the release is verified. Migrations retain legacy compatibility fields.
+
+After deployment, compare `/healthz` version/revision with the pushed commit, check container health, read back the routing strategy, and inspect provider/model compatibility warnings. Mock-upstream tests do not require paid production generation calls.
+
+The deploy script automatically restores the old image if the container fails its health gate. If data restoration is necessary, first stop FusionGate, preserve a consistent copy of the post-upgrade database, restore the validated pre-upgrade database with its original ownership and permissions, remove stale WAL/SHM files only while stopped, and restart the pinned old image. Restoring a database discards subsequent metadata writes, so do not do it unnecessarily. Never regenerate the encryption master key during rollback.
+
 ## Two deployment models
 
 There are two supported ways to run FusionGate, and they are operated differently. Pick one per host and know which one you are on — `ls /opt/fusiongate/.fusiongate-install` tells you.

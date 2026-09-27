@@ -524,7 +524,7 @@ func TestProviderKeyFailoverTriesSecondKeyAfterAuthFailure(t *testing.T) {
 	}
 	firstID := insertProviderKeyForTest(t, a, providerID, "sk-first", "first", "", providerKeyEgressInherit, nil, 1, 0)
 	secondID := insertProviderKeyForTest(t, a, providerID, "sk-second", "second", "", providerKeyEgressInherit, nil, 1, 1)
-	insertTestRoute(t, a, providerID, "multi-key-model", "upstream-model", "chat,stream", 1)
+	insertTestRoute(t, a, providerID, "multi-key-model", "multi-key-model", "chat,stream", 1)
 
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"multi-key-model","messages":[{"role":"user","content":"ping"}]}`, "test-client/1")

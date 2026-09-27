@@ -388,7 +388,7 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 GROUP BY r.public_name ORDER BY r.public_name`)
+	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 AND r.public_name=r.upstream_model AND p.type IN ('openai','grok','openrouter','openai_compatible','opencode','anthropic','anthropic_compatible') GROUP BY r.public_name ORDER BY r.public_name`)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -409,39 +409,6 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 			metadata["owned_by"] = "fusiongate"
 			data = append(data, metadata)
 		}
-	}
-	aliasRows, err := a.reader().Query(`
-SELECT a.alias,a.target_model,a.created_at,GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|')
-FROM model_aliases a
-JOIN model_routes r ON r.public_name=a.target_model AND r.enabled=1
-JOIN providers p ON p.id=r.provider_id AND p.enabled=1 AND p.archived=0 AND p.passthrough_mode<>'transparent'
-WHERE a.enabled=1
-GROUP BY a.alias,a.target_model,a.created_at`)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, "database_error", err.Error())
-		return
-	}
-	defer aliasRows.Close()
-	for aliasRows.Next() {
-		var alias, target, created, routeCapabilities, providerTypes, upstreamModels string
-		if aliasRows.Scan(&alias, &target, &created, &routeCapabilities, &providerTypes, &upstreamModels) != nil || !modelAllowed(k, alias, target) {
-			continue
-		}
-		createdAt := parseTime(created)
-		var unix int64
-		if createdAt != nil {
-			unix = createdAt.Unix()
-		}
-		metadata := modelMetadata(alias, routeCapabilities, providerTypes, upstreamModels)
-		metadata["object"] = "model"
-		metadata["created"] = unix
-		metadata["owned_by"] = "fusiongate"
-		metadata["canonical_model"] = target
-		data = append(data, metadata)
-	}
-	if err := aliasRows.Err(); err != nil {
-		fail(w, http.StatusInternalServerError, "database_error", err.Error())
-		return
 	}
 	sort.Slice(data, func(i, j int) bool { return asString(data[i]["id"]) < asString(data[j]["id"]) })
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
@@ -531,6 +498,11 @@ func modelMetadata(name, routeCapabilities, providerTypes, upstreamModels string
 }
 
 func (a *App) resolve(ctx context.Context, model, requiredCapability string) ([]resolvedRoute, error) {
+	return a.resolveRoutes(ctx, model, requiredCapability, true)
+}
+
+// Diagnostics resolve the same candidates without advancing request rotation.
+func (a *App) resolveRoutes(ctx context.Context, model, requiredCapability string, advanceRotation bool) ([]resolvedRoute, error) {
 	rows, err := a.reader().QueryContext(ctx, `
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
        r.input_price_micros,r.cached_price_micros,r.output_price_micros,r.long_context_threshold,
@@ -586,7 +558,11 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 			value := ipPoolNodeID.Int64
 			z.Provider.IPPoolNodeID = &value
 		}
-		if !matchesCapability(z.Route.Capabilities, requiredCapability) {
+		if requiredCapability == "passthrough" {
+			if supported, _ := providerPassthroughSupport(z.Provider.Type); !supported || z.Route.UpstreamModel != model || z.Route.PublicName != model {
+				continue
+			}
+		} else if !matchesCapability(z.Route.Capabilities, requiredCapability) {
 			continue
 		}
 		// One provider gets one seat per final upstream model. A provider may expose
@@ -629,7 +605,7 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 			multiKeyInitialized: candidate.multiKeyInitialized,
 		})
 	}
-	selectedByCandidate, selectionErr := a.selectProviderKeysBatch(ctx, selectionRequests)
+	selectedByCandidate, selectionErr := a.resolveProviderKeysBatch(ctx, selectionRequests, advanceRotation)
 	if selectionErr != nil {
 		a.log.Error("provider key selection", "error", sanitizeError(selectionErr.Error()))
 		return nil, errRouteResolution

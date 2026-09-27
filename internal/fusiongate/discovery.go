@@ -1,7 +1,6 @@
 package fusiongate
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -249,9 +248,6 @@ func (a *App) fetchDiscoveryCandidate(parent context.Context, p discoveryProvide
 	defer cancel()
 	started := time.Now()
 	models, err := a.fetchDiscoveredModels(ctx, p)
-	if err == nil {
-		models = a.applyDiscoveredProtocolCapabilities(ctx, p, models)
-	}
 	if err != nil && p.AuthCredential != nil && isDiscoveryAuthenticationError(err) {
 		z := resolvedRoute{Provider: Provider{ID: p.ID, Type: p.Type, IPPoolNodeID: p.IPPoolNodeID}, Credential: p.Credential, AuthCredential: p.AuthCredential}
 		if refreshErr := a.refreshProviderCredential(ctx, &z, true); refreshErr != nil {
@@ -259,9 +255,6 @@ func (a *App) fetchDiscoveryCandidate(parent context.Context, p discoveryProvide
 		}
 		p.Credential, p.AuthCredential = z.Credential, z.AuthCredential
 		models, err = a.fetchDiscoveredModels(ctx, p)
-		if err == nil {
-			models = a.applyDiscoveredProtocolCapabilities(ctx, p, models)
-		}
 	}
 	return models, time.Since(started).Milliseconds(), err
 }
@@ -632,85 +625,6 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 	return out, envelope.NextPageToken, nil
 }
 
-func addCapability(capabilities, capability string) string {
-	if matchesCapability(capabilities, capability) {
-		return capabilities
-	}
-	if strings.TrimSpace(capabilities) == "" {
-		return capability
-	}
-	return capabilities + "," + capability
-}
-
-func (a *App) probeProviderResponses(parent context.Context, p discoveryProvider, model string) bool {
-	if !isAnthropicProvider(p.Type) || strings.EqualFold(strings.TrimSpace(p.ProtocolPolicy), protocolFixed) {
-		return false
-	}
-	preference, valid := normalizeProtocolPreference(p.ProtocolPreference)
-	if !valid {
-		return false
-	}
-	if preference != "" && !strings.Contains(","+preference+",", ",responses,") {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(parent, 12*time.Second)
-	defer cancel()
-	endpoint, err := healthProbeURL(p.BaseURL, "/v1/responses")
-	if err != nil {
-		return false
-	}
-	payload, _ := json.Marshal(map[string]any{"model": model, "input": "Reply exactly: OK", "max_output_tokens": 8, "stream": false})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-api-key", p.Credential)
-	resp, err := a.doProviderRequest(req, p.IPPoolNodeID)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 256<<10))
-	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false
-	}
-	var response map[string]any
-	if json.Unmarshal(body, &response) != nil || response["output"] == nil {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(asString(response["status"])), "completed") || len(anySlice(response["output"])) > 0
-}
-
-func (a *App) applyDiscoveredProtocolCapabilities(parent context.Context, p discoveryProvider, models []discoveredModel) []discoveredModel {
-	if len(models) == 0 || !isAnthropicProvider(p.Type) {
-		return models
-	}
-	if p.ProtocolPolicy == protocolFixed {
-		return models
-	}
-	probeModel := ""
-	for _, model := range models {
-		if model.Capabilities != "unsupported" && matchesCapability(model.Capabilities, "chat") {
-			probeModel = model.UpstreamID
-			if probeModel == "" {
-				probeModel = model.ID
-			}
-			break
-		}
-	}
-	if probeModel == "" || !a.probeProviderResponses(parent, p, probeModel) {
-		return models
-	}
-	for i := range models {
-		if models[i].Capabilities != "unsupported" && matchesCapability(models[i].Capabilities, "chat") {
-			models[i].Capabilities = addCapability(models[i].Capabilities, "protocol:responses")
-		}
-	}
-	return models
-}
-
 func discoveredModelCapabilities(base string, reasoningEfforts []string, defaultReasoningEffort string, inputModalities []string) string {
 	capabilities := strings.Split(base, ",")
 	seen := map[string]bool{}
@@ -922,13 +836,6 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		}
 		if p.Type == "grok_oauth" {
 			allModels = enrichGrokModels(allModels)
-		}
-		if p.Type == "opencode" && p.ProtocolPolicy == protocolFixed {
-			for i := range allModels {
-				if providerProbeProtocol(p, allModels[i].UpstreamID, allModels[i].Capabilities) == "unsupported" {
-					allModels[i].Capabilities = "unsupported"
-				}
-			}
 		}
 		return allModels, nil
 	}
