@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.14
+
+- Make all four client interfaces work against any channel: `/v1/chat/completions`, `/v1/responses`, `/v1/messages` and Gemini `generateContent` / `streamGenerateContent`. A request is still forwarded byte for byte when the channel speaks the client's protocol; when the channel answers that it does not (404/405/501, or an "unsupported/invalid URL" style 400), the same channel is retried once through a streaming protocol bridge and the result is remembered for 30 minutes so later turns go straight to the bridge. Codex against chat-only relays such as AIAPI now works.
+- Bridges convert leniently through the Chat form: Codex-only fields (`store`, `include`, `prompt_cache_key`, `text`, encrypted reasoning) are dropped, custom tools such as `apply_patch` become function tools and are rendered back as `custom_tool_call`, and parallel tool calls are merged into one assistant turn. Output streams incrementally in the client's own event format.
+- Restore token and cost accounting. Passthrough responses are observed read-only for their usage (SSE or JSON, gzip included) without altering the bytes, bridged responses report the Chat usage, and every successful request records input, cached, output and reasoning tokens plus estimated cost, so key budgets and spend work again.
+- Restore model mappings and aliases: when a route's upstream model differs, only the top-level `model` field is rewritten.
+- Answer `/v1/messages/count_tokens` and Gemini `countTokens` locally when the channel has no native endpoint.
+- Restore the per-channel interface method (auto or fixed Chat / Responses / Messages) in the console, show whether each request was passed through or bridged, and remove the "usage unknown" notices.
+
 ## V3.13
 
 - Restore auth-file and dedicated channels to inference routing by separating identity adaptation from protocol conversion. Credential-bearing channel types (Codex OAuth, Claude OAuth, Grok OAuth) are selected again and pass the client's body through unchanged; only the refreshed credential, account headers and the endpoint shape its own API exposes differ. Types with no verified implementation stay stored and enabled exactly as configured, and the ledger records why they were not chosen.

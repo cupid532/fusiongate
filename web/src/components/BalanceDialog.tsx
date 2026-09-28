@@ -79,9 +79,8 @@ export function ProviderBalancePanel({ open, providerId, onClose, onSaved }: Pan
         {balance ? (
           <div className="space-y-4">
             <div className="rounded-lg bg-muted p-3 text-sm">
-              <span className="text-muted-foreground">历史估算累计消费：</span>
+              <span className="text-muted-foreground">估算累计消费：</span>
               <span className="font-semibold">{formatCost(balance.estimated_spend?.cost_micros ?? 0)}</span>
-              <div className="mt-2 text-xs text-amber-700 dark:text-amber-400">纯透传不结算新请求费用，未知消费不能按零计算；金额预算和余额扣减无法准确执行。</div>
               {balance.manual && (
                 <div className="mt-1 text-xs text-muted-foreground">
                   手动余额已用 {balance.manual.used_percent.toFixed(1)}% · 剩余 {formatCost(balance.manual.remaining_micros)}

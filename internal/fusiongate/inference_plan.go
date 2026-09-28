@@ -88,49 +88,51 @@ func providerPassthroughSupport(kind string) (bool, string) {
 // request, shared by candidate selection and by the console diagnostics so the
 // two can never disagree.
 //
-// V3.13 forwards the client's body untouched, so a channel is only eligible when
-// the model name the client sent is the name that channel already expects: the
-// mapping's upstream_model must equal the requested model. A route whose
-// public_name differs is still usable when its upstream name matches, because
-// nothing in the payload is rewritten; the routes console labels the entries
-// that would need a rewrite instead of silently rewriting them.
+// A mapping whose upstream name differs from the requested name is eligible:
+// the gateway then rewrites only the top-level model field and forwards every
+// other byte unchanged.
 func inferenceRouteEligible(z resolvedRoute, model, path string) bool {
-	if path != "" && providerInferenceMode(z.Provider.Type, path).mode == "" {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(z.Route.UpstreamModel), strings.TrimSpace(model))
+	return path == "" || providerInferenceMode(z.Provider.Type, path).mode != ""
 }
 
 // providerInferenceMode reports whether this provider type may serve the given
 // public path, and with which execution mode. An empty path means "any public
 // inference endpoint", which is what the routes console asks for.
 //
-// An identity channel only accepts the endpoints its own API actually exposes:
-// the Codex backend has no OpenAI-compatible /v1 path and no Chat Completions
-// endpoint, so sending it one would be a fabricated capability.
+// The four model protocols (chat, responses, messages, gemini) are served by
+// every channel that speaks at least one of them: natively when the channel
+// speaks the client's protocol, through a bridge otherwise. Other endpoints are
+// only offered where the channel's own API has them.
 func providerInferenceMode(kind, path string) inferenceSupport {
 	support := inferenceProviderSupport(kind)
 	if support.mode == "" || path == "" {
 		return support
+	}
+	if client := clientWireProtocol(path); client != "" {
+		natives := typeWireProtocols(kind)
+		if kind == "opencode" || containsString(natives, client) {
+			return support
+		}
+		if len(natives) > 0 {
+			return inferenceSupport{mode: inferenceModeBridge}
+		}
+		return inferenceSupport{reason: fmt.Sprintf("%s 渠道没有可用的协议转换", kind)}
 	}
 	if support.mode != inferenceModeIdentity {
 		return support
 	}
 	switch kind {
 	case "codex_oauth":
-		if path == "/v1/responses" || path == "/v1/responses/compact" {
+		if path == "/v1/responses/compact" {
 			return support
 		}
 		return inferenceSupport{reason: "codex_oauth 仅提供 Responses 接口，此入口不在其原生路径内"}
 	case "claude_oauth":
-		if path == "/v1/messages" || path == "/v1/messages/count_tokens" {
+		if path == "/v1/messages/count_tokens" {
 			return support
 		}
 		return inferenceSupport{reason: "claude_oauth 仅提供 Messages 接口，此入口不在其原生路径内"}
 	case "grok_oauth":
-		if path == "/v1/responses" || path == "/v1/chat/completions" {
-			return support
-		}
 		return inferenceSupport{reason: "grok_oauth 仅提供 Responses/Chat 接口，此入口不在其原生路径内"}
 	}
 	return support
@@ -338,30 +340,32 @@ func classifyInferenceResult(result attemptResult, downstreamCanceled bool) infe
 // inferenceAdapterID names the adapter that will serve a route, for the ledger
 // and the console. It never contains credentials.
 func inferenceAdapterID(z resolvedRoute, path string) string {
-	if adapter := bridgeAdapterFor(z, path); adapter != "" {
+	if adapter := planInferenceAdapter(z, path); adapter != "" {
 		return adapter
 	}
 	support := providerInferenceMode(z.Provider.Type, path)
 	if support.mode == "" {
 		return ""
 	}
+	if support.mode == inferenceModeBridge {
+		return z.Provider.Type + ":" + inferenceModeNative
+	}
 	return z.Provider.Type + ":" + support.mode
 }
 
-// bridgeAdapterFor reports the tested conversion that a fixed-protocol channel
-// may use for this path. Bridging is never implicit: it requires an explicit
-// protocol_policy=fixed whose preference this provider type supports.
-func bridgeAdapterFor(z resolvedRoute, path string) string {
-	if fixedRouteProtocol(z) != protocolChat || !isOpenAIWireProvider(z.Provider.Type) {
-		return ""
+// inferenceAttemptPath is the wire path an attempt actually calls.
+func inferenceAttemptPath(z resolvedRoute, path, adapter string) string {
+	if _, target, ok := parseBridgeAdapter(adapter); ok {
+		switch target {
+		case wireChat:
+			return "/v1/chat/completions"
+		case wireResponses:
+			return inferenceUpstreamPath(z, "/v1/responses")
+		case wireMessages:
+			return "/v1/messages"
+		}
 	}
-	switch path {
-	case "/v1/responses", "/v1/responses/compact":
-		return "responses_to_chat"
-	case "/v1/messages", "/v1/messages/count_tokens":
-		return "messages_to_chat"
-	}
-	return ""
+	return inferenceUpstreamPath(z, path)
 }
 
 func isOpenAIWireProvider(kind string) bool {

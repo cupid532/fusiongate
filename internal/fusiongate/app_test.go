@@ -137,10 +137,10 @@ func TestOpenAICompatibleGatewayFlow(t *testing.T) {
 	}
 	var costType string
 	var reported int
-	if err := a.db.QueryRow(`SELECT cost_type,usage_reported FROM request_ledger`).Scan(&costType, &reported); err != nil || costType != "unknown" || reported != 0 {
+	if err := a.db.QueryRow(`SELECT cost_type,usage_reported FROM request_ledger`).Scan(&costType, &reported); err != nil || costType != "estimated" || reported != 1 {
 		t.Fatalf("cost=%s reported=%d err=%v", costType, reported, err)
 	}
-	if success != 1 || input != 0 || output != 0 || cost != 0 {
+	if success != 1 || input != 7 || output != 3 || cost != 13 {
 		t.Fatalf("ledger success=%d input=%d output=%d cost=%d", success, input, output, cost)
 	}
 }

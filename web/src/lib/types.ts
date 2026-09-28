@@ -52,6 +52,8 @@ export interface Provider {
   priority: number
   sort_order: number
   weight: number
+  protocol_policy?: string
+  protocol_preference?: string
   passthrough_supported?: boolean
   passthrough_reason?: string
   client_policy: string
@@ -217,6 +219,9 @@ export interface RequestLedgerRow {
   candidate_count?: number
   stop_reason?: string
   candidate_exclusions?: string
+  execution_mode?: string
+  adapter_id?: string
+  upstream_path?: string
 }
 
 export interface RequestLedgerTotals {

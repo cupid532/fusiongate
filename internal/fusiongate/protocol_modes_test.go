@@ -153,10 +153,10 @@ func TestLegacyAdapterFixedProtocolMatrix(t *testing.T) {
 		typ, protocol string
 		valid         bool
 	}{
-		{"openai", "chat", true}, {"openai", "responses", true}, {"openai", "messages", false},
-		{"anthropic", "messages", true}, {"anthropic", "responses", true}, {"anthropic", "chat", false},
+		{"openai", "chat", true}, {"openai", "responses", true}, {"openai", "messages", true},
+		{"anthropic", "messages", true}, {"anthropic", "responses", true}, {"anthropic", "chat", true},
 		{"opencode", "chat", true}, {"opencode", "responses", true}, {"opencode", "messages", true},
-		{"gemini", "chat", false}, {"codex_oauth", "responses", false}, {"grok_oauth", "responses", false},
+		{"gemini", "chat", false}, {"codex_oauth", "responses", false}, {"grok_oauth", "responses", false}, {"claude_oauth", "messages", false},
 		{"openai", "chat,responses", false},
 	} {
 		if got := validProviderProtocol(tc.typ, protocolFixed, tc.protocol); got != tc.valid {

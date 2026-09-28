@@ -1197,6 +1197,16 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/v1/audio/speech", a.api(a.inference))
 	mux.HandleFunc("/v1/audio/transcriptions", a.api(a.inference))
 	mux.HandleFunc("/v1/embeddings", a.api(a.inference))
+	gemini := a.api(a.inference)
+	geminiOnly := func(w http.ResponseWriter, r *http.Request) {
+		if _, _, ok := geminiPathModel(r.URL.Path); !ok {
+			failRequest(w, r, http.StatusNotFound, "not_found", "not found")
+			return
+		}
+		gemini(w, r)
+	}
+	mux.HandleFunc("/v1beta/models/", geminiOnly)
+	mux.HandleFunc("/v1/models/", geminiOnly)
 	return a.security(mux)
 }
 func (a *App) security(next http.Handler) http.Handler {

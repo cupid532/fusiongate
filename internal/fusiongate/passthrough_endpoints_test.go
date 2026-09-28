@@ -36,7 +36,7 @@ func TestPassthroughEveryPublicInferenceEndpoint(t *testing.T) {
 				w.Write([]byte("native\x00response"))
 			})
 			defer done()
-			if _, err := a.db.Exec(`UPDATE providers SET type=?,protocol_policy='fixed',protocol_preference='responses',passthrough_mode='normalized'`, kind); err != nil {
+			if _, err := a.db.Exec(`UPDATE providers SET type=?,protocol_policy='auto',protocol_preference='responses',passthrough_mode='normalized'`, kind); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := a.db.Exec(`UPDATE api_keys SET allow_images=1,allow_audio=1`); err != nil {
@@ -61,9 +61,8 @@ func TestPassthroughEveryPublicInferenceEndpoint(t *testing.T) {
 // V3.13 restored the credential-bearing channel types: they speak the same wire
 // format as the public endpoints their own API exposes, so the request body is
 // still forwarded untouched and only the credential and account headers differ.
-// These channels must never be handed an endpoint their upstream does not have:
-// a Codex backend has no Chat Completions endpoint, and inventing one would be a
-// fabricated capability.
+// These channels are never handed an endpoint their upstream does not have: a
+// client protocol the channel lacks is bridged instead (see bridge_test.go).
 func TestInferenceIdentityChannelsServeTheirNativeEndpoints(t *testing.T) {
 	cases := []struct {
 		kind  string
@@ -73,13 +72,10 @@ func TestInferenceIdentityChannelsServeTheirNativeEndpoints(t *testing.T) {
 	}{
 		{"codex_oauth", "/v1/responses", 200, 1},
 		{"codex_oauth", "/v1/responses/compact", 200, 1},
-		{"codex_oauth", "/v1/chat/completions", 404, 0},
 		{"grok_oauth", "/v1/responses", 200, 1},
 		{"grok_oauth", "/v1/chat/completions", 200, 1},
-		{"grok_oauth", "/v1/messages", 404, 0},
 		{"claude_oauth", "/v1/messages", 200, 1},
 		{"claude_oauth", "/v1/messages/count_tokens", 200, 1},
-		{"claude_oauth", "/v1/responses", 404, 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.kind+" "+tc.path, func(t *testing.T) {

@@ -81,7 +81,8 @@ func TestPassthroughPreservesWirePayloadAndHeaders(t *testing.T) {
 func TestPassthroughFailoverAndTerminalResponse(t *testing.T) {
 	// 401/403/404/429 are cheap to retry: the channel budget is 3 by default,
 	// but a 401/403 isolates the credential, and 404 stops repeating the
-	// endpoint, so those advance after a single call.
+	// endpoint, so those advance after a single call. A 404 first tries the same
+	// request through the channel's other protocol, once.
 	for _, tc := range []struct {
 		status     int
 		wantCalls  []string
@@ -90,7 +91,7 @@ func TestPassthroughFailoverAndTerminalResponse(t *testing.T) {
 	}{
 		{401, []string{"A", "B"}, 422, "error B"},
 		{403, []string{"A", "B"}, 422, "error B"},
-		{404, []string{"A", "B"}, 422, "error B"},
+		{404, []string{"A", "A", "B"}, 422, "error B"},
 		{408, []string{"A", "A", "A", "B"}, 422, "error B"},
 		{425, []string{"A", "A", "A", "B"}, 422, "error B"},
 		{429, []string{"A", "B"}, 422, "error B"},

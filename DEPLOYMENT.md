@@ -2,6 +2,13 @@
 
 The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and proxies requests to FusionGate over an isolated Docker network; the application container is not published directly on the host.
 
+## V3.14 passthrough-first bridging upgrade
+
+- Requests are still forwarded byte for byte when the channel speaks the client's protocol. When a channel refuses it (404/405/501 or an "unsupported / invalid URL" 400), the same channel is retried once through a streaming bridge (Chat ↔ Responses ↔ Messages, Gemini → Chat). The refusal is remembered in memory for 30 minutes and reset on restart. A fixed interface method on a channel skips the native probe and always uses that upstream endpoint.
+- Usage and cost are recorded again from the upstream's own usage report, observed read-only. Key budgets and channel spend resume from this release; the V3.12–V3.13 period stays at zero.
+- Routes whose upstream model differs from the public name are served again; only the top-level `model` field is rewritten.
+- Gemini clients can call `/v1beta/models/{model}:generateContent` (and `streamGenerateContent`, `countTokens`) with `x-goog-api-key` or `?key=`. Gemini-type upstream channels are still not selected.
+
 ## V3.13 identity-adaptation upgrade
 
 This release restores credential-bearing channels to inference and fixes how a request advances. Before upgrading:
@@ -20,7 +27,7 @@ This release changes inference semantics. Before upgrading:
 - Use each upstream's native endpoint and exact model name. Chat, Responses and Messages are no longer converted; old interface preferences do not select or rewrite endpoints.
 - Specialized OAuth/Codex/web adapters and model mappings requiring payload rewrites are excluded from inference, while accounts, credentials and historical records remain stored. Do not enable disabled providers or invent model support to create backups.
 - Verify at least two eligible channels for each model that needs failover. Four start-selection strategies cannot rotate a single candidate. Inspect candidate/attempt/stop diagnostics rather than assuming a saved strategy guarantees a backup.
-- New token usage and cost are unknown. Historical budgets/balances cannot account for new spending; enforce monetary limits at upstreams. No response payload parsing is performed for billing. This still holds in V3.13: identity adaptation adds credential and account headers, not payload inspection.
+- New token usage and cost are unknown. Historical budgets/balances cannot account for new spending; enforce monetary limits at upstreams. No response payload parsing is performed for billing. V3.14 restores usage and cost accounting.
 - Retrying an uncommitted generation can duplicate upstream work/charges after a timeout. Once a response is committed downstream, interruptions cannot fail over without corrupting the stream.
 
 For self-managed upgrades, commit and push first, then use `deploy/deploy-from-origin.sh` with the correct `FUSIONGATE_REPO_DIR`, `FUSIONGATE_COMPOSE_FILE` and `FUSIONGATE_HEALTH_URL`. Never edit deployed build artifacts or bypass its clean-tree/origin/version checks.

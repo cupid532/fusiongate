@@ -38,21 +38,29 @@ function show(p: Provider | null) {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("ProviderDialog passthrough", () => {
-  it("shows raw passthrough and never writes legacy protocol choices", async () => {
+  it("keeps the protocol choice unless it is changed", async () => {
     setup()
     show(provider({ passthrough_supported: true }))
     fireEvent.click(screen.getByRole("button", { name: /转发与调度/ }))
-    expect(screen.getByText("原样透传")).toBeTruthy()
-    expect(screen.queryByRole("combobox", { name: "接口方式" })).toBeNull()
-    expect(screen.queryByText(/标准化（转换协议）/)).toBeNull()
+    expect(screen.getByRole("combobox", { name: "接口方式" })).toBeTruthy()
     fireEvent.click(screen.getByRole("button", { name: /连接信息/ }))
     fireEvent.change(screen.getByRole("textbox", { name: "备注" }), { target: { value: "更新备注" } })
     fireEvent.click(screen.getByRole("button", { name: "保存渠道参数" }))
     await waitFor(() => expect(requests.some((r) => r.url === "/api/admin/providers/7")).toBe(true))
     const saved = requests.find((r) => r.url === "/api/admin/providers/7")!.body
     expect(saved).not.toHaveProperty("protocol_policy")
-    expect(saved).not.toHaveProperty("protocol_preference")
     expect(saved).not.toHaveProperty("passthrough_mode")
+  })
+
+  it("writes a fixed protocol when one is chosen", async () => {
+    setup()
+    show(provider({ passthrough_supported: true }))
+    fireEvent.click(screen.getByRole("button", { name: /转发与调度/ }))
+    fireEvent.change(screen.getByRole("combobox", { name: "接口方式" }), { target: { value: "chat" } })
+    fireEvent.click(screen.getByRole("button", { name: "保存渠道参数" }))
+    await waitFor(() => expect(requests.some((r) => r.url === "/api/admin/providers/7")).toBe(true))
+    const saved = requests.find((r) => r.url === "/api/admin/providers/7")!.body
+    expect(saved).toMatchObject({ protocol_policy: "fixed", protocol_preference: "chat" })
   })
 
   it("shows a server-provided unsupported channel reason", async () => {

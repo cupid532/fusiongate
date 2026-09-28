@@ -41,9 +41,6 @@ describe("Routes passthrough routing status", () => {
     expect(screen.getByText("1 个候选 · 0 个备用")).toBeTruthy()
     expect(screen.getByText("2 个候选 · 1 个备用")).toBeTruthy()
     expect(screen.getByText("legacy-model")).toBeTruthy()
-    expect(screen.getByText("不改写模型")).toBeTruthy()
-    expect(screen.getByText("可用候选数未知")).toBeTruthy()
-    expect(screen.getByText("不改写模型")).toBeTruthy()
     expect(screen.getByText("可用候选数未知")).toBeTruthy()
     expect(screen.getByText("单候选：无备用渠道，无法故障转移")).toBeTruthy()
     // The ordering is fixed, so the page states it instead of offering a choice.

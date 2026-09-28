@@ -161,13 +161,7 @@ func (o *sseUsageObserver) observeEvent(event []byte) {
 	if json.Unmarshal([]byte(payload), &decoded) != nil {
 		return
 	}
-	var usage Usage
-	switch o.usageFormat {
-	case "anthropic":
-		usage = parseAnthropicUsage(decoded)
-	default:
-		usage = parseOpenAIUsage(decoded)
-	}
+	usage := parseUsagePayload(o.usageFormat, decoded)
 	if usage.Reported {
 		mergeUsage(&o.usage, usage)
 	}

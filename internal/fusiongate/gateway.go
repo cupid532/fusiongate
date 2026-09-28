@@ -172,6 +172,13 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 		raw = r.Header.Get("x-api-key")
 	}
 	if raw == "" {
+		raw = r.Header.Get("x-goog-api-key")
+	}
+	if _, _, gemini := geminiPathModel(r.URL.Path); raw == "" && gemini {
+		// Gemini SDKs may put the key in the query string.
+		raw = r.URL.Query().Get("key")
+	}
+	if raw == "" {
 		return authKey{}, false
 	}
 	sum := sha256.Sum256([]byte(raw))
@@ -335,15 +342,12 @@ func validProviderProtocol(providerType, policy, preference string) bool {
 		return false
 	}
 	switch providerType {
-	case "openai", "grok", "openrouter", "openai_compatible":
-		return preference == protocolChat || preference == protocolResponses
-	case "anthropic", "anthropic_compatible":
-		return preference == protocolMessages || preference == protocolResponses
-	case "opencode":
-		return preference == protocolChat || preference == protocolResponses || preference == protocolMessages
-	default:
+	case "claude_oauth", "codex_oauth", "grok_oauth":
+		// Identity channels have a single dedicated endpoint.
 		return false
 	}
+	wire := map[string]string{protocolChat: wireChat, protocolResponses: wireResponses, protocolMessages: wireMessages}[preference]
+	return wire != "" && containsString(typeWireProtocols(providerType), wire)
 }
 
 func fixedRouteProtocol(z resolvedRoute) string {

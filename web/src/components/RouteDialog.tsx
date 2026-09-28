@@ -63,7 +63,7 @@ export function RouteDialog({ open, onOpenChange }: { open: boolean; onOpenChang
             <Label>故障转移组（公开模型名）</Label>
             <Input list="route-model-groups" value={form.public_name} onChange={(event) => setForm((value) => ({ ...value, public_name: event.target.value }))} placeholder="deepseek-v4-flash" className="font-mono" />
             <datalist id="route-model-groups">{modelGroups.map((model) => <option key={model} value={model} />)}</datalist>
-            <span className="text-xs text-amber-700 dark:text-amber-400">纯透传不会重写请求中的模型名；请填写上游原生支持的模型名，别名和 / 前缀不能转换模型。</span>
+            <span className="text-xs text-muted-foreground">选择现有名称即可加入同一轮询组；上游模型名可以不同，转发时只改写请求中的 model 字段。</span>
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>上游模型名</Label>

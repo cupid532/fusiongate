@@ -358,7 +358,7 @@ export function Requests() {
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">请求账本</h1>
-          <p className="mt-1 text-sm text-muted-foreground">观察请求状态、耗时与故障转移信息。纯透传不解析 Token 或结算费用；新请求用量和费用未知，历史统计保留。</p>
+          <p className="mt-1 text-sm text-muted-foreground">观察每一次请求的状态、耗时、故障转移与 Token 用量。</p>
         </div>
         <Button variant="outline" disabled={exactValueInvalid} onClick={() => void refetch()}>
           <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
@@ -372,7 +372,7 @@ export function Requests() {
           { label: "成功", value: summary.ok.toLocaleString(), tone: "text-emerald-600" },
           { label: "失败", value: summary.failed.toLocaleString(), tone: summary.failed ? "text-destructive" : "text-muted-foreground" },
           { label: "综合缓存率", value: `${summary.cacheRate.toFixed(1)}%`, tone: summary.cacheRate >= 50 ? "text-emerald-600" : summary.cacheRate > 0 ? "text-amber-500" : "text-muted-foreground" },
-          { label: "Token · 费用", value: "新请求未知", tone: "text-amber-600" },
+          { label: "总 Token · 费用", value: `${formatTokens(summary.tokens)} · ${formatCost(summary.cost)}`, tone: "text-primary" },
         ].map((s) => (
           <div key={s.label} className="rounded-xl border bg-card p-3">
             <div className="text-[11px] text-muted-foreground">{s.label}</div>
@@ -735,6 +735,8 @@ export function Requests() {
                                     <div><div className="text-muted-foreground">Reasoning Tokens</div><div className="font-mono">{r.usage_reported ? formatTokens(r.reasoning_tokens) : "未知"}</div></div>
                                     <div><div className="text-muted-foreground">Stream</div><div className="font-mono">{r.stream ? "Yes" : "No"}</div></div>
                                     <div><div className="text-muted-foreground">Protocol</div><div className="font-mono">{r.protocol}</div></div>
+                                    <div><div className="text-muted-foreground">转发方式</div><div className="font-mono">{r.execution_mode === "bridge" ? `协议转换 ${r.adapter_id?.replace(/^bridge:/, "") ?? ""}` : r.execution_mode === "native" ? "原样透传" : r.execution_mode || "---"}</div></div>
+                                    <div><div className="text-muted-foreground">上游路径</div><div className="break-all font-mono">{r.upstream_path || "---"}</div></div>
                                   </div>
                                 </div>
                               </motion.div>

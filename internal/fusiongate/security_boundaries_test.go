@@ -199,7 +199,7 @@ func TestBrokenProviderCredentialDoesNotLeakDetailsToAPI(t *testing.T) {
 	key := insertTestKey(t, a, false)
 	recorder := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"public-model","messages":[{"role":"user","content":"hello"}]}`, "")
 	body := recorder.Body.String()
-	if recorder.Code != http.StatusNotFound {
+	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d body=%s", recorder.Code, body)
 	}
 	for _, secret := range []string{"private-provider-name", "internal-model", "decrypt", "credential", "invalid encrypted"} {

@@ -8,7 +8,9 @@ import (
 	"testing"
 )
 
-func TestModelAliasExcludedWithoutCallingCanonicalUpstream(t *testing.T) {
+// V3.14 restores aliases: the alias resolves to its canonical routes and only the
+// top-level model field is rewritten to the upstream name.
+func TestModelAliasServedByCanonicalUpstream(t *testing.T) {
 	var upstreamModel string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -35,7 +37,7 @@ func TestModelAliasExcludedWithoutCallingCanonicalUpstream(t *testing.T) {
 	}
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"/glm5.2","messages":[{"role":"user","content":"ping"}]}`, "opencode/1")
-	if rec.Code != http.StatusNotFound || upstreamModel != "" {
+	if rec.Code != http.StatusOK || upstreamModel != "vendor-glm-5.2" {
 		t.Fatalf("status=%d upstream model=%q body=%s", rec.Code, upstreamModel, rec.Body.String())
 	}
 	a.flushLedgerWrites()
@@ -107,7 +109,7 @@ func TestModelAliasSharesCanonicalAdaptiveState(t *testing.T) {
 	}
 }
 
-func TestModelAliasDoesNotInvokeCanonicalProviders(t *testing.T) {
+func TestModelAliasFailsOverAcrossCanonicalProviders(t *testing.T) {
 	firstCalls := 0
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		firstCalls++
@@ -142,19 +144,19 @@ func TestModelAliasDoesNotInvokeCanonicalProviders(t *testing.T) {
 	}
 	key := insertTestKey(t, a, false)
 	rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"/canonical","messages":[{"role":"user","content":"ping"}]}`, "opencode/1")
-	if rec.Code != http.StatusNotFound {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "second-upstream") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if firstCalls != 0 || secondCalls != 0 {
+	if firstCalls == 0 || secondCalls != 1 {
 		t.Fatalf("upstream calls first=%d second=%d", firstCalls, secondCalls)
 	}
 	a.flushLedgerWrites()
-	var attempts, maxAttempt int
-	if err := a.db.QueryRow(`SELECT COUNT(*),MAX(attempt) FROM request_ledger WHERE public_model='/canonical'`).Scan(&attempts, &maxAttempt); err != nil {
+	var attempts int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE public_model='/canonical'`).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != 1 || maxAttempt != 0 {
-		t.Fatalf("ledger attempts=%d max=%d", attempts, maxAttempt)
+	if attempts != firstCalls+secondCalls {
+		t.Fatalf("ledger attempts=%d calls=%d", attempts, firstCalls+secondCalls)
 	}
 }
 

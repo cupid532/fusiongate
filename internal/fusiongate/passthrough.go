@@ -2,6 +2,7 @@ package fusiongate
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -104,7 +106,142 @@ func (b *passthroughTimedBody) Read(p []byte) (int, error) {
 func (b *passthroughTimedBody) Close() error { b.timer.Stop(); b.cancel(); return b.ReadCloser.Close() }
 
 func passthroughResponse(w http.ResponseWriter, resp *http.Response) (error, string) {
+	err, reason, _ := passthroughResponseUsage(w, resp, "")
+	return err, reason
+}
+
+// passthroughUsageFormat names the usage payload shape a channel answers with
+// on the given wire path, so the passive tap can pick the right parser.
+func passthroughUsageFormat(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/v1/messages"):
+		return "anthropic"
+	case strings.Contains(path, ":generateContent"), strings.Contains(path, ":streamGenerateContent"):
+		return "gemini"
+	case strings.HasPrefix(path, "/v1/chat/completions"), strings.HasPrefix(path, "/v1/responses"), strings.HasPrefix(path, "/responses"):
+		return "openai"
+	}
+	return ""
+}
+
+// usageTap passively observes the bytes a passthrough forwards and extracts the
+// token usage from them. It never changes, delays or blocks the bytes the client
+// receives: it is written to after the downstream write and cannot fail.
+type usageTap struct {
+	format   string
+	sse      bool
+	encoded  bool
+	observer *sseUsageObserver
+	buf      bytes.Buffer
+	overflow bool
+}
+
+const maxUsageTapBody = 16 << 20
+
+func newUsageTap(format string, header http.Header) *usageTap {
+	if format == "" {
+		return nil
+	}
+	mediaType, _, _ := mime.ParseMediaType(header.Get("Content-Type"))
+	encoding := strings.ToLower(strings.TrimSpace(header.Get("Content-Encoding")))
+	tap := &usageTap{format: format, sse: mediaType == "text/event-stream", encoded: encoding != "" && encoding != "identity"}
+	if tap.encoded && encoding != "gzip" {
+		// Only gzip can be decoded without extra dependencies; other encodings
+		// leave the usage unknown rather than guessing.
+		return nil
+	}
+	if tap.sse && !tap.encoded {
+		tap.observer = &sseUsageObserver{usageFormat: format}
+	}
+	return tap
+}
+
+func (t *usageTap) Write(p []byte) {
+	if t.observer != nil {
+		t.observer.Write(p)
+		return
+	}
+	if t.overflow {
+		return
+	}
+	if t.buf.Len()+len(p) > maxUsageTapBody {
+		t.overflow = true
+		t.buf.Reset()
+		return
+	}
+	t.buf.Write(p)
+}
+
+func (t *usageTap) finish() Usage {
+	if t.observer != nil {
+		return t.observer.finish()
+	}
+	if t.overflow {
+		return Usage{CostType: "unknown"}
+	}
+	body := t.buf.Bytes()
+	if t.encoded {
+		reader, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return Usage{CostType: "unknown"}
+		}
+		decoded, err := io.ReadAll(io.LimitReader(reader, maxUsageTapBody))
+		if err != nil && len(decoded) == 0 {
+			return Usage{CostType: "unknown"}
+		}
+		body = decoded
+	}
+	if t.sse {
+		observer := &sseUsageObserver{usageFormat: t.format}
+		observer.Write(body)
+		return observer.finish()
+	}
+	var decoded any
+	if json.Unmarshal(body, &decoded) != nil {
+		// Some channels answer a non-stream request with SSE anyway.
+		observer := &sseUsageObserver{usageFormat: t.format}
+		observer.Write(body)
+		return observer.finish()
+	}
+	usage := Usage{CostType: "unknown"}
+	// Gemini may answer with a JSON array of chunks.
+	values := []any{decoded}
+	if list, ok := decoded.([]any); ok {
+		values = list
+	}
+	for _, value := range values {
+		payload, _ := value.(map[string]any)
+		if payload != nil {
+			mergeUsage(&usage, parseUsagePayload(t.format, payload))
+		}
+	}
+	return usage
+}
+
+func parseUsagePayload(format string, payload map[string]any) Usage {
+	switch format {
+	case "anthropic":
+		return parseAnthropicUsage(payload)
+	case "gemini":
+		return parseGeminiUsage(payload)
+	}
+	return parseOpenAIUsage(payload)
+}
+
+// passthroughResponseUsage forwards resp byte for byte and, when format names a
+// known protocol, reports the usage the upstream included in its answer.
+func passthroughResponseUsage(w http.ResponseWriter, resp *http.Response, format string) (error, string, Usage) {
 	defer resp.Body.Close()
+	var tap *usageTap
+	if resp.StatusCode < 400 {
+		tap = newUsageTap(format, resp.Header)
+	}
+	usage := func() Usage {
+		if tap == nil {
+			return Usage{CostType: "unknown"}
+		}
+		return tap.finish()
+	}
 	copyUpstreamResponseHeaders(w.Header(), resp.Header)
 	skip := connectionHeaders(resp.Header)
 	allowedTrailer := func(key string) bool {
@@ -128,7 +265,10 @@ func passthroughResponse(w http.ResponseWriter, resp *http.Response) (error, str
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
 			if _, e := w.Write(buf[:n]); e != nil {
-				return e, "downstream_write_error"
+				return e, "downstream_write_error", usage()
+			}
+			if tap != nil {
+				tap.Write(buf[:n])
 			}
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
@@ -136,7 +276,7 @@ func passthroughResponse(w http.ResponseWriter, resp *http.Response) (error, str
 		}
 		if err != nil {
 			if err != io.EOF {
-				return err, "upstream_read_error"
+				return err, "upstream_read_error", usage()
 			}
 			break
 		}
@@ -148,5 +288,5 @@ func passthroughResponse(w http.ResponseWriter, resp *http.Response) (error, str
 			}
 		}
 	}
-	return nil, ""
+	return nil, "", usage()
 }

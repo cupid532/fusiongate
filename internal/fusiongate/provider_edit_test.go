@@ -173,7 +173,7 @@ func TestEditProviderProtocolPolicy(t *testing.T) {
 	if policy != "auto" || preference != "responses,messages" {
 		t.Fatalf("policy=%q preference=%q", policy, preference)
 	}
-	for _, body := range []string{`{"protocol_policy":"random"}`, `{"protocol_preference":"responses,bogus"}`, `{"protocol_policy":"fixed","protocol_preference":""}`, `{"protocol_policy":"fixed","protocol_preference":"responses,messages"}`, `{"protocol_policy":"fixed","protocol_preference":"chat"}`} {
+	for _, body := range []string{`{"protocol_policy":"random"}`, `{"protocol_preference":"responses,bogus"}`, `{"protocol_policy":"fixed","protocol_preference":""}`, `{"protocol_policy":"fixed","protocol_preference":"responses,messages"}`, `{"type":"claude_oauth","protocol_policy":"fixed","protocol_preference":"messages"}`} {
 		rec := patchProviderForTest(t, a, id, body)
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("body=%s status=%d response=%s", body, rec.Code, rec.Body.String())

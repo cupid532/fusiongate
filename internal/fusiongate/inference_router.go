@@ -48,18 +48,41 @@ func (a *App) inference(w http.ResponseWriter, r *http.Request, key authKey) {
 		failBodyError(w, r, errRequestBodyTooLarge)
 		return
 	}
-	model, stream, err := passthroughModel(raw, r.Header.Get("Content-Type"))
+	path := r.URL.Path
+	var model string
+	var stream bool
+	geminiModel, geminiMethod, isGemini := geminiPathModel(path)
+	if isGemini {
+		// Gemini names the model and the streaming mode in the path, not the body.
+		model, stream = geminiModel, geminiMethod == "streamGenerateContent"
+		if !json.Valid(raw) {
+			err = errors.New("invalid JSON body")
+		}
+	} else {
+		model, stream, err = passthroughModel(raw, r.Header.Get("Content-Type"))
+	}
 	if err != nil || model == "" {
 		failRequest(w, r, http.StatusBadRequest, "invalid_request", "model is required and must be readable")
 		return
 	}
-	if !allowed(key, model) {
+	requested := model
+	if canonical, err := a.canonicalModel(r.Context(), model); err == nil {
+		model = canonical
+	}
+	if !modelAllowed(key, requested, model) {
 		failRequest(w, r, http.StatusForbidden, "model_not_allowed", "model not allowed")
 		return
 	}
+	if isGemini && geminiMethod == "countTokens" {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(geminiCountTokens(raw))
+		return
+	}
 
-	path := r.URL.Path
 	protocol := passthroughProtocol(path)
+	if isGemini {
+		protocol = "gemini_generate_content"
+	}
 	settings, err := a.inferenceSettingsFor(r.Context())
 	if err != nil {
 		a.log.Error("inference settings", "error", err)
@@ -78,6 +101,7 @@ func (a *App) inference(w http.ResponseWriter, r *http.Request, key authKey) {
 		settings:  settings,
 		reasoning: requestReasoningEffortFromRaw(raw),
 		startedAt: time.Now(),
+		geminiSSE: isGemini && r.URL.Query().Get("alt") == "sse",
 	}
 
 	// Strict task stickiness needs a client-declared task identifier. Without one
@@ -90,6 +114,10 @@ func (a *App) inference(w http.ResponseWriter, r *http.Request, key authKey) {
 	}
 
 	routes, resolveErr := a.resolveRoutes(r.Context(), model, "inference", true)
+	for index := range routes {
+		// Answers carry the name the client asked for, alias or not.
+		routes[index].Route.PublicName = requested
+	}
 	// Two different questions, two different answers: which channels can serve
 	// this endpoint at all (a configuration or model question, reported as 404),
 	// and which of those tolerate this client's real identity (reported as 403).
@@ -127,6 +155,7 @@ type inferenceRun struct {
 	app        *App
 	key        authKey
 	gatewayID  string
+	geminiSSE  bool
 	model      string
 	path       string
 	protocol   string
@@ -195,7 +224,7 @@ func (run *inferenceRun) failBeforeUpstream(w http.ResponseWriter, r *http.Reque
 	hint := "no eligible inference channel"
 	switch {
 	case errors.Is(resolveErr, errRouteResolution):
-		status, reason, hint = http.StatusServiceUnavailable, "route_resolution_failed", "channel credentials could not be resolved"
+		status, reason, hint = http.StatusServiceUnavailable, "route_resolution_failed", "channel configuration could not be resolved"
 	case resolveErr == nil && run.plan.Exhausted:
 		status, reason, hint = http.StatusServiceUnavailable, "candidates_exhausted", "every channel this task knew about is gone"
 	case resolveErr == nil && run.supported > 0:
@@ -332,7 +361,10 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 					// A deliberate upstream answer for this request. It is
 					// forwarded verbatim, which ends the request.
 					run.committed = true
-					result.Err, result.Reason = passthroughResponse(w, result.Response)
+					result.Err, result.Reason, result.Usage = passthroughResponseUsage(w, result.Response, passthroughUsageFormat(inferenceUpstreamPath(z, run.path)))
+					if result.Usage.Reported {
+						cost(z, &result.Usage)
+					}
 					run.last = nil
 					stop = "http_terminal"
 					if result.Err != nil {
@@ -366,10 +398,9 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			a.completeRoute(z, result, time.Since(started), firstByte)
 
 			success := status < 400 && result.Err == nil
-			// A pure passthrough never parses the upstream body, so its token
-			// usage is genuinely unknown. Recording that explicitly keeps the
-			// cost type honest instead of writing an empty string that reads as
-			// "not accounted for yet".
+			// Passthrough usage comes from the passive tap and bridged usage from
+			// the adapter; both are already priced. A channel that reports no
+			// usage stays explicitly unknown rather than reading as free.
 			usage := result.Usage
 			if usage.CostType == "" {
 				usage.CostType = "unknown"
@@ -506,17 +537,102 @@ const maxInferenceRetryAfter = 30 * time.Second
 // attempt performs one upstream call for one channel.
 func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resolvedRoute, adapter string, onFirstByte func()) (attemptResult, context.CancelFunc) {
 	a := run.app
-	switch adapter {
-	case "responses_to_chat":
-		return a.compatibleResponsesProxy(w, r, run.raw, z, run.gatewayID, run.stream, true, onFirstByte), func() {}
-	case "messages_to_chat":
-		var body map[string]any
-		if err := json.Unmarshal(run.raw, &body); err != nil {
-			return attemptResult{Status: http.StatusBadRequest, Reason: "invalid_request", Err: err}, func() {}
-		}
-		return a.anthropicMessagesOpenAI(w, r, body, z, run.gatewayID, run.stream, onFirstByte), func() {}
+	if client, target, ok := parseBridgeAdapter(adapter); ok {
+		return run.bridgeAttempt(w, r, z, client, target, onFirstByte)
 	}
-	return a.inferenceAttempt(r, run.raw, z, inferenceUpstreamPath(z, run.path), run.stream, onFirstByte)
+	if run.path == "/v1/messages/count_tokens" && (!containsString(routeWireProtocols(z), wireMessages) || protocolMemory.unsupported(z, wireMessages)) {
+		return run.localCountTokens(w), func() {}
+	}
+	result, cancel := a.inferenceAttempt(r, run.nativeBody(z), z, inferenceUpstreamPath(z, run.path), run.stream, onFirstByte)
+	client := clientWireProtocol(run.path)
+	if result.Response == nil || result.Status < 400 {
+		if client != "" && result.Response != nil {
+			protocolMemory.forget(z, client)
+		}
+		return result, cancel
+	}
+	if !protocolUnsupportedSignal(result.Response) {
+		return result, cancel
+	}
+	// The channel answered that it does not serve this protocol at all. Serve the
+	// same request through the channel's other protocol, once, on the same
+	// channel: that is a property of the channel, not a failure of it.
+	if run.path == "/v1/messages/count_tokens" {
+		result.Response.Body.Close()
+		cancel()
+		protocolMemory.remember(z, wireMessages)
+		return run.localCountTokens(w), func() {}
+	}
+	fallback := fallbackInferenceAdapter(z, run.path)
+	if _, _, ok := parseBridgeAdapter(fallback); !ok || r.Context().Err() != nil {
+		return result, cancel
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(result.Response.Body, maxPassthroughError))
+	result.Response.Body.Close()
+	cancel()
+	run.noteAdapter(z, fallback)
+	bridged, bridgeCancel := run.attempt(w, r, z, fallback, onFirstByte)
+	if bridged.Err == nil && bridged.Status > 0 && bridged.Status < 400 {
+		protocolMemory.remember(z, client)
+	}
+	return bridged, bridgeCancel
+}
+
+// nativeBody is the client's own body. Only when the route maps the public name
+// onto a different upstream name is the top-level model field rewritten; every
+// other byte is forwarded as sent.
+func (run *inferenceRun) nativeBody(z resolvedRoute) []byte {
+	upstream := strings.TrimSpace(z.Route.UpstreamModel)
+	if upstream == "" || upstream == run.requestedModel() {
+		return run.raw
+	}
+	var body map[string]json.RawMessage
+	if json.Unmarshal(run.raw, &body) != nil {
+		return run.raw
+	}
+	if _, ok := body["model"]; !ok {
+		return run.raw
+	}
+	body["model"], _ = json.Marshal(upstream)
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return run.raw
+	}
+	return encoded
+}
+
+// requestedModel is the model name exactly as the client's body carries it.
+func (run *inferenceRun) requestedModel() string {
+	var body struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(run.raw, &body)
+	return strings.TrimSpace(body.Model)
+}
+
+// noteAdapter records that the attempt switched to a bridge after the native
+// call showed the channel does not serve the client's protocol.
+func (run *inferenceRun) noteAdapter(z resolvedRoute, adapter string) {
+	if run.lastID == "" {
+		return
+	}
+	run.app.queueLedgerWrite(`UPDATE inference_attempts SET adapter_id=?,execution_mode=?,upstream_path=? WHERE request_id=?`,
+		adapter, inferenceModeBridge, inferenceAttemptPath(z, run.path, adapter), run.lastID)
+}
+
+// localCountTokens answers count_tokens from the gateway's own estimate when the
+// channel has no Messages endpoint to ask.
+func (run *inferenceRun) localCountTokens(w http.ResponseWriter) attemptResult {
+	var body map[string]any
+	_ = json.Unmarshal(run.raw, &body)
+	encoded, _ := json.Marshal(map[string]any{"input_tokens": estimateAnthropicInputTokens(body)})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-FusionGate-Request-ID", run.gatewayID)
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(encoded); err != nil {
+		return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: err}
+	}
+	return attemptResult{Status: http.StatusOK, Handled: true, Usage: Usage{CostType: "unknown"}}
 }
 
 // inferenceAttempt sends the client's own bytes to one channel.
@@ -527,6 +643,14 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 // account headers are applied for the channel's real type, and the wire path is
 // the one that channel actually exposes.
 func (a *App) inferenceAttempt(incoming *http.Request, raw []byte, z resolvedRoute, path string, stream bool, onFirstByte func()) (attemptResult, context.CancelFunc) {
+	return a.inferenceSend(incoming, raw, z, path, stream, onFirstByte, false)
+}
+
+// inferenceSend performs the upstream call. A bridged body is the gateway's own
+// JSON rather than the client's bytes: it carries no client query string or
+// content encoding, and the transport may negotiate compression because the
+// gateway, not the client, decodes the answer.
+func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute, path string, stream bool, onFirstByte func(), bridged bool) (attemptResult, context.CancelFunc) {
 	ctx, cancelContext := context.WithCancel(incoming.Context())
 	start := time.Duration(z.Provider.RequestTimeoutMS) * time.Millisecond
 	if start <= 0 {
@@ -569,7 +693,7 @@ func (a *App) inferenceAttempt(incoming *http.Request, raw []byte, z resolvedRou
 		return failed(err, "route_configuration_error")
 	}
 	base.Path, base.RawPath = escaped.Path, escaped.RawPath
-	if incoming.URL.RawQuery != "" {
+	if incoming.URL.RawQuery != "" && !bridged {
 		if base.RawQuery != "" {
 			base.RawQuery += "&"
 		}
@@ -584,6 +708,18 @@ func (a *App) inferenceAttempt(incoming *http.Request, raw []byte, z resolvedRou
 		req.Header.Set("User-Agent", "")
 	}
 	req.Header.Del("Proxy-Authorization")
+	if bridged {
+		for _, key := range []string{"X-Goog-Api-Key", "Content-Encoding", "Accept-Encoding", "Content-Type", "Accept"} {
+			req.Header.Del(key)
+		}
+		for key := range req.Header {
+			if strings.HasPrefix(strings.ToLower(key), "anthropic-") && clientWireProtocol(path) != wireMessages {
+				req.Header.Del(key)
+			}
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+	}
 	if err := setProviderAuth(req, z); err != nil {
 		return failed(err, "route_configuration_error")
 	}
@@ -594,7 +730,7 @@ func (a *App) inferenceAttempt(incoming *http.Request, raw []byte, z resolvedRou
 	clone := *client
 	clone.Timeout = 0
 	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	if transport, ok := client.Transport.(*http.Transport); ok {
+	if transport, ok := client.Transport.(*http.Transport); ok && !bridged {
 		transport = transport.Clone()
 		// The body is forwarded byte for byte, including its own compression
 		// headers, so the transport must not negotiate on the client's behalf.
@@ -675,12 +811,17 @@ func (run *inferenceRun) annotate(id, stop string) {
 // recordAttempt writes the per-attempt routing detail the console shows.
 func (run *inferenceRun) recordAttempt(id string, z resolvedRoute, adapter string, total, channelIndex, attempt int) {
 	mode := providerInferenceMode(z.Provider.Type, run.path).mode
+	if _, _, ok := parseBridgeAdapter(adapter); ok {
+		mode = inferenceModeBridge
+	} else if mode == inferenceModeBridge {
+		mode = inferenceModeNative
+	}
 	order, _ := json.Marshal(storedOrderFromChannels(run.plan.Channels))
 	run.app.queueLedgerWrite(`INSERT INTO inference_attempts(request_id,gateway_request_id,task_hash,task_source,task_scope,provider_id,provider_key_id,channel_attempt,channel_hop,adapter_id,execution_mode,upstream_protocol,upstream_path,candidate_order,stop_reason,fault_scope,created_at)
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(request_id) DO UPDATE SET adapter_id=excluded.adapter_id,execution_mode=excluded.execution_mode,upstream_path=excluded.upstream_path`,
 		id, run.gatewayID, run.taskHash, run.taskSource, run.taskScope, z.Provider.ID, z.ProviderKeyID,
-		total, channelIndex, adapter, mode, run.protocol, inferenceUpstreamPath(z, run.path),
+		total, channelIndex, adapter, mode, run.protocol, inferenceAttemptPath(z, run.path, adapter),
 		string(order), "", "", now())
 }
 
@@ -816,11 +957,6 @@ func (a *App) inferenceDiagnostics(ctx context.Context, model, path string, rout
 				reason = "provider_disabled"
 			case routeEnabled == 0:
 				reason = "route_disabled"
-			case !strings.EqualFold(strings.TrimSpace(upstreamModel), strings.TrimSpace(model)):
-				// The site expects a different model name than the client sent.
-				// Serving it would require rewriting the payload, which this
-				// release does not do.
-				reason = "model_name_mapping_requires_rewrite"
 			default:
 				if support := providerInferenceMode(kind, path); support.mode == "" {
 					reason = support.label()
