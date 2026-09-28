@@ -92,12 +92,16 @@ const (
 	StrategyAdaptive          RoutingStrategy = "adaptive"
 )
 
+// validRoutingStrategy reports whether a stored value may drive routing.
+//
+// V3.13 has one strategy. The rotating constants below are kept because the
+// legacy adapter handlers and their tests still describe them, but they are no
+// longer selectable: a database that still holds an old value must not keep
+// routing with an algorithm the console can no longer set. Rejecting it here
+// makes the read path agree with the write path, so "store an unsupported
+// strategy" can never silently keep working.
 func validRoutingStrategy(v string) bool {
-	switch RoutingStrategy(v) {
-	case StrategyPriorityFailover, StrategyOrderedRoundRobin, StrategySmartRoundRobin, StrategyAdaptive:
-		return true
-	}
-	return false
+	return RoutingStrategy(v) == StrategyPriorityFailover
 }
 
 func schedulingModel(routes []resolvedRoute) string {

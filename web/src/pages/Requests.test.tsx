@@ -283,3 +283,43 @@ describe("Requests pagination", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: /加载更多/ }).disabled).toBe(false)
   })
 })
+
+describe("Requests routing diagnostics", () => {
+  it("lists candidate exclusions one per line instead of one JSON blob", async () => {
+    list.mockReturnValue({
+      ...page([5], 1),
+      items: [{
+        ...row(5),
+        routing_strategy: "priority_failover",
+        candidate_count: 3,
+        stop_reason: "channel_attempts_exhausted",
+        candidate_exclusions: JSON.stringify(["provider=1: rate_limited", "provider=2 key=4: auth_expired"]),
+      }],
+    })
+    mount()
+    await screen.findByText("model-5")
+    fireEvent.click(screen.getByText("model-5").closest("tr")!)
+    expect(screen.getByText("priority_failover")).toBeTruthy()
+    expect(screen.getByText("channel_attempts_exhausted")).toBeTruthy()
+    expect(screen.getByText("provider=1: rate_limited")).toBeTruthy()
+    expect(screen.getByText("provider=2 key=4: auth_expired")).toBeTruthy()
+    // The raw JSON must not leak into the panel as one unreadable blob.
+    expect(screen.queryByText(/\["provider=1/)).toBeNull()
+  })
+
+  it("falls back to the raw text for unparseable exclusions and shows unknown when absent", async () => {
+    list.mockReturnValue({
+      ...page([5, 4], 2),
+      items: [
+        { ...row(5), candidate_exclusions: "specialized_adapter_unsupported" },
+        { ...row(4), candidate_exclusions: "" },
+      ],
+    })
+    mount()
+    await screen.findByText("model-5")
+    fireEvent.click(screen.getByText("model-5").closest("tr")!)
+    expect(screen.getByText("specialized_adapter_unsupported")).toBeTruthy()
+    fireEvent.click(screen.getByText("model-4").closest("tr")!)
+    expect(screen.getAllByText("未知").length).toBeGreaterThanOrEqual(1)
+  })
+})

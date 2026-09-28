@@ -2,6 +2,17 @@
 
 The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and proxies requests to FusionGate over an isolated Docker network; the application container is not published directly on the host.
 
+## V3.13 identity-adaptation upgrade
+
+This release restores credential-bearing channels to inference and fixes how a request advances. Before upgrading:
+
+- Codex, Claude and Grok OAuth channels are eligible again, but only for the endpoints their own API exposes (Codex: `/v1/responses`; Claude: `/v1/messages`; Grok: `/v1/responses` and `/v1/chat/completions`). The client body is not converted, so a channel that cannot serve the path the client used stays unused — read `candidate_exclusions` in the ledger to see it.
+- Specialized types with no verified implementation (Gemini, Antigravity, Qwen, iFlow, Grok web/console) remain stored and enabled exactly as configured, and are reported as `specialized_adapter_unsupported`. Do not enable disabled providers or invent model support to manufacture backups.
+- Routing has exactly one strategy. `PATCH /api/admin/routing` refuses any other value; a legacy value left in the database no longer drives routing and is recorded as `pre_v313_routing_strategy`.
+- Each channel gets a small attempt budget shared by all of its Keys, and the request only advances once that budget is spent. A `Retry-After` belongs to the channel that returned it and is never inherited by the next one.
+- A task sticks to the channel it advanced to, so a recovered high-priority channel does not pull the task back. Session retention defaults to 7 idle days / 30 max days / capacity 10000 and is configurable on the routing page.
+- Verify at least two eligible channels for each model that needs failover; a single candidate cannot fail over. Inspect candidate counts, exclusions and stop reasons rather than assuming a saved strategy guarantees a backup.
+
 ## V3.12 raw-passthrough upgrade
 
 This release changes inference semantics. Before upgrading:
@@ -9,7 +20,7 @@ This release changes inference semantics. Before upgrading:
 - Use each upstream's native endpoint and exact model name. Chat, Responses and Messages are no longer converted; old interface preferences do not select or rewrite endpoints.
 - Specialized OAuth/Codex/web adapters and model mappings requiring payload rewrites are excluded from inference, while accounts, credentials and historical records remain stored. Do not enable disabled providers or invent model support to create backups.
 - Verify at least two eligible channels for each model that needs failover. Four start-selection strategies cannot rotate a single candidate. Inspect candidate/attempt/stop diagnostics rather than assuming a saved strategy guarantees a backup.
-- New token usage and cost are unknown. Historical budgets/balances cannot account for new spending; enforce monetary limits at upstreams. No response payload parsing is performed for billing.
+- New token usage and cost are unknown. Historical budgets/balances cannot account for new spending; enforce monetary limits at upstreams. No response payload parsing is performed for billing. This still holds in V3.13: identity adaptation adds credential and account headers, not payload inspection.
 - Retrying an uncommitted generation can duplicate upstream work/charges after a timeout. Once a response is committed downstream, interruptions cannot fail over without corrupting the stream.
 
 For self-managed upgrades, commit and push first, then use `deploy/deploy-from-origin.sh` with the correct `FUSIONGATE_REPO_DIR`, `FUSIONGATE_COMPOSE_FILE` and `FUSIONGATE_HEALTH_URL`. Never edit deployed build artifacts or bypass its clean-tree/origin/version checks.

@@ -31,13 +31,18 @@ func TestPassthroughLastHTTPErrorSurvivesTransportFailure(t *testing.T) {
 	}
 	a.flushLedgerWrites()
 	var attempts int
-	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE attempt>0`).Scan(&attempts); err != nil || attempts != 2 {
+	// Each channel gets its own attempt budget (three attempts by default
+	// including the first), so the 503 channel is retried three times and the
+	// unreachable one three times before the retained 503 is forwarded.
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger WHERE attempt>0`).Scan(&attempts); err != nil || attempts != 6 {
 		t.Fatalf("attempts=%d err=%v", attempts, err)
 	}
 }
 
 func TestPassthroughMultiKeyVisitsOtherChannelFirst(t *testing.T) {
-	for _, strategy := range []RoutingStrategy{StrategyPriorityFailover, StrategyOrderedRoundRobin, StrategySmartRoundRobin, StrategyAdaptive} {
+	// V3.13 has a single strategy; the loop remains so the test still documents
+	// that the channel-major key walk is strategy-independent.
+	for _, strategy := range []RoutingStrategy{StrategyPriorityFailover} {
 		t.Run(string(strategy), func(t *testing.T) {
 			var mu sync.Mutex
 			calls := []string{}
@@ -63,7 +68,10 @@ func TestPassthroughMultiKeyVisitsOtherChannelFirst(t *testing.T) {
 			mu.Lock()
 			got := append([]string(nil), calls...)
 			mu.Unlock()
-			if rec.Code != 401 || !reflect.DeepEqual(got, []string{"Bearer a1", "Bearer b1", "Bearer a2"}) {
+			// A channel keeps its credentials together: both of channel A's Keys
+			// are isolated before the request advances to channel B, which then
+			// answers with its own 401.
+			if rec.Code != 401 || !reflect.DeepEqual(got, []string{"Bearer a1", "Bearer a2", "Bearer b1"}) {
 				t.Fatalf("status=%d calls=%v", rec.Code, got)
 			}
 			a.flushLedgerWrites()

@@ -75,15 +75,34 @@ func TestPassthroughPreservesWirePayloadAndHeaders(t *testing.T) {
 	}
 }
 
+// A channel is retried within its own budget before the request advances, so
+// each failing channel is called exactly as many times as the shared channel
+// budget allows. The channel that answers deliberately (422) ends the request.
 func TestPassthroughFailoverAndTerminalResponse(t *testing.T) {
-	for _, status := range []int{401, 403, 404, 408, 425, 429, 503} {
-		t.Run(fmt.Sprint(status), func(t *testing.T) {
+	// 401/403/404/429 are cheap to retry: the channel budget is 3 by default,
+	// but a 401/403 isolates the credential, and 404 stops repeating the
+	// endpoint, so those advance after a single call.
+	for _, tc := range []struct {
+		status     int
+		wantCalls  []string
+		wantStatus int
+		wantBody   string
+	}{
+		{401, []string{"A", "B"}, 422, "error B"},
+		{403, []string{"A", "B"}, 422, "error B"},
+		{404, []string{"A", "B"}, 422, "error B"},
+		{408, []string{"A", "A", "A", "B"}, 422, "error B"},
+		{425, []string{"A", "A", "A", "B"}, 422, "error B"},
+		{429, []string{"A", "B"}, 422, "error B"},
+		{503, []string{"A", "A", "A", "B"}, 422, "error B"},
+	} {
+		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
 			calls := []string{}
 			a, key, done := passthroughFixture(t,
 				func(w http.ResponseWriter, r *http.Request) {
 					calls = append(calls, "A")
 					w.Header().Set("X-Upstream", "A")
-					w.WriteHeader(status)
+					w.WriteHeader(tc.status)
 					w.Write([]byte("error A"))
 				},
 				func(w http.ResponseWriter, r *http.Request) {
@@ -95,8 +114,8 @@ func TestPassthroughFailoverAndTerminalResponse(t *testing.T) {
 			)
 			defer done()
 			rec := gatewayRequest(t, a, "/v1/chat/completions", key, `{"model":"native"}`, "")
-			if rec.Code != 422 || rec.Body.String() != "error B" || rec.Header().Get("X-Upstream") != "B" || strings.Join(calls, ",") != "A,B" {
-				t.Fatalf("status=%d body=%q calls=%v", rec.Code, rec.Body.String(), calls)
+			if rec.Code != tc.wantStatus || rec.Body.String() != tc.wantBody || rec.Header().Get("X-Upstream") != "B" || strings.Join(calls, ",") != strings.Join(tc.wantCalls, ",") {
+				t.Fatalf("status=%d body=%q calls=%v want calls=%v", rec.Code, rec.Body.String(), calls, tc.wantCalls)
 			}
 		})
 	}

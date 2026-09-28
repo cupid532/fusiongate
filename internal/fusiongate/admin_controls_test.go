@@ -155,15 +155,22 @@ func TestGlobalRoutingStrategyAndTokenAccounting(t *testing.T) {
 	if get.Code != http.StatusOK || !strings.Contains(get.Body.String(), string(StrategyPriorityFailover)) {
 		t.Fatalf("default routing=%d %s", get.Code, get.Body.String())
 	}
-	set := httptest.NewRecorder()
-	a.routing(set, httptest.NewRequest(http.MethodPatch, "/api/admin/routing", strings.NewReader(`{"strategy":"ordered_round_robin"}`)), adminCtx{})
-	if set.Code != http.StatusOK || a.globalRoutingStrategy() != StrategyOrderedRoundRobin {
-		t.Fatalf("set routing=%d %s strategy=%s", set.Code, set.Body.String(), a.globalRoutingStrategy())
+	// V3.13 keeps exactly one strategy. Storing any other algorithm is refused
+	// with a clear error instead of being accepted and then ignored.
+	for _, strategy := range []string{"ordered_round_robin", "smart_round_robin", "adaptive"} {
+		set := httptest.NewRecorder()
+		a.routing(set, httptest.NewRequest(http.MethodPatch, "/api/admin/routing", strings.NewReader(`{"strategy":"`+strategy+`"}`)), adminCtx{})
+		if set.Code != http.StatusBadRequest {
+			t.Fatalf("set %s routing=%d %s", strategy, set.Code, set.Body.String())
+		}
+		if a.globalRoutingStrategy() != StrategyPriorityFailover {
+			t.Fatalf("rejected %s changed the strategy to %s", strategy, a.globalRoutingStrategy())
+		}
 	}
-	smart := httptest.NewRecorder()
-	a.routing(smart, httptest.NewRequest(http.MethodPatch, "/api/admin/routing", strings.NewReader(`{"strategy":"smart_round_robin"}`)), adminCtx{})
-	if smart.Code != http.StatusOK || a.globalRoutingStrategy() != StrategySmartRoundRobin {
-		t.Fatalf("set smart routing=%d %s strategy=%s", smart.Code, smart.Body.String(), a.globalRoutingStrategy())
+	set := httptest.NewRecorder()
+	a.routing(set, httptest.NewRequest(http.MethodPatch, "/api/admin/routing", strings.NewReader(`{"strategy":"priority_failover"}`)), adminCtx{})
+	if set.Code != http.StatusOK || a.globalRoutingStrategy() != StrategyPriorityFailover {
+		t.Fatalf("set routing=%d %s strategy=%s", set.Code, set.Body.String(), a.globalRoutingStrategy())
 	}
 	invalid := httptest.NewRecorder()
 	a.routing(invalid, httptest.NewRequest(http.MethodPatch, "/api/admin/routing", strings.NewReader(`{"strategy":"not-a-strategy"}`)), adminCtx{})

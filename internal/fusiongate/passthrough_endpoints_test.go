@@ -58,8 +58,65 @@ func TestPassthroughEveryPublicInferenceEndpoint(t *testing.T) {
 	}
 }
 
+// V3.13 restored the credential-bearing channel types: they speak the same wire
+// format as the public endpoints their own API exposes, so the request body is
+// still forwarded untouched and only the credential and account headers differ.
+// These channels must never be handed an endpoint their upstream does not have:
+// a Codex backend has no Chat Completions endpoint, and inventing one would be a
+// fabricated capability.
+func TestInferenceIdentityChannelsServeTheirNativeEndpoints(t *testing.T) {
+	cases := []struct {
+		kind  string
+		path  string
+		code  int
+		calls int32
+	}{
+		{"codex_oauth", "/v1/responses", 200, 1},
+		{"codex_oauth", "/v1/responses/compact", 200, 1},
+		{"codex_oauth", "/v1/chat/completions", 404, 0},
+		{"grok_oauth", "/v1/responses", 200, 1},
+		{"grok_oauth", "/v1/chat/completions", 200, 1},
+		{"grok_oauth", "/v1/messages", 404, 0},
+		{"claude_oauth", "/v1/messages", 200, 1},
+		{"claude_oauth", "/v1/messages/count_tokens", 200, 1},
+		{"claude_oauth", "/v1/responses", 404, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.kind+" "+tc.path, func(t *testing.T) {
+			body := `{ "model":"native", "stream":false, "vendor":{"unknown":true} }`
+			var calls atomic.Int32
+			var received string
+			a, key, done := passthroughFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				raw, _ := io.ReadAll(r.Body)
+				received = string(raw)
+				w.Write([]byte("native\x00response"))
+			})
+			defer done()
+			if _, err := a.db.Exec(`UPDATE providers SET type=?`, tc.kind); err != nil {
+				t.Fatal(err)
+			}
+			rec := gatewayRequest(t, a, tc.path, key, body, "")
+			if rec.Code != tc.code || calls.Load() != tc.calls {
+				t.Fatalf("status=%d calls=%d want status=%d calls=%d", rec.Code, calls.Load(), tc.code, tc.calls)
+			}
+			if tc.calls == 0 {
+				return
+			}
+			// Body passthrough: an identity channel changes the credential, never
+			// the payload, so unknown fields and formatting survive verbatim.
+			if received != body || rec.Body.String() != "native\x00response" {
+				t.Fatalf("identity channel rewrote the exchange: sent=%q got=%q", received, rec.Body.String())
+			}
+		})
+	}
+}
+
+// Types with no verified implementation stay stored and enabled exactly as the
+// operator configured them; they are simply not selected for a public inference
+// request, and the ledger records why.
 func TestPassthroughUnsupportedAdaptersStayStoredButExcluded(t *testing.T) {
-	for _, kind := range []string{"codex_oauth", "claude_oauth", "grok_oauth", "gemini", "gemini_oauth", "antigravity", "qwen_oauth", "iflow_oauth"} {
+	for _, kind := range []string{"gemini", "gemini_oauth", "antigravity", "qwen_oauth", "iflow_oauth"} {
 		t.Run(kind, func(t *testing.T) {
 			var calls atomic.Int32
 			a, key, done := passthroughFixture(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })

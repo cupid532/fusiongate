@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { Check, Coins, Pencil, Plus, RefreshCw, Search, Trash2, X, GitBranch, CheckCircle2, XCircle, Tag } from "lucide-react"
 import { api } from "@/lib/api"
-import type { ModelAlias, PricingStatus, PricingSyncResult, Route, RoutingStrategy } from "@/lib/types"
+import type { ModelAlias, PricingStatus, PricingSyncResult, Route, RoutingSettings } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -19,8 +19,6 @@ import { StatCard } from "@/components/ui/stat-card"
 const price = (micros: number) => `$${(micros / 1_000_000).toFixed(micros % 1_000_000 === 0 ? 0 : 3)}`
 const pricingSource = (source?: string) => !source ? "未定价" : source === "manual" ? "手工" : source.includes("openrouter.ai") ? "OpenRouter" : "官网"
 
-const strategyLabels = ROUTING_STRATEGY_LABELS
-const strategyHelp = ROUTING_STRATEGY_HELP
 
 type StatusVariant = "success" | "warning" | "danger" | "neutral"
 
@@ -36,11 +34,16 @@ function routeState(route: Route): { label: string; detail: string; variant: Sta
   return { label: "参与调度", detail: route.provider_inflight > 0 ? `当前并发 ${route.provider_inflight}` : "当前可用", variant: "success", eligible: true }
 }
 
-function sortRoutes(routes: Route[], strategy: RoutingStrategy) {
+// The single documented ordering chain. It is total, so the console lists the
+// candidates in exactly the order the gateway will try them:
+// provider priority DESC -> provider sort_order ASC -> provider id ASC, then the
+// mapping-level keys inside one channel.
+function sortRoutes(routes: Route[]) {
   return [...routes].sort((a, b) => {
-    if (strategy === "priority_failover" && a.provider_priority !== b.provider_priority) return b.provider_priority - a.provider_priority
+    if (a.provider_priority !== b.provider_priority) return b.provider_priority - a.provider_priority
     if (a.provider_sort_order !== b.provider_sort_order) return a.provider_sort_order - b.provider_sort_order
-    if (strategy === "priority_failover" && a.priority !== b.priority) return b.priority - a.priority
+    if (a.provider_id !== b.provider_id) return a.provider_id - b.provider_id
+    if (a.priority !== b.priority) return b.priority - a.priority
     if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order
     return a.id - b.id
   })
@@ -93,13 +96,13 @@ export function Routes() {
   const [routeOpen, setRouteOpen] = useState(false)
   const { data: routes = [], isLoading } = useQuery({ queryKey: ["routes"], queryFn: () => api<Route[]>("/api/admin/routes") })
   const { data: aliases = [] } = useQuery({ queryKey: ["model-aliases"], queryFn: () => api<ModelAlias[]>("/api/admin/model-aliases") })
-  const routingQuery = useQuery({ queryKey: ["routing"], queryFn: () => api<{ strategy: RoutingStrategy }>("/api/admin/routing") })
+  // Read-only: the single strategy cannot be changed from the console, but the
+  // ordering text is taken from the server so it cannot drift from the code.
+  const routingQuery = useQuery({ queryKey: ["routing"], queryFn: () => api<RoutingSettings>("/api/admin/routing") })
   const { data: routing } = routingQuery
   const { data: pricing } = useQuery({ queryKey: ["pricing"], queryFn: () => api<PricingStatus>("/api/admin/pricing") })
-  const strategy = routing?.strategy
 
   const syncPricing = useMutation({ mutationFn: () => api<PricingSyncResult>("/api/admin/pricing", { method: "POST" }), onSuccess: () => { qc.invalidateQueries({ queryKey: ["pricing"] }); qc.invalidateQueries({ queryKey: ["routes"] }) } })
-  const setStrategy = useMutation({ mutationFn: (next: RoutingStrategy) => api<{ strategy: RoutingStrategy }>("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy: next }) }), onSuccess: (result) => { qc.setQueryData(["routing"], result); void qc.invalidateQueries({ queryKey: ["routing"] }) } })
   const updateRoute = useMutation({
     mutationFn: ({ id, patch }: { id: number; patch: Record<string, unknown> }) => api(`/api/admin/routes/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["routes"] }); qc.invalidateQueries({ queryKey: ["model-aliases"] }) },
@@ -111,7 +114,7 @@ export function Routes() {
     for (const route of routes) map.set(route.public_name, [...(map.get(route.public_name) ?? []), route])
     const keyword = q.trim().toLowerCase()
     return [...map.entries()]
-      .map(([name, list]) => [name, strategy ? sortRoutes(list, strategy) : list] as [string, Route[]])
+      .map(([name, list]) => [name, sortRoutes(list)] as [string, Route[]])
       .filter(([name, list]) => {
         if (!keyword) return true
         const groupAliases = aliases.filter((item) => item.target_model === name)
@@ -119,7 +122,7 @@ export function Routes() {
           || groupAliases.some((item) => item.alias.toLowerCase().includes(keyword))
           || list.some((route) => route.upstream_model.toLowerCase().includes(keyword) || route.provider_name?.toLowerCase().includes(keyword))
       })
-  }, [routes, aliases, q, strategy])
+  }, [routes, aliases, q])
   const modelNames = useMemo(() => [...new Set(routes.map((route) => route.public_name))].sort(), [routes])
   const routeCounts = useMemo(() => ({
     total: routes.length,
@@ -147,17 +150,19 @@ export function Routes() {
       <Card className="mb-4 overflow-hidden">
         <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">起始渠道选择策略</div>{strategy ? <Badge variant="default">{strategyLabels[strategy]}</Badge> : <Badge variant="warning">未知</Badge>}</div>
-            <div className="mt-1 text-xs text-muted-foreground">{strategy ? strategyHelp[strategy] : "策略值尚未读取，当前候选顺序未知。"} 故障转移会按服务端实际候选计划执行。</div>
+            {routing?.strategy === "priority_failover" ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">候选顺序</div><Badge variant="default">{ROUTING_STRATEGY_LABELS.priority_failover}</Badge></div>
+                <div className="mt-1 text-xs text-muted-foreground">{ROUTING_STRATEGY_HELP.priority_failover}</div>
+              </>
+            ) : (
+              // The order is only stated once the server confirmed it. A settings
+              // read can fail (expired session, gateway restart), and a hard-coded
+              // claim would then sit on screen looking exactly like a verified one.
+              <div className="flex flex-wrap items-center gap-2"><div className="text-sm font-semibold">候选顺序</div><Badge variant="neutral">未知</Badge><span className="text-xs text-muted-foreground">未能读取路由设置，无法确认渠道选择顺序。</span></div>
+            )}
           </div>
-          <div className="flex flex-col items-end gap-1">
-            <select aria-label="全局起始渠道选择策略" value={strategy ?? ""} onChange={(event) => setStrategy.mutate(event.target.value as RoutingStrategy)} disabled={!strategy || setStrategy.isPending} className="h-9 rounded-md border border-input bg-transparent px-3 text-sm">
-              <option value="" disabled>{routingQuery.isLoading ? "正在读取策略…" : "策略未知"}</option>
-              {(Object.keys(strategyLabels) as RoutingStrategy[]).map((value) => <option key={value} value={value}>{strategyLabels[value]}</option>)}
-            </select>
-            {routingQuery.isError && <div className="flex items-center gap-2 text-xs text-destructive"><span>策略读取失败</span><Button variant="outline" size="sm" onClick={() => void routingQuery.refetch()} disabled={routingQuery.isFetching}>重试</Button></div>}
-            {setStrategy.isError && <span role="alert" className="text-xs text-destructive">策略保存失败：{setStrategy.error.message}</span>}
-          </div>
+          {routingQuery.isError && <div className="flex items-center gap-2 text-xs text-destructive"><span>路由设置读取失败</span><Button variant="outline" size="sm" onClick={() => void routingQuery.refetch()} disabled={routingQuery.isFetching}>重试</Button></div>}
         </CardContent>
       </Card>
 

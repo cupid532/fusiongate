@@ -2,7 +2,6 @@ package fusiongate
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -11,10 +10,16 @@ import (
 	"testing"
 )
 
-func TestPassthroughStrategyChangesAffectRealRequests(t *testing.T) {
+// V3.13 offers exactly one routing strategy. The endpoint still exists so the
+// console can read and tune reliability parameters, but a request to store any
+// other algorithm must be refused instead of quietly accepted and ignored.
+func TestRoutingSettingsAcceptOnlyPriorityFailover(t *testing.T) {
 	a, key, done := passthroughFixture(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("A")) }, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("B")) })
 	defer done()
-	if _, err := a.db.Exec(`UPDATE providers SET sort_order=CASE id WHEN 1 THEN 2 ELSE 1 END`); err != nil {
+	// The fixture gives the first provider the higher priority. Equalise the
+	// priorities so this test exercises the documented tie-break instead:
+	// provider priority DESC, then sort_order ASC, then id ASC.
+	if _, err := a.db.Exec(`UPDATE providers SET priority=0,sort_order=CASE id WHEN 1 THEN 2 ELSE 1 END`); err != nil {
 		t.Fatal(err)
 	}
 	login := httptest.NewRecorder()
@@ -38,46 +43,44 @@ func TestPassthroughStrategyChangesAffectRealRequests(t *testing.T) {
 		a.Router().ServeHTTP(rec, req)
 		return rec
 	}
-	cases := []struct {
-		strategy RoutingStrategy
-		want     []string
-	}{{StrategyPriorityFailover, []string{"A", "A", "A", "A"}}, {StrategyOrderedRoundRobin, []string{"B", "B", "B", "B"}}, {StrategySmartRoundRobin, []string{"B", "A", "B", "A"}}}
-	for _, tc := range cases {
-		patch := adminRequest("PATCH", fmt.Sprintf(`{"strategy":%q}`, tc.strategy))
-		if patch.Code != 200 {
-			t.Fatalf("patch %d %s", patch.Code, patch.Body.String())
-		}
-		read := adminRequest("GET", "")
-		if read.Code != 200 || !strings.Contains(read.Body.String(), string(tc.strategy)) {
-			t.Fatalf("strategy readback %d %s", read.Code, read.Body.String())
-		}
-		got := []string{}
-		for range tc.want {
-			rec := gatewayRequest(t, a, "/v1/responses", key, `{"model":"native"}`, "")
-			if rec.Code != 200 {
-				t.Fatalf("inference %d %s", rec.Code, rec.Body.String())
-			}
-			got = append(got, rec.Body.String())
-		}
-		if !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("strategy %s got=%v want=%v", tc.strategy, got, tc.want)
+
+	// Every historical algorithm is rejected with a clear error rather than
+	// being stored as a value the router no longer reads.
+	for _, strategy := range []string{"ordered_round_robin", "smart_round_robin", "adaptive"} {
+		patch := adminRequest("PATCH", `{"strategy":"`+strategy+`"}`)
+		if patch.Code != http.StatusBadRequest || !strings.Contains(patch.Body.String(), "only priority_failover is supported") {
+			t.Fatalf("patch %s => %d %s", strategy, patch.Code, patch.Body.String())
 		}
 	}
-	patch := adminRequest("PATCH", `{"strategy":"adaptive"}`)
-	if patch.Code != 200 {
-		t.Fatal(patch.Body.String())
+
+	// Accepting the supported strategy keeps the ordering the gateway actually
+	// uses: provider priority DESC, then sort_order ASC, then id ASC.
+	patch := adminRequest("PATCH", `{"strategy":"priority_failover"}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("patch %d %s", patch.Code, patch.Body.String())
 	}
-	counts := map[string]int{}
-	for range 20 {
+	read := adminRequest("GET", "")
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), string(StrategyPriorityFailover)) {
+		t.Fatalf("strategy readback %d %s", read.Code, read.Body.String())
+	}
+
+	// Both providers share priority 0 and the same public model, so the sort
+	// order decides: provider 2 (sort_order 1) must serve every request.
+	got := []string{}
+	for range 4 {
 		rec := gatewayRequest(t, a, "/v1/responses", key, `{"model":"native"}`, "")
-		counts[rec.Body.String()]++
+		if rec.Code != 200 {
+			t.Fatalf("inference %d %s", rec.Code, rec.Body.String())
+		}
+		got = append(got, rec.Body.String())
 	}
-	if counts["A"] < 4 || counts["B"] < 4 {
-		t.Fatalf("adaptive didn't distribute healthy peers: %v", counts)
+	if want := []string{"B", "B", "B", "B"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("ordered channels got=%v want=%v", got, want)
 	}
+
 	a.flushLedgerWrites()
 	var saved string
-	if err := a.db.QueryRow(`SELECT routing_strategy FROM request_ledger ORDER BY id DESC LIMIT 1`).Scan(&saved); err != nil || saved != "adaptive" {
+	if err := a.db.QueryRow(`SELECT routing_strategy FROM request_ledger ORDER BY id DESC LIMIT 1`).Scan(&saved); err != nil || saved != string(StrategyPriorityFailover) {
 		t.Fatalf("snapshot=%s err=%v", saved, err)
 	}
 	cfg := a.cfg
@@ -89,8 +92,8 @@ func TestPassthroughStrategyChangesAffectRealRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if reopened.globalRoutingStrategy() != StrategyAdaptive {
-		t.Fatal("strategy not persisted across restart")
+	if reopened.globalRoutingStrategy() != StrategyPriorityFailover {
+		t.Fatalf("strategy not persisted across restart: %s", reopened.globalRoutingStrategy())
 	}
 }
 

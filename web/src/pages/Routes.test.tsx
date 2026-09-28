@@ -28,13 +28,12 @@ afterEach(() => { cleanup(); vi.resetAllMocks(); vi.unstubAllGlobals() })
 
 describe("Routes passthrough routing status", () => {
   it("shows total candidates and derived backup counts without fabricating missing values", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = new URL(String(input), "http://localhost").pathname
       if (path === "/api/admin/routes") return response(routeRows)
       if (path === "/api/admin/routing") return response({ strategy: "priority_failover" })
       if (path === "/api/admin/model-aliases") return response([{ alias: "legacy-model", target_model: "model-2", enabled: true, created_at: "", updated_at: "" }])
       if (path === "/api/admin/pricing") return response({ status: {}, interval: "0s", sources: [] })
-      if (init?.method === "PATCH") return response({ strategy: "priority_failover" })
       return response({})
     }))
     mount()
@@ -44,30 +43,35 @@ describe("Routes passthrough routing status", () => {
     expect(screen.getByText("legacy-model")).toBeTruthy()
     expect(screen.getByText("不改写模型")).toBeTruthy()
     expect(screen.getByText("可用候选数未知")).toBeTruthy()
+    expect(screen.getByText("不改写模型")).toBeTruthy()
+    expect(screen.getByText("可用候选数未知")).toBeTruthy()
     expect(screen.getByText("单候选：无备用渠道，无法故障转移")).toBeTruthy()
+    // The ordering is fixed, so the page states it instead of offering a choice.
+    // Other selects on this page (fault-transfer groups) are unrelated, so scope
+    // the assertion to the ordering card rather than the whole document.
+    expect(screen.getByText("候选顺序")).toBeTruthy()
+    expect(screen.getByText("优先级固定（按渠道优先级从高到低）")).toBeTruthy()
+    expect(screen.queryByRole("combobox", { name: "全局起始渠道选择策略" })).toBeNull()
   })
 
-  it("keeps strategy unknown on query error, offers retry, and reports save errors", async () => {
+  it("states the ordering is unknown on query error, offers retry, and recovers", async () => {
     let queryFails = true
-    let patchFails = false
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = new URL(String(input), "http://localhost").pathname
       if (path === "/api/admin/routes") return response([])
       if (path === "/api/admin/model-aliases") return response([])
       if (path === "/api/admin/pricing") return response({ status: {}, interval: "0s", sources: [] })
-      if (path === "/api/admin/routing" && init?.method === "PATCH") return patchFails ? response({ error: "save failed" }, 500) : response({ strategy: "adaptive" })
-      if (path === "/api/admin/routing" && queryFails) return response({ error: "offline" }, 500)
+      if (path === "/api/admin/routing" && queryFails) return response({ error: { message: "offline", code: "error" } }, 500)
       return response({ strategy: "priority_failover" })
     }))
     mount()
-    expect(await screen.findByText("策略读取失败")).toBeTruthy()
-    expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "全局起始渠道选择策略" }).value).toBe("")
+    expect(await screen.findByText("路由设置读取失败")).toBeTruthy()
+    // Nothing may claim the order is known while the settings are unreadable.
+    expect(screen.queryByText("优先级固定（按渠道优先级从高到低）")).toBeNull()
+
     queryFails = false
     fireEvent.click(screen.getByRole("button", { name: "重试" }))
-    await screen.findByText("优先级固定（总从最高优先级开始）")
-    patchFails = true
-    fireEvent.change(screen.getByRole("combobox", { name: "全局起始渠道选择策略" }), { target: { value: "adaptive" } })
-    expect(await screen.findByRole("alert")).toBeTruthy()
-    expect(screen.getByRole("alert").textContent).toContain("策略保存失败")
+    expect(await screen.findByText("优先级固定（按渠道优先级从高到低）")).toBeTruthy()
+    expect(screen.queryByText("路由设置读取失败")).toBeNull()
   })
 })

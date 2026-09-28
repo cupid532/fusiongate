@@ -88,6 +88,12 @@ type App struct {
 	lastUsedAt            map[int64]time.Time
 	metrics               gatewayMetrics
 	dpopCache             *dpopSessionCache
+	// keyMaterial authenticates the task-stickiness hash. It is derived from the
+	// process master key, never stored, and never exposed through the console.
+	keyMaterial []byte
+	// recovery isolates failed channels, Keys and endpoints, and brings them back
+	// on an escalating backoff. It never moves a task's own forward cursor.
+	recovery *recoveryScheduler
 }
 type rateWindow struct {
 	At    time.Time
@@ -301,7 +307,8 @@ func New(cfg Config) (*App, error) {
 	}
 	db.SetMaxOpenConns(1)
 	a := &App{
-		db: db, cfg: cfg, aead: aead, client: newUpstreamHTTPClient(cfg), pricingClient: &http.Client{Timeout: 25 * time.Second},
+		db: db, cfg: cfg, aead: aead, keyMaterial: deriveKeyMaterial(raw),
+		client: newUpstreamHTTPClient(cfg), pricingClient: &http.Client{Timeout: 25 * time.Second},
 		log:  slog.New(slog.NewJSONHandler(os.Stdout, nil)),
 		rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{},
 		providerKeyCooldowns: map[int64]time.Time{}, providerKeyRoundRobin: map[string]int{}, roundRobinCursor: map[string]int{},
@@ -315,6 +322,12 @@ func New(cfg Config) (*App, error) {
 		dpopCache: newDPoPSessionCache(),
 	}
 	if err := a.migrate(context.Background()); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// V3.13 keeps one routing strategy and adds routing-session, recovery and
+	// per-attempt tables. Accounts, credentials and history are untouched.
+	if err := a.migrateInference(context.Background()); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -347,6 +360,7 @@ func New(cfg Config) (*App, error) {
 	}
 	a.healthChecker = NewHealthChecker(a, healthCheckIntervalFromEnv(), healthCheckConcurrencyFromEnv())
 	a.healthCheckJobs = newHealthCheckJobManager(a)
+	a.recovery = newRecoveryScheduler(a)
 	for _, file := range []string{"fusiongate.db", "fusiongate.db-wal", "fusiongate.db-shm"} {
 		if err := os.Chmod(path.Join(cfg.DataDir, file), 0600); err != nil && !errors.Is(err, os.ErrNotExist) {
 			db.Close()
@@ -365,6 +379,15 @@ func (a *App) reader() *sql.DB {
 		return a.readDB
 	}
 	return a.db
+}
+
+// deriveKeyMaterial builds the HMAC key that authenticates task-stickiness
+// hashes. It is derived from the process master key, so it never appears in the
+// database, in a backup or in the console, and it rotates with the master key.
+func deriveKeyMaterial(master []byte) []byte {
+	mac := hmac.New(sha256.New, master)
+	mac.Write([]byte("fusiongate/task-stickiness/v1"))
+	return mac.Sum(nil)
 }
 
 // ledgerWrite is one queued request-ledger statement.
@@ -471,6 +494,9 @@ func (a *App) closeDatabases() error {
 
 func (a *App) Close() error {
 	a.ready.Store(false)
+	if a.recovery != nil {
+		a.recovery.stop()
+	}
 	if a.healthChecker != nil {
 		a.healthChecker.Stop()
 	}
@@ -503,18 +529,49 @@ func (a *App) runLedgerRetentionLoop(ctx context.Context) {
 	}
 }
 
-// StartBackgroundTasks starts the health checker and other periodic background
-// jobs. The caller supplies a context that, when canceled, stops all tasks.
+// StartBackgroundTasks starts the health checker, the recovery prober and other
+// periodic background jobs. The caller supplies a context that, when canceled,
+// stops all tasks.
 func (a *App) StartBackgroundTasks(ctx context.Context) {
 	if a.healthChecker != nil {
 		a.healthChecker.Start(ctx)
 	}
+	if a.recovery != nil {
+		a.recovery.start(ctx)
+	}
+	go a.runRoutingSessionPruneLoop(ctx)
 	go a.runOAuthRefreshLoop(ctx)
 	go a.runPricingSyncLoop(ctx)
 	go a.runLedgerRetentionLoop(ctx)
 	go a.runLedgerReconcileLoop(ctx)
-	// Circuit recovery is performed by the next real request after cooldown.
 }
+
+// runRoutingSessionPruneLoop bounds the task-stickiness table by idle age, hard
+// age and row capacity. Dropping a binding is not a recovery action: the task is
+// simply treated as new on its next request.
+func (a *App) runRoutingSessionPruneLoop(ctx context.Context) {
+	ticker := time.NewTicker(routingSessionPruneEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			settings, err := a.inferenceSettingsFor(ctx)
+			if err != nil {
+				continue
+			}
+			if err := a.pruneRoutingSessions(ctx, settings); err != nil && ctx.Err() == nil {
+				a.log.Error("routing session prune", "error", err)
+			}
+			if err := a.pruneRecoveryProbes(ctx); err != nil && ctx.Err() == nil {
+				a.log.Error("recovery probe prune", "error", err)
+			}
+		}
+	}
+}
+
+const routingSessionPruneEvery = time.Hour
 
 func healthCheckIntervalFromEnv() time.Duration {
 	v := strings.TrimSpace(os.Getenv("FUSIONGATE_HEALTH_CHECK_INTERVAL"))
@@ -1116,7 +1173,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/dashboard", a.admin(a.dashboard))
 	mux.HandleFunc("/api/admin/metrics", a.admin(a.runtimeMetrics))
 	mux.HandleFunc("/api/admin/routing", a.admin(a.routing))
-	mux.HandleFunc("/api/admin/requests", a.admin(a.requests))
+	mux.HandleFunc("/api/admin/recovery", a.admin(a.recoveryState))
 	mux.HandleFunc("/api/admin/ledger", a.admin(a.ledger))
 	mux.HandleFunc("/api/admin/ledger/clear", a.admin(a.ledgerClear))
 	mux.HandleFunc("/api/admin/ledger/export", a.admin(a.ledgerExport))
@@ -1127,17 +1184,16 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/auth/models/sync", a.admin(a.authModelSync))
 	mux.HandleFunc("/api/admin/auth/oauth/start", a.admin(a.oauthStart))
 	mux.HandleFunc("/api/admin/auth/oauth/complete", a.admin(a.oauthComplete))
-	mux.HandleFunc("/api/admin/auth/quota/", a.admin(a.authQuota))
 	mux.HandleFunc("/v1/models", a.api(a.models))
-	mux.HandleFunc("/v1/chat/completions", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/responses", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/responses/compact", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/messages", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/messages/count_tokens", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/images/generations", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/audio/speech", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/audio/transcriptions", a.api(a.passthroughInference))
-	mux.HandleFunc("/v1/embeddings", a.api(a.passthroughInference))
+	mux.HandleFunc("/v1/chat/completions", a.api(a.inference))
+	mux.HandleFunc("/v1/responses", a.api(a.inference))
+	mux.HandleFunc("/v1/responses/compact", a.api(a.inference))
+	mux.HandleFunc("/v1/messages", a.api(a.inference))
+	mux.HandleFunc("/v1/messages/count_tokens", a.api(a.inference))
+	mux.HandleFunc("/v1/images/generations", a.api(a.inference))
+	mux.HandleFunc("/v1/audio/speech", a.api(a.inference))
+	mux.HandleFunc("/v1/audio/transcriptions", a.api(a.inference))
+	mux.HandleFunc("/v1/embeddings", a.api(a.inference))
 	return a.security(mux)
 }
 func (a *App) security(next http.Handler) http.Handler {

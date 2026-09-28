@@ -388,7 +388,11 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET required")
 		return
 	}
-	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 AND r.public_name=r.upstream_model AND p.type IN ('openai','grok','openrouter','openai_compatible','opencode','anthropic','anthropic_compatible') GROUP BY r.public_name ORDER BY r.public_name`)
+	// The advertised list must describe the same channels the inference path can
+	// actually select. Types with no verified inference support are left out, and
+	// the credential-bearing channel types are included because V3.13 restored
+	// them on the endpoints their own API exposes.
+	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 AND r.public_name=r.upstream_model AND p.type IN ('openai','grok','openrouter','openai_compatible','opencode','anthropic','anthropic_compatible','codex_oauth','claude_oauth','grok_oauth') GROUP BY r.public_name ORDER BY r.public_name`)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -562,10 +566,20 @@ ORDER BY CASE WHEN LOWER(r.public_name)=LOWER(?) THEN 0 ELSE 1 END,r.sort_order,
 			if supported, _ := providerPassthroughSupport(z.Provider.Type); !supported || z.Route.UpstreamModel != model || z.Route.PublicName != model {
 				continue
 			}
+		} else if requiredCapability == "inference" {
+			// V3.13 selects every configured channel that can serve the public
+			// endpoint. Eligibility is decided by the provider type and by the
+			// model name the client actually sent, not by the route's capability
+			// tags: an auth-file channel publishes its own capabilities and would
+			// otherwise be filtered out here with an unexplained empty candidate
+			// list. The endpoint-level filter runs in filterInferenceRoutes, and
+			// inferenceDiagnostics explains every channel it drops.
+			if !inferenceRouteEligible(z, model, "") {
+				continue
+			}
 		} else if !matchesCapability(z.Route.Capabilities, requiredCapability) {
 			continue
 		}
-		// One provider gets one seat per final upstream model. A provider may expose
 		// both the requested public name and the upstream model's native public name;
 		// counting both would silently double its round-robin weight. The SQL orders
 		// direct public-name routes first, so the first entry is authoritative.

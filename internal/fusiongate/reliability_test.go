@@ -95,7 +95,9 @@ func TestFailoverRecordsAttempts(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "backup") {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+	// The failing channel owns a shared attempt budget, so it is retried
+	// before the request advances to the healthy channel exactly once.
+	if firstCalls.Load() != 3 || secondCalls.Load() != 1 {
 		t.Fatalf("calls primary=%d backup=%d", firstCalls.Load(), secondCalls.Load())
 	}
 	a.flushLedgerWrites()
@@ -113,7 +115,7 @@ func TestFailoverRecordsAttempts(t *testing.T) {
 		}
 		got = append(got, fmt.Sprintf("%d:%s:%d", attempt, reason, success))
 	}
-	if strings.Join(got, ",") != "1::0,2:upstream_server_error:1" {
+	if strings.Join(got, ",") != "1::0,2:upstream_server_error:0,3:upstream_server_error:0,4:upstream_server_error:1" {
 		t.Fatalf("ledger attempts = %v", got)
 	}
 }
@@ -953,8 +955,10 @@ func TestConnectionFailureFailsOverBeforeAnyResponse(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != 2 {
-		t.Fatalf("attempts=%d, want 2", attempts)
+	// Each channel gets its own attempt budget: the unreachable channel is
+	// tried three times, then the healthy channel serves the request once.
+	if attempts != 4 {
+		t.Fatalf("attempts=%d, want 4", attempts)
 	}
 }
 

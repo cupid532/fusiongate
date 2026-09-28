@@ -18,11 +18,8 @@ import {
   Lock,
 } from "lucide-react"
 import { api } from "@/lib/api"
-import {
-  type RoutingStrategy,
-  ROUTING_STRATEGY_LABELS,
-  ROUTING_STRATEGY_HELP,
-} from "@/lib/types"
+import type { RoutingSettings } from "@/lib/types"
+import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -57,7 +54,18 @@ interface Metrics {
   [key: string]: unknown
 }
 
-const strategies: RoutingStrategy[] = ["priority_failover", "ordered_round_robin", "smart_round_robin", "adaptive"]
+// The reliability parameters exposed by PATCH /api/admin/routing. They tune the
+// single strategy's retries and session retention; there is no second algorithm
+// to select between.
+const routingFields = [
+  { key: "channel_attempts", label: "单渠道重试次数", hint: "包含第一次，1–5；同一渠道的全部 Key 共享该额度" },
+  { key: "max_attempts", label: "最大总尝试次数", hint: "1–100；达到后停止故障转移" },
+  { key: "channel_window_seconds", label: "单渠道时间窗口（秒）", hint: "1–3600；同一渠道重试的时限" },
+  { key: "failover_window_seconds", label: "故障转移总窗口（秒）", hint: "1–7200；整次请求的转移时限" },
+  { key: "session_idle_days", label: "会话空闲保留（天）", hint: "1–365；任务静默超过该天数后不再保持渠道粘性" },
+  { key: "session_max_days", label: "会话最长保留（天）", hint: "不小于空闲天数，最长 365" },
+  { key: "session_capacity", label: "会话容量", hint: "1–1000000；保留的任务绑定数量上限" },
+] as const satisfies ReadonlyArray<{ key: keyof Omit<RoutingSettings, "strategy">; label: string; hint: string }>
 
 export function Settings() {
   const [tab, setTab] = useState<SettingsTab>("routing")
@@ -108,73 +116,95 @@ function RoutingTab() {
   const qc = useQueryClient()
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["routing"],
-    queryFn: () => api<{ strategy: RoutingStrategy }>("/api/admin/routing"),
+    queryFn: () => api<RoutingSettings>("/api/admin/routing"),
   })
 
+  // The form is seeded from the server response and only ever PATCHes the whole
+  // object, because the endpoint validates the parameters as a set (for example
+  // session_max_days must not be below session_idle_days).
+  const [form, setForm] = useState<RoutingSettings | null>(null)
+  const active = form ?? data ?? null
+
   const mutation = useMutation({
-    mutationFn: (strategy: RoutingStrategy) =>
-      api<{ strategy: RoutingStrategy }>("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy }) }),
+    mutationFn: (next: RoutingSettings) =>
+      api<RoutingSettings>("/api/admin/routing", { method: "PATCH", body: JSON.stringify(next) }),
     onSuccess: async (result) => {
       qc.setQueryData(["routing"], result)
       await qc.invalidateQueries({ queryKey: ["routing"] })
-      notifySuccess("路由策略已更新")
+      notifySuccess("路由参数已更新")
     },
-    onError: (err: Error) => notifyError("路由策略保存失败", err.message),
+    onError: (err: Error) => notifyError("路由参数保存失败", err.message),
   })
-
-  const current = data?.strategy
 
   return (
     <div className="space-y-6">
       <div className="rounded-xl bg-card p-6 shadow-sm">
         <div className="mb-1 flex items-center gap-2">
           <Settings2 className="h-5 w-5 text-primary" />
-          <h2 className="text-lg font-semibold">起始渠道选择</h2>
+          <h2 className="text-lg font-semibold">渠道选择顺序</h2>
+        </div>
+        <p className="mb-4 text-sm text-muted-foreground">
+          当前策略：{ROUTING_STRATEGY_LABELS.priority_failover}。这是唯一的策略，无法切换。
+        </p>
+        <p className="text-xs text-muted-foreground">{ROUTING_STRATEGY_HELP.priority_failover}</p>
+      </div>
+
+      <div className="rounded-xl bg-card p-6 shadow-sm">
+        <div className="mb-1 flex items-center gap-2">
+          <RefreshCw className="h-5 w-5 text-primary" />
+          <h2 className="text-lg font-semibold">重试与故障转移参数</h2>
         </div>
         <p className="mb-6 text-sm text-muted-foreground">
-          决定每个新请求从哪个上游渠道开始。所有策略都带请求内故障转移。
+          这些参数只影响重试次数、时间窗口和任务粘性保留，不改变渠道选择顺序。
         </p>
 
-        {isLoading ? <div role="status" className="py-8 text-center text-sm text-muted-foreground">正在读取路由策略…</div> : isError ? <div role="alert" className="space-y-3 text-sm text-destructive"><p>路由策略读取失败：{error instanceof Error ? error.message : "未知错误"}</p><Button variant="outline" onClick={() => void refetch()}>重试</Button></div> : <div className="grid gap-3 sm:grid-cols-2">
-          {strategies.map((s) => {
-            const active = s === current
-            return (
-              <button
-                key={s}
-                onClick={() => mutation.mutate(s)}
-                disabled={mutation.isPending || !current}
-                className={cn(
-                  "group relative rounded-xl p-4 text-left transition-all",
-                  active
-                    ? "bg-primary/8 ring-2 ring-primary"
-                    : "bg-muted/40 hover:bg-muted/70"
-                )}
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className={cn(
-                      "mt-0.5 h-4 w-4 rounded-full border-2 transition-colors",
-                      active ? "border-primary bg-primary" : "border-muted-foreground/40"
-                    )}
-                  >
-                    {active && (
-                      <div className="flex h-full items-center justify-center">
-                        <div className="h-1.5 w-1.5 rounded-full bg-white" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-sm font-medium">{ROUTING_STRATEGY_LABELS[s]}</div>
-                    <div className="mt-1 text-xs text-muted-foreground leading-relaxed">
-                      {ROUTING_STRATEGY_HELP[s]}
-                    </div>
-                  </div>
+        {isLoading ? (
+          <div role="status" className="py-8 text-center text-sm text-muted-foreground">正在读取路由参数…</div>
+        ) : isError ? (
+          <div role="alert" className="space-y-3 text-sm text-destructive">
+            <p>路由参数读取失败：{error instanceof Error ? error.message : "未知错误"}</p>
+            <Button variant="outline" onClick={() => void refetch()}>重试</Button>
+          </div>
+        ) : active ? (
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (form) mutation.mutate(form)
+            }}
+          >
+            <div className="grid gap-4 sm:grid-cols-2">
+              {routingFields.map((field) => (
+                <div key={field.key} className="space-y-1.5">
+                  <Label htmlFor={`routing-${field.key}`}>{field.label}</Label>
+                  <Input
+                    id={`routing-${field.key}`}
+                    name={field.key}
+                    type="number"
+                    inputMode="numeric"
+                    value={active[field.key]}
+                    onChange={(event) => {
+                      const parsed = Number.parseInt(event.target.value, 10)
+                      setForm({
+                        ...active,
+                        [field.key]: Number.isNaN(parsed) ? 0 : parsed,
+                      })
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">{field.hint}</p>
                 </div>
-              </button>
-            )
-          })}
-        </div>}
-        {mutation.isError && <div role="alert" className="mt-4 text-sm text-destructive">保存路由策略失败：{mutation.error instanceof Error ? mutation.error.message : "未知错误"}</div>}
+              ))}
+            </div>
+            <div className="flex items-center gap-3">
+              <Button type="submit" disabled={!form || mutation.isPending}>保存路由参数</Button>
+              {form && <Button type="button" variant="outline" onClick={() => setForm(null)} disabled={mutation.isPending}>放弃修改</Button>}
+            </div>
+          </form>
+        ) : (
+          <div role="alert" className="text-sm text-destructive">路由参数不可用。</div>
+        )}
+
+        {mutation.isError && <div role="alert" className="mt-4 text-sm text-destructive">路由参数保存失败：{mutation.error instanceof Error ? mutation.error.message : "未知错误"}</div>}
       </div>
     </div>
   )

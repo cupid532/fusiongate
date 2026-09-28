@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.13
+
+- Restore auth-file and dedicated channels to inference routing by separating identity adaptation from protocol conversion. Credential-bearing channel types (Codex OAuth, Claude OAuth, Grok OAuth) are selected again and pass the client's body through unchanged; only the refreshed credential, account headers and the endpoint shape its own API exposes differ. Types with no verified implementation stay stored and enabled exactly as configured, and the ledger records why they were not chosen.
+- Collapse routing to a single strategy: provider priority descending, then configured position, then identifier, with route-level keys breaking ties inside one channel only. Storing any other strategy is refused instead of being accepted and ignored, and a database that still holds a legacy value no longer keeps routing with it.
+- Give each channel a small attempt budget shared by all of its Keys, so a bad Key is survivable inside its channel before the request advances. A Retry-After belongs to the channel that sent it and is never inherited by the next one.
+- Keep a task on the channel it advanced to. A stored session records the exact order a task saw, so the next turn resumes below the failed channel instead of walking back to the top; recovery and idle state are pruned in the background.
+- Expose candidate counts, exclusions and stop reasons on the routes console and in every ledger row, and label model mappings that would require rewriting the payload instead of silently rewriting them.
+
 ## V3.12
 
 - Replace public inference protocol adapters with raw HTTP passthrough: preserve request/response payloads, native paths, compression and SSE bytes; no Chat/Responses/Messages conversion or semantic output inspection. Dedicated OAuth/web adapters and model mappings requiring rewrites no longer participate in inference; accounts and historical data are retained.

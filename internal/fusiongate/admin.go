@@ -1380,13 +1380,13 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			if _, seen := counts[item.PublicName]; seen {
 				continue
 			}
-			resolved, err := a.resolveRoutes(r.Context(), item.PublicName, "passthrough", false)
-			count, _ := a.passthroughDiagnostics(r.Context(), item.PublicName, resolved, nil)
+			resolved, err := a.resolveRoutes(r.Context(), item.PublicName, "inference", false)
+			count, _ := a.inferenceDiagnostics(r.Context(), item.PublicName, "", resolved, nil)
 			counts[item.PublicName] = count
 			if errors.Is(err, errRouteResolution) {
 				warnings[item.PublicName] = "候选解析失败，请检查渠道凭据"
 			} else if count == 0 {
-				warnings[item.PublicName] = "没有可用的原生透传候选渠道"
+				warnings[item.PublicName] = "没有可用的推理候选渠道"
 			} else if count == 1 {
 				warnings[item.PublicName] = "无备用渠道，无法故障转移"
 			}
@@ -1395,7 +1395,7 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			out[i].EligibleProviderCount = counts[out[i].PublicName]
 			out[i].RoutingWarning = warnings[out[i].PublicName]
 			if out[i].PublicName != out[i].UpstreamModel {
-				out[i].RoutingWarning = "此映射需要改写模型名，不参与纯透传"
+				out[i].RoutingWarning = "此映射需要改写模型名，不参与直通；请将 upstream_model 改为同名，或改用不受影响的入口"
 			}
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -2011,6 +2011,9 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	writeJSON(w, 200, map[string]any{"providers": p, "models": m, "keys": k, "requests": total, "today_requests": today, "failures_24h": failures, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": costMicros})
 }
 
+// globalRoutingStrategy reports the one strategy V3.13 routes with. The value is
+// still read from settings so the console and the request path agree, but it can
+// no longer be anything other than priority failover.
 func (a *App) globalRoutingStrategy() RoutingStrategy {
 	var value string
 	if err := a.db.QueryRow(`SELECT value FROM settings WHERE key='routing_strategy'`).Scan(&value); err == nil && validRoutingStrategy(value) {
@@ -2019,34 +2022,56 @@ func (a *App) globalRoutingStrategy() RoutingStrategy {
 	return StrategyPriorityFailover
 }
 
+// routing serves the single routing-strategy endpoint.
+//
+// V3.13 has exactly one selection algorithm: fail over by provider priority. The
+// rotating strategies were removed with their per-model cursors, so storing a
+// different value would create state no request path reads. Instead of accepting
+// it silently, the console gets a clear error naming the reason.
 func (a *App) routing(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]string{"strategy": string(a.globalRoutingStrategy())})
-	case http.MethodPatch:
-		var in struct {
-			Strategy string `json:"strategy"`
+		settings, err := a.inferenceSettingsFor(r.Context())
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", "cannot read routing settings")
+			return
 		}
-		if err := readJSON(r, &in); err != nil {
+		writeJSON(w, http.StatusOK, settings)
+	case http.MethodPatch:
+		a.inferenceRoutingSettings(w, r, adminCtx{})
+	default:
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or PATCH required")
+	}
+}
+
+// recoveryState lists the isolated failure scopes and lets an operator re-open
+// one. A manual re-open only moves the scope to half-open: it never declares a
+// recovery the probes did not observe, and it never moves a task cursor.
+func (a *App) recoveryState(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	switch r.Method {
+	case http.MethodGet:
+		faults, err := a.recoveryFaults(r.Context(), 100)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", "cannot read recovery state")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"faults":          faults,
+			"backoff_seconds": []int{5, 30, 60, 120, 300},
+		})
+	case http.MethodPost:
+		scope, err := recoveryScopeArgs(r)
+		if err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if !validRoutingStrategy(in.Strategy) {
-			fail(w, http.StatusBadRequest, "invalid_strategy", "strategy must be priority_failover, ordered_round_robin, smart_round_robin, or adaptive")
+		if err := a.manualRecovery(r.Context(), scope); err != nil {
+			fail(w, http.StatusNotFound, "unknown_scope", err.Error())
 			return
 		}
-		if _, err := a.db.Exec(`INSERT INTO settings(key,value) VALUES('routing_strategy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, in.Strategy); err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
-		// Both rotating strategies keep per-model state, so clear it on any change
-		// instead of only when switching to smart round robin.
-		a.routeMu.Lock()
-		a.resetRouteCursorsLocked()
-		a.routeMu.Unlock()
-		writeJSON(w, http.StatusOK, map[string]string{"strategy": in.Strategy})
+		writeJSON(w, http.StatusOK, map[string]string{"scope": scope, "status": recoveryStatusHalfOpen})
 	default:
-		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or PATCH required")
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
 	}
 }
 func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {

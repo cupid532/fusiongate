@@ -405,30 +405,42 @@ export interface CredentialImportPreviewItem {
   duplicate_provider_id?: number
 }
 
-export type RoutingStrategy = "priority_failover" | "ordered_round_robin" | "smart_round_robin" | "adaptive"
-
 /**
- * 全局路由（起始渠道选择）策略的展示文案。
- *
- * 注意：四种策略都带有相同的请求内故障转移（首选渠道失败后依次尝试其余渠道、
- * 受熔断与半开探活保护），区别只在于每个新请求的「起始渠道」如何选出：
- * - priority_failover: 始终从优先级最高的渠道开始
- * - ordered_round_robin: 始终从配置顺序的第一个渠道开始（固定起点，不轮换）
- * - smart_round_robin: 在可用渠道间轮换起点，分摊负载
- * - adaptive: 按权重/延迟/失败/并发动态打分选起点（平滑加权轮询）
+ * V3.13 has exactly one routing strategy. The rotating strategies were removed
+ * together with their per-model cursors, so this is a single-member union rather
+ * than a free-form string: a stored value that is not `priority_failover` is
+ * rejected by the server instead of being accepted and ignored.
  */
+export type RoutingStrategy = "priority_failover"
+
+/** Display text for the one routing strategy. */
 export const ROUTING_STRATEGY_LABELS: Record<RoutingStrategy, string> = {
-  priority_failover: "优先级固定（总从最高优先级开始）",
-  ordered_round_robin: "配置顺序固定（总从第一个开始）",
-  smart_round_robin: "渠道间轮换（平均分摊）",
-  adaptive: "自适应加权（按延迟/失败/并发打分）",
+  priority_failover: "优先级固定（按渠道优先级从高到低）",
 }
 
+/**
+ * How the single strategy orders channels. The chain is total, so the console
+ * can show exactly the order the gateway will use.
+ */
 export const ROUTING_STRATEGY_HELP: Record<RoutingStrategy, string> = {
-  priority_failover: "每个请求都从优先级最高的可用渠道开始；仅当它失败或熔断时才转移。适合有明确主备关系的场景。",
-  ordered_round_robin: "每个请求都从配置列表最上方的可用渠道开始；不主动轮换，仅失败时顺延。",
-  smart_round_robin: "每个新请求自动换下一个可用渠道作为起点，均匀分摊负载；单次请求内仍会故障转移到后续渠道。",
-  adaptive: "按权重、首字节延迟、连续失败和当前并发综合打分，把新请求发给当前得分最高的渠道；恢复冷却的渠道会被优先探测。",
+  priority_failover:
+    "候选顺序：渠道优先级从高到低 → 渠道全局位置从小到大 → 渠道编号从小到大；同一渠道内再按映射优先级、映射顺序、映射编号排序。当前渠道重试用完后才前进到下一个渠道。",
+}
+
+/**
+ * Reliability parameters for the single strategy, as served by
+ * `GET /api/admin/routing`. These tune retries and session retention; they are
+ * not a choice of selection algorithm.
+ */
+export interface RoutingSettings {
+  strategy: RoutingStrategy
+  channel_attempts: number
+  max_attempts: number
+  channel_window_seconds: number
+  failover_window_seconds: number
+  session_idle_days: number
+  session_max_days: number
+  session_capacity: number
 }
 
 export interface ProviderKeyModel {

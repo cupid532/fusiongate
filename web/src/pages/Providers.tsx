@@ -7,7 +7,7 @@ import { api } from "@/lib/api"
 import { remainingBarTone } from "@/lib/codex-windows"
 import { reorderProviderIDs } from "@/lib/provider-order"
 import { providerSiteURL } from "@/lib/provider-site"
-import type { Provider, RoutingStrategy } from "@/lib/types"
+import type { Provider, RoutingSettings } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
 import { Card, CardContent } from "@/components/ui/card"
@@ -70,15 +70,11 @@ export function Providers() {
   // dimming, which told you nothing about the destination.
   const [dragOverId, setDragOverId] = useState<number | null>(null)
 
+  // The single strategy is not editable here; this query exists so the page can
+  // state the real ordering rule instead of a static claim that could drift.
   const { data: routing } = useQuery({
     queryKey: ["routing"],
-    queryFn: () => api<{ strategy: RoutingStrategy }>("/api/admin/routing"),
-  })
-
-  const setStrategy = useMutation({
-    mutationFn: async (strategy: RoutingStrategy) =>
-      api("/api/admin/routing", { method: "PATCH", body: JSON.stringify({ strategy }) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["routing"] }),
+    queryFn: () => api<RoutingSettings>("/api/admin/routing"),
   })
 
   const { data: providers = [], isLoading, refetch, isFetching, isError, error } = useQuery({
@@ -182,25 +178,15 @@ export function Providers() {
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">上游渠道</h1>
-          <p className="mt-1 text-sm text-muted-foreground">管理 API 渠道、优先级与全局起始渠道策略。</p>
+          <p className="mt-1 text-sm text-muted-foreground">管理 API 渠道、优先级与渠道选择顺序。</p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-muted-foreground">起始渠道选择</span>
-            <select
-              aria-label="全局起始渠道选择策略"
-              value={routing?.strategy ?? "priority_failover"}
-              onChange={(e) => setStrategy.mutate(e.target.value as RoutingStrategy)}
-              title={ROUTING_STRATEGY_HELP[routing?.strategy ?? "priority_failover"]}
-              className="h-9 rounded-md border border-input bg-transparent px-3 text-sm"
-            >
-              {(Object.keys(ROUTING_STRATEGY_LABELS) as RoutingStrategy[]).map((value) => (
-                <option key={value} value={value}>{ROUTING_STRATEGY_LABELS[value]}</option>
-              ))}
-            </select>
-            {routing?.strategy && (
-              <span className="max-w-sm text-xs text-muted-foreground">{ROUTING_STRATEGY_HELP[routing.strategy]}</span>
-            )}
+          <div className="flex max-w-md flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">渠道选择顺序（固定策略）</span>
+            <span className="text-sm">{ROUTING_STRATEGY_LABELS["priority_failover"]}</span>
+            <span className="text-xs text-muted-foreground" title={ROUTING_STRATEGY_HELP.priority_failover}>
+              {routing ? ROUTING_STRATEGY_HELP[routing.strategy] : "正在读取路由设置…"}
+            </span>
           </div>
           <Button variant="outline" onClick={() => setGroupOpen(true)}>
             <FolderTree className="h-4 w-4" />

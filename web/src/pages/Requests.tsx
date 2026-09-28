@@ -42,6 +42,25 @@ function duration(ms: number | null) {
   return `${(ms / 1000).toFixed(1)} s`
 }
 
+// candidate_exclusions is a JSON array the gateway writes so the console can
+// explain why a channel was skipped. Rows written before the field existed, or
+// by a request that never reached routing, carry an empty string or plain
+// text, so parse defensively and fall back to the raw value rather than throw.
+function exclusionList(raw?: string): string[] {
+  const text = (raw ?? "").trim()
+  if (!text) return []
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
+        .filter((item) => item !== "")
+    }
+  } catch {
+    // Not JSON — show the value as-is below.
+  }
+  return [text]
+}
 function clockPad(n: number) {
   return String(n).padStart(2, "0")
 }
@@ -707,7 +726,7 @@ export function Requests() {
                                     <div><div className="text-muted-foreground">候选渠道数</div><div className="font-mono">{r.candidate_count ?? "未知"}</div></div>
                                     <div className="md:col-span-2"><div className="text-muted-foreground">本页尝试序列（可能不完整）</div><ol className="mt-1 list-inside list-decimal space-y-0.5 font-mono">{(visibleAttempts.get(r.id) ?? []).map((attempt) => <li key={attempt.id}>{attemptLabel(attempt)}{attempt.retry_reason ? ` · ${attempt.retry_reason}` : ""}</li>)}</ol><div className="mt-1 text-muted-foreground">账本未提供完整尝试链；这里只列出当前已加载页面中的相关记录。</div></div>
                                     <div><div className="text-muted-foreground">当前尝试</div><div className="font-mono">{attemptLabel(r)}{r.retry_reason ? ` · ${r.retry_reason}` : ""}</div></div>
-                                    <div><div className="text-muted-foreground">候选排除原因</div><div className="font-mono">{r.candidate_exclusions || "未知"}</div></div>
+                                    {(() => { const reasons = exclusionList(r.candidate_exclusions); return <div className="md:col-span-2"><div className="text-muted-foreground">候选排除原因</div>{reasons.length === 0 ? <div className="font-mono">未知</div> : <ul className="mt-1 list-inside list-disc space-y-0.5 font-mono">{reasons.map((reason, index) => <li key={`${r.id}-exclusion-${index}`}>{reason}</li>)}</ul>}</div> })()}
                                     <div><div className="text-muted-foreground">停止原因</div><div className="font-mono">{r.stop_reason || "未知"}</div></div>
                                     <div><div className="text-muted-foreground">Total Latency</div><div className="font-mono">{duration(r.latency_ms)}</div></div>
                                     <div><div className="text-muted-foreground">Input Tokens</div><div className="font-mono">{r.usage_reported ? formatTokens(r.input_tokens) : "未知"}</div></div>
