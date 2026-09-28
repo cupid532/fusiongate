@@ -174,6 +174,38 @@ func (a *App) session(w http.ResponseWriter, r *http.Request, c adminCtx) {
 	}
 	writeJSON(w, 200, map[string]any{"authenticated": true, "csrf_token": c.CSRF})
 }
+
+func (a *App) changePassword(w http.ResponseWriter, r *http.Request, _ adminCtx) {
+	if r.Method != http.MethodPost {
+		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var in struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := readJSON(r, &in); err != nil {
+		fail(w, http.StatusBadRequest, "invalid_request", "invalid JSON")
+		return
+	}
+	if len(in.NewPassword) < 8 {
+		fail(w, http.StatusBadRequest, "invalid_request", "new password must be at least 8 characters")
+		return
+	}
+	var h string
+	if err := a.db.QueryRow(`SELECT value FROM settings WHERE key='admin_password_hash'`).Scan(&h); err != nil || !checkPassword(in.CurrentPassword, h) {
+		time.Sleep(400 * time.Millisecond)
+		fail(w, http.StatusForbidden, "invalid_credentials", "current password is incorrect")
+		return
+	}
+	newHash := passwordHash(in.NewPassword, randomBytes(16))
+	if _, err := a.db.Exec(`UPDATE settings SET value=? WHERE key='admin_password_hash'`, newHash); err != nil {
+		fail(w, http.StatusInternalServerError, "internal_error", "failed to update password")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 func (a *App) live(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		fail(w, 405, "method_not_allowed", "GET required")
