@@ -377,7 +377,9 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 				stop = run.stopReasonFor(decision, result)
 			}
 			cancel()
-			if r.Context().Err() != nil {
+			// A client may close its connection after receiving the complete
+			// response. Do not overwrite an already settled result during cleanup.
+			if r.Context().Err() != nil && !(terminal && result.Err == nil) {
 				result.Err = r.Context().Err()
 				result.Reason = "downstream_canceled"
 				stop, terminal = "downstream_canceled", true

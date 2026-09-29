@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.15
+
+- Preserve settled response outcomes when the client disconnects during request cleanup, instead of overwriting success with `downstream_canceled`.
+- Recognize fully forwarded Chat `[DONE]`, Responses `response.completed`, and Anthropic `message_stop` events when a client closes SSE before HTTP EOF. Preserve usage and wire bytes; partial output, incomplete/failed events, write errors, and non-cancellation read errors remain failures.
+- Add regression coverage for completion/cancellation races, fragmented SSE frames, and cancellation that must not trigger failover.
+
 ## V3.14
 
 - Make all four client interfaces work against any channel: `/v1/chat/completions`, `/v1/responses`, `/v1/messages` and Gemini `generateContent` / `streamGenerateContent`. A request is still forwarded byte for byte when the channel speaks the client's protocol; when the channel answers that it does not (404/405/501, or an "unsupported/invalid URL" style 400), the same channel is retried once through a streaming protocol bridge and the result is remembered for 30 minutes so later turns go straight to the bridge. Codex against chat-only relays such as AIAPI now works.

@@ -276,7 +276,13 @@ func passthroughResponseUsage(w http.ResponseWriter, resp *http.Response, format
 		}
 		if err != nil {
 			if err != io.EOF {
-				return err, "upstream_read_error", usage()
+				// Clients commonly close the stream as soon as the protocol's
+				// terminal event arrives, before the upstream HTTP body ends.
+				// Only a fully written terminal event can settle cancellation;
+				// partial output and downstream write failures remain errors.
+				if !errors.Is(err, context.Canceled) || tap == nil || tap.observer == nil || !tap.observer.completed {
+					return err, "upstream_read_error", usage()
+				}
 			}
 			break
 		}

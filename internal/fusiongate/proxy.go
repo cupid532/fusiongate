@@ -113,6 +113,8 @@ type sseUsageObserver struct {
 	pending     []byte
 	usage       Usage
 	usageFormat string
+	completed   bool
+	failed      bool
 }
 
 const maxUsageSSEEvent = 1 << 20
@@ -128,10 +130,51 @@ func (o *sseUsageObserver) Write(p []byte) (int, error) {
 			}
 			break
 		}
+		o.observeCompletion(o.pending[:end])
 		o.observeEvent(o.pending[:end])
 		o.pending = o.pending[end+2:]
 	}
 	return len(p), nil
+}
+
+// observeCompletion only accepts fully delimited SSE events. finish must not
+// promote a truncated terminal event to proof of successful delivery.
+func (o *sseUsageObserver) observeCompletion(event []byte) {
+	if len(event) > maxUsageSSEEvent {
+		return
+	}
+	var data []string
+	for _, line := range strings.Split(string(event), "\n") {
+		if strings.HasPrefix(line, "data:") {
+			data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " "))
+		}
+	}
+	payload := strings.Join(data, "\n")
+	if o.usageFormat == "openai" && strings.TrimSpace(payload) == "[DONE]" {
+		o.completed = !o.failed
+		return
+	}
+	var decoded map[string]any
+	if json.Unmarshal([]byte(payload), &decoded) != nil {
+		return
+	}
+	kind, _ := decoded["type"].(string)
+	if decoded["error"] != nil || kind == "error" || kind == "response.failed" || kind == "response.incomplete" {
+		o.failed, o.completed = true, false
+		return
+	}
+	if o.failed {
+		return
+	}
+	switch o.usageFormat {
+	case "anthropic":
+		o.completed = o.completed || kind == "message_stop"
+	case "openai":
+		if kind == "response.completed" {
+			response, _ := decoded["response"].(map[string]any)
+			o.completed = response != nil && response["status"] == "completed" && response["error"] == nil
+		}
+	}
 }
 
 func (o *sseUsageObserver) finish() Usage {
