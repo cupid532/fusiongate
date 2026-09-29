@@ -142,7 +142,7 @@ func TestLegacyAdapterStreamOpenAIAsAnthropicEmitsClaudeSSE(t *testing.T) {
 		`data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":4}}`,
 		"",
 		"data: [DONE]",
-		"",
+		"", "",
 	}, "\n")
 	rec := httptest.NewRecorder()
 	result := streamOpenAIAsAnthropic(rec, strings.NewReader(upstream), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "request2", time.Second, time.Second)
@@ -173,7 +173,7 @@ func TestLegacyAdapterStreamOpenAIAsAnthropicWaitsForToolArgumentsBeforeStarting
 		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a.go\"}"}}]},"finish_reason":"tool_calls"}]}`,
 		"",
 		"data: [DONE]",
-		"",
+		"", "",
 	}, "\n")
 	rec := httptest.NewRecorder()
 	result := streamOpenAIAsAnthropic(rec, strings.NewReader(upstream), resolvedRoute{Route: Route{PublicName: "claude-test"}}, "tool-start", time.Second, time.Second)

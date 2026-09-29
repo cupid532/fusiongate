@@ -50,14 +50,7 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 	}
 	ctx, cancel := context.WithCancel(incoming.Context())
 	defer cancel()
-	startTimeout := a.cfg.StreamStartTimeout
-	if startTimeout <= 0 {
-		startTimeout = DefaultStreamStartTimeout
-	}
-	idleTimeout := a.cfg.StreamIdleTimeout
-	if idleTimeout <= 0 {
-		idleTimeout = defaultFailoverIdleTimeout
-	}
+	startTimeout, idleTimeout := a.streamTimeouts(z.Provider)
 	outputDeadline := time.Now().Add(startTimeout)
 	startTimer := time.AfterFunc(startTimeout, cancel)
 	defer startTimer.Stop()
@@ -495,7 +488,7 @@ func hasAnthropicBridgeSemanticOutput(event map[string]any) bool {
 	return false
 }
 
-func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRoute, rid string, startTimeout, idleTimeout time.Duration) attemptResult {
+func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRoute, rid string, startTimeout, idleTimeout time.Duration, upstreamOwnsTimeout ...bool) attemptResult {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return attemptResult{Status: http.StatusInternalServerError, Reason: "streaming_unsupported", Err: errors.New("response writer does not support flushing")}
@@ -603,7 +596,11 @@ func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRo
 	}
 
 	timedBody := &anthropicBridgeTimedReader{body: body, remaining: func() time.Duration { return time.Until(deadline) }}
-	scanner := bufio.NewScanner(timedBody)
+	var source io.Reader = timedBody
+	if len(upstreamOwnsTimeout) > 0 && upstreamOwnsTimeout[0] {
+		source = body
+	}
+	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 64<<10), maxAnthropicBridgeEvent)
 	stop := false
 	for scanner.Scan() {
@@ -632,11 +629,6 @@ func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRo
 	if scanErr := scanner.Err(); scanErr != nil {
 		return fail("upstream_stream_interrupted", scanErr)
 	}
-	if !stop && len(dataLines) > 0 {
-		if _, err := finishEvent(); err != nil {
-			return fail("upstream_invalid_response", err)
-		}
-	}
 	if !committed {
 		reason := "upstream_no_output"
 		if !sawPayload {
@@ -645,6 +637,9 @@ func streamOpenAIAsAnthropic(w http.ResponseWriter, body io.Reader, z resolvedRo
 		return fail(reason, io.EOF)
 	}
 
+	if !stop {
+		return fail("upstream_incomplete_stream", io.ErrUnexpectedEOF)
+	}
 	state.finishStream()
 	if state.writeError != nil {
 		return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: state.writeError, Usage: state.usage}

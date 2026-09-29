@@ -129,7 +129,7 @@ func TestPassthroughLedgerStaysRunningUntilStreamEnds(t *testing.T) {
 	a.flushLedgerWrites()
 	var success, reported int
 	var costType string
-	if err := a.db.QueryRow(`SELECT success,usage_reported,cost_type FROM request_ledger LIMIT 1`).Scan(&success, &reported, &costType); err != nil || success != 1 || reported != 0 || costType != "unknown" {
+	if err := a.db.QueryRow(`SELECT success,usage_reported,cost_type FROM request_ledger LIMIT 1`).Scan(&success, &reported, &costType); err != nil || success != 0 || reported != 0 || costType != "unknown" {
 		t.Fatalf("ledger=%d %d %s err=%v", success, reported, costType, err)
 	}
 	if a.providerInflight(1) != 0 {

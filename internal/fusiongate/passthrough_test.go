@@ -91,7 +91,7 @@ func TestPassthroughFailoverAndTerminalResponse(t *testing.T) {
 	}{
 		{401, []string{"A", "B"}, 422, "error B"},
 		{403, []string{"A", "B"}, 422, "error B"},
-		{404, []string{"A", "A", "B"}, 422, "error B"},
+		{404, []string{"A", "B"}, 422, "error B"},
 		{408, []string{"A", "A", "A", "B"}, 422, "error B"},
 		{425, []string{"A", "A", "A", "B"}, 422, "error B"},
 		{429, []string{"A", "B"}, 422, "error B"},

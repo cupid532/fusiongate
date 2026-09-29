@@ -42,6 +42,8 @@ function providerForm(provider: Provider | null) {
     priority: provider?.priority ?? 1,
     max_concurrency: provider?.max_concurrency ?? 0,
     request_timeout_ms: provider?.request_timeout_ms ?? 120000,
+    stream_start_timeout_ms: provider?.stream_start_timeout_ms ?? 0,
+    stream_idle_timeout_ms: provider?.stream_idle_timeout_ms ?? 0,
     notes: provider?.notes ?? "",
     ip_pool_node_id: provider?.ip_pool_node_id ?? 0,
     group_id: provider?.group_id ?? 0,
@@ -108,6 +110,8 @@ export function ProviderDialog({
         name: submitted.name.trim(), type: submitted.type, baseURL: submitted.baseURL.trim(), website_url: submitted.websiteURL.trim(),
         priority: submitted.priority, max_concurrency: submitted.max_concurrency,
         request_timeout_ms: submitted.request_timeout_ms,
+        stream_start_timeout_ms: submitted.stream_start_timeout_ms,
+        stream_idle_timeout_ms: submitted.stream_idle_timeout_ms,
         notes: submitted.notes, key_selection_mode: submitted.key_selection_mode, health_check_enabled: submitted.health_check_enabled,
         ip_pool_node_id: submitted.ip_pool_node_id || null,
       }
@@ -197,6 +201,8 @@ export function ProviderDialog({
                 <div className="space-y-1.5"><Label htmlFor="provider-group">分组</Label><select id="provider-group" value={form.group_id} onChange={(event) => set("group_id", Number(event.target.value))} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"><option value={0}>未分组</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></div>
                 <div className="space-y-1.5"><Label htmlFor="provider-concurrency">最大并发（0 = 不限）</Label><Input id="provider-concurrency" type="number" value={form.max_concurrency} onChange={(event) => set("max_concurrency", Number(event.target.value))} /></div>
                 <div className="space-y-1.5"><Label htmlFor="provider-timeout">请求超时（ms）</Label><Input id="provider-timeout" type="number" value={form.request_timeout_ms} onChange={(event) => set("request_timeout_ms", Number(event.target.value))} /></div>
+                <div className="space-y-1.5"><Label htmlFor="provider-stream-start">流式首包超时（ms）</Label><Input id="provider-stream-start" type="number" min={0} value={form.stream_start_timeout_ms} onChange={(event) => set("stream_start_timeout_ms", Number(event.target.value))} /><p className="text-xs text-muted-foreground">0：继承显式环境配置，否则继承请求超时。</p></div>
+                <div className="space-y-1.5"><Label htmlFor="provider-stream-idle">流中空闲超时（ms）</Label><Input id="provider-stream-idle" type="number" min={0} value={form.stream_idle_timeout_ms} onChange={(event) => set("stream_idle_timeout_ms", Number(event.target.value))} /><p className="text-xs text-muted-foreground">0：继承显式环境配置，否则 300 秒；持续输出不受总时长限制。</p></div>
               </div>
             </ProviderManagementCard>
 

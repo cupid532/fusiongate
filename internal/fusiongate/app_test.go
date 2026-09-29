@@ -22,7 +22,8 @@ func TestDefaultStreamStartTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	if a.cfg.StreamStartTimeout != DefaultStreamStartTimeout {
+	start, _ := a.streamTimeouts(Provider{RequestTimeoutMS: 120000})
+	if a.cfg.StreamStartTimeout != 0 || start != DefaultStreamStartTimeout {
 		t.Fatalf("stream start timeout = %s, want %s", a.cfg.StreamStartTimeout, DefaultStreamStartTimeout)
 	}
 }

@@ -320,6 +320,9 @@ func classifyInferenceResult(result attemptResult, downstreamCanceled bool) infe
 		}
 		return decisionTerminal
 	}
+	if result.Reason == "protocol_fallback" {
+		return decisionRetryChannel
+	}
 	switch result.Status {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity, http.StatusRequestEntityTooLarge,
 		http.StatusUnsupportedMediaType, http.StatusLengthRequired, http.StatusUnavailableForLegalReasons:

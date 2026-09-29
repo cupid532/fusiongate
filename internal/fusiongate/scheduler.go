@@ -418,7 +418,7 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 
 func isNeutralResult(result attemptResult) bool {
 	switch result.Reason {
-	case "route_configuration_error", "protocol_not_supported", "invalid_request", "downstream_write_error", "downstream_canceled", "upstream_route_not_found":
+	case "protocol_fallback", "capability_not_supported", "route_configuration_error", "protocol_not_supported", "invalid_request", "downstream_write_error", "downstream_canceled", "upstream_route_not_found":
 		return true
 	}
 	return false

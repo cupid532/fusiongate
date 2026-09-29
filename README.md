@@ -187,7 +187,7 @@ sudo bash install.sh
 | `FUSIONGATE_DATA_DIR` | SQLite 数据目录，默认 `./data`。 |
 | `FUSIONGATE_MAX_FAILOVER_ATTEMPTS` | 可选保险丝：单次请求最多尝试的上游渠道数。默认不限（逐个试完请求内全部候选渠道后才返回失败），渠道越多尝试越多；设为 N（N≥1）时恢复固定上限，用于避免失效渠道造成重试风暴。 |
 | `FUSIONGATE_MAX_CONCURRENT_REQUESTS` | 网关同时处理的 API 请求上限，默认 `64`；达到上限返回 `503` 并带 `Retry-After`。 |
-| `FUSIONGATE_STREAM_START_TIMEOUT` | 流式响应等待上游开始响应的时间（不解析模型事件），默认 `30s`；适合首字节较慢的 Claude 等推理渠道。 |
+| `FUSIONGATE_STREAM_START_TIMEOUT` | 流式响应等待上游开始响应的时间（不解析模型事件），未显式设置时继承渠道 `request_timeout_ms`（通常 120 秒）；渠道 `stream_start_timeout_ms` 优先于此环境变量。 |
 | `FUSIONGATE_STREAM_IDLE_TIMEOUT` | 流式响应读取字节之间的最大空闲时间（不解析模型事件），默认 `5m`。 |
 | `FUSIONGATE_CORS_ORIGINS` | 可选的逗号分隔浏览器 Origin 白名单；留空保持兼容的通配行为。 |
 | `FUSIONGATE_PRICING_SYNC_INTERVAL` | 官方价格同步间隔，默认 `1h`，最低 `5m`；低于 `5m` 的值回退为 `1h`，设为 `0`、`off` 或 `false` 可关闭。 |
@@ -218,3 +218,5 @@ IP 池由 FusionGate 管理节点元数据与渠道绑定，实际多协议网�
 ## 已知范围和后续工作
 
 FusionGate 不包含支付、充值、用户注册、兑换码或商业计费模块。费用为按路由定价的估算，最终以上游账单为准（V3.12–V3.13 期间的请求没有用量记录）。跨协议转换只在渠道不支持客户端协议时使用；任意有状态资源 API、图像编辑、PostgreSQL 与备份 UI 不在本次范围内。
+
+渠道 `stream_start_timeout_ms` / `stream_idle_timeout_ms` 可选，0 表示继承（PATCH 传 0 可重置）。优先级：渠道正值 > 显式环境变量 > 首包继承请求超时、空闲 300 秒。流中任意数据含心跳重置空闲时间，非流式保留请求总超时。

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -160,7 +161,8 @@ const wireMemoryTTL = 30 * time.Minute
 var protocolMemory = &wireMemory{entries: map[string]time.Time{}}
 
 func wireMemoryKey(z resolvedRoute, protocol string) string {
-	return fmt.Sprintf("%d\x00%s\x00%s", z.Provider.ID, strings.ToLower(strings.TrimSpace(z.Route.UpstreamModel)), protocol)
+	identity := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s", z.Provider.ID, z.Provider.Type, z.Provider.BaseURL, z.Provider.ProtocolPolicy, z.Provider.ProtocolPreference, z.Credential, z.Route.UpstreamModel)
+	return fmt.Sprintf("%x:%s", sha256.Sum256([]byte(identity)), protocol)
 }
 
 func (m *wireMemory) unsupported(z resolvedRoute, protocol string) bool {
@@ -178,6 +180,19 @@ func (m *wireMemory) unsupported(z resolvedRoute, protocol string) bool {
 func (m *wireMemory) remember(z resolvedRoute, protocol string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.entries) >= 4096 {
+		for key, until := range m.entries {
+			if time.Now().After(until) {
+				delete(m.entries, key)
+			}
+		}
+		if len(m.entries) >= 4096 {
+			for key := range m.entries {
+				delete(m.entries, key)
+				break
+			}
+		}
+	}
 	m.entries[wireMemoryKey(z, protocol)] = time.Now().Add(wireMemoryTTL)
 }
 
@@ -250,18 +265,25 @@ func protocolUnsupportedSignal(resp *http.Response) bool {
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	resp.Body = &prefixedPassthroughBody{Reader: io.MultiReader(bytes.NewReader(body), resp.Body), Closer: resp.Body}
+	var rejection struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &rejection) == nil && resp.StatusCode == http.StatusBadRequest && rejection.Error.Code == "gateway_provider_protocol_unavailable" {
+		return true
+	}
 	text := strings.ToLower(string(body))
-	if resp.StatusCode == http.StatusNotFound {
-		// A missing model is not a missing endpoint.
-		return !(strings.Contains(text, "model") && containsAny(text, "not found", "does not exist", "not exist", "no such"))
+	// Only endpoint-level evidence is learnable. Parameter/model/auth errors
+	// and generic server failures must never change routing capabilities.
+	if resp.StatusCode >= 500 {
+		return false
 	}
-	if resp.StatusCode == http.StatusInternalServerError {
-		return containsAny(text, "not support", "unsupported", "not implemented", "convert_request_failed", "no route", "不支持")
+	if containsAny(text, "parameter", "field", "argument", "model", "api key", "rate limit") {
+		return false
 	}
-	return containsAny(text,
-		"not support", "unsupported", "not implemented", "unknown endpoint", "invalid url", "no route",
-		"does not support", "convert_request_failed", "unknown field", "unknown parameter", "unrecognized request",
-		"unrecognized request argument", "不支持")
+	return containsAny(text, "unknown endpoint", "unsupported endpoint", "endpoint not supported", "endpoint not found", "invalid url", "cannot post /", "404 page not found", "unsupported protocol", "protocol not supported")
+
 }
 
 func containsAny(text string, needles ...string) bool {
@@ -281,6 +303,9 @@ func bridgeClientToChat(client string, raw []byte, path string) (map[string]any,
 		stream  bool
 		err     error
 	)
+	if err := validateBridgeCapabilities(client, raw); err != nil {
+		return nil, false, nil, err
+	}
 	custom := map[string]bool{}
 	switch client {
 	case wireChat:
@@ -728,7 +753,7 @@ func forEachSSEEvent(r io.Reader, fn func(event string, data map[string]any) (bo
 			return false, nil
 		}
 		if payload == "[DONE]" {
-			return true, nil
+			return fn("[DONE]", nil)
 		}
 		var decoded map[string]any
 		if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -753,8 +778,8 @@ func forEachSSEEvent(r io.Reader, fn func(event string, data map[string]any) (bo
 	if err := scanner.Err(); err != nil {
 		return err
 	}
-	_, err := flush()
-	return err
+	// EOF without a fully framed terminal event is truncation, not success.
+	return io.ErrUnexpectedEOF
 }
 
 func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
@@ -766,6 +791,9 @@ func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
 	nextCall := 0
 	sawText := false
 	return forEachSSEEvent(r, func(event string, data map[string]any) (bool, error) {
+		if event == "[DONE]" {
+			return true, io.ErrUnexpectedEOF
+		}
 		kind := firstNonEmpty(asString(data["type"]), event)
 		switch kind {
 		case "response.output_text.delta":
@@ -823,7 +851,9 @@ func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
 				entry.streamed = true
 				return false, e.chunk(map[string]any{"tool_calls": []any{map[string]any{"index": entry.index, "function": map[string]any{"arguments": delta}}}}, nil, nil)
 			}
-		case "response.completed", "response.incomplete":
+		case "response.incomplete":
+			return true, errors.New("upstream response incomplete")
+		case "response.completed":
 			response := asMap(data["response"])
 			finish := "stop"
 			if len(calls) > 0 {
@@ -841,8 +871,8 @@ func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
 			}
 			return true, nil
 		case "response.failed", "error":
-			message := firstNonEmpty(asString(asMap(asMap(data["response"])["error"])["message"]), asString(asMap(data["error"])["message"]), asString(data["message"]), "upstream response failed")
-			return true, e.errorChunk(message)
+
+			return true, errors.New("upstream response failed")
 		}
 		return false, nil
 	})
@@ -854,6 +884,9 @@ func (e *chatChunkEmitter) fromAnthropicSSE(r io.Reader) error {
 	var input, cacheRead, cacheCreation, output int64
 	var finish any
 	return forEachSSEEvent(r, func(event string, data map[string]any) (bool, error) {
+		if event == "[DONE]" {
+			return true, io.ErrUnexpectedEOF
+		}
 		switch firstNonEmpty(asString(data["type"]), event) {
 		case "message_start":
 			usage := asMap(asMap(data["message"])["usage"])
@@ -906,7 +939,7 @@ func (e *chatChunkEmitter) fromAnthropicSSE(r io.Reader) error {
 			}
 			return true, e.chunk(nil, nil, chatUsage(input+cacheRead+cacheCreation, cacheRead, output, 0))
 		case "error":
-			return true, e.errorChunk(firstNonEmpty(asString(asMap(data["error"])["message"]), "upstream stream failed"))
+			return true, errors.New("upstream stream failed")
 		}
 		return false, nil
 	})
@@ -1083,7 +1116,10 @@ func (s *lazyStream) result(err error) attemptResult {
 // forEachChatChunk decodes a chat SSE stream. An upstream error chunk ends it
 // with an error.
 func forEachChatChunk(r io.Reader, fn func(chunk map[string]any) error) error {
-	return forEachSSEEvent(r, func(_ string, chunk map[string]any) (bool, error) {
+	return forEachSSEEvent(r, func(event string, chunk map[string]any) (bool, error) {
+		if event == "[DONE]" {
+			return true, nil
+		}
 		if upstreamError := asMap(chunk["error"]); upstreamError != nil {
 			return true, fmt.Errorf("upstream stream error: %s", firstNonEmpty(asString(upstreamError["message"]), "unknown error"))
 		}
@@ -1093,9 +1129,11 @@ func forEachChatChunk(r io.Reader, fn func(chunk map[string]any) error) error {
 
 func writeChatStream(w http.ResponseWriter, r io.Reader, rid string) attemptResult {
 	out := &lazyStream{w: w, contentType: "text/event-stream", rid: rid}
-	sawDone := false
-	err := forEachSSEEvent(io.TeeReader(r, io.Discard), func(_ string, chunk map[string]any) (bool, error) {
-		if upstreamError := asMap(chunk["error"]); upstreamError != nil && !out.committed {
+	err := forEachSSEEvent(io.TeeReader(r, io.Discard), func(event string, chunk map[string]any) (bool, error) {
+		if event == "[DONE]" {
+			return true, nil
+		}
+		if upstreamError := asMap(chunk["error"]); upstreamError != nil {
 			return true, fmt.Errorf("upstream stream error: %s", firstNonEmpty(asString(upstreamError["message"]), "unknown error"))
 		}
 		encoded, err := json.Marshal(chunk)
@@ -1107,9 +1145,7 @@ func writeChatStream(w http.ResponseWriter, r io.Reader, rid string) attemptResu
 	})
 	if err == nil && out.committed {
 		_, err = io.WriteString(out, "data: [DONE]\n\n")
-		sawDone = true
 	}
-	_ = sawDone
 	return out.result(err)
 }
 
@@ -1444,7 +1480,7 @@ func (run *inferenceRun) bridgeAttempt(w http.ResponseWriter, r *http.Request, z
 		var path string
 		body, path, err = bridgeUpstreamBody(target, chat, z)
 		if err == nil {
-			result, cancel := a.inferenceSend(r, body, z, path, true, onFirstByte, true)
+			result, cancel := a.inferenceSend(r, body, z, path, stream, onFirstByte, true)
 			if result.Response == nil || result.Status >= 400 {
 				return result, cancel
 			}
@@ -1454,7 +1490,7 @@ func (run *inferenceRun) bridgeAttempt(w http.ResponseWriter, r *http.Request, z
 			defer chatStream.Close()
 			observed := io.TeeReader(chatStream, usage)
 			out := run.writeBridged(w, client, observed, z, stream, custom)
-			_, _ = io.Copy(io.Discard, io.LimitReader(observed, maxPassthroughBody))
+			cancel() // Do not drain an open-ended upstream after conversion settles.
 			out.Usage = usage.finish()
 			if out.Usage.Reported {
 				cost(z, &out.Usage)
@@ -1508,15 +1544,8 @@ func (run *inferenceRun) writeBridged(w http.ResponseWriter, client string, chat
 	case wireResponses:
 		return writeResponsesStream(w, chat, model, run.gatewayID, custom)
 	case wireMessages:
-		start := run.app.cfg.StreamStartTimeout
-		if start <= 0 {
-			start = DefaultStreamStartTimeout
-		}
-		idle := run.app.cfg.StreamIdleTimeout
-		if idle <= 0 {
-			idle = defaultFailoverIdleTimeout
-		}
-		return streamOpenAIAsAnthropic(w, chat, z, run.gatewayID, start, idle)
+		start, idle := run.app.streamTimeouts(z.Provider)
+		return streamOpenAIAsAnthropic(w, chat, z, run.gatewayID, start, idle, true)
 	case wireGemini:
 		return writeGeminiStream(w, chat, model, run.gatewayID, run.geminiSSE)
 	}

@@ -84,10 +84,17 @@ func ledgerUsage(t *testing.T, a *App) (int64, int64, int64, string, int64) {
 	return input, cached, output, costType, cost
 }
 
-const codexRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"include":["reasoning.encrypted_content"],"prompt_cache_key":"abc","reasoning":{"effort":"high","summary":"auto"},"text":{"verbosity":"low"},
+const fidelitySensitiveCodexRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"include":["reasoning.encrypted_content"],"prompt_cache_key":"abc","reasoning":{"effort":"high","summary":"auto"},"text":{"verbosity":"low"},
 "tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},{"type":"custom","name":"apply_patch","description":"patch","format":{"type":"grammar","syntax":"lark","definition":"start: x"}},{"type":"web_search"}],
 "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
 {"type":"reasoning","summary":[],"encrypted_content":"x"},
+{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"},
+{"type":"custom_tool_call","call_id":"c2","name":"apply_patch","input":"*** Begin Patch"},
+{"type":"function_call_output","call_id":"c1","output":"ok"},
+{"type":"custom_tool_call_output","call_id":"c2","output":"done"}]}`
+const codexRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"prompt_cache_key":"abc","reasoning":{"effort":"high","summary":"auto"},
+"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},{"type":"custom","name":"apply_patch","description":"patch"}],
+"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
 {"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"},
 {"type":"custom_tool_call","call_id":"c2","name":"apply_patch","input":"*** Begin Patch"},
 {"type":"function_call_output","call_id":"c1","output":"ok"},
@@ -156,7 +163,7 @@ func TestCodexResponsesBridgesToChatOnlyChannelAndLearns(t *testing.T) {
 
 func TestResponsesNativePassthroughIsByteIdenticalWithUsage(t *testing.T) {
 	stream := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r\"}}\n\n" +
-		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"usage\":{\"input_tokens\":50,\"input_tokens_details\":{\"cached_tokens\":10},\"output_tokens\":7}}}\n\n"
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"status\":\"completed\",\"usage\":{\"input_tokens\":50,\"input_tokens_details\":{\"cached_tokens\":10},\"output_tokens\":7}}}\n\n"
 	var received []byte
 	a, key, done := bridgeFixture(t, "openai_compatible", func(w http.ResponseWriter, r *http.Request) {
 		received, _ = io.ReadAll(r.Body)
@@ -279,6 +286,7 @@ func TestCountTokensAnsweredLocallyWithoutMessagesChannel(t *testing.T) {
 	a, key, done := bridgeFixture(t, "openai", func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusNotFound)
+		io.WriteString(w, `{"error":"unknown endpoint"}`)
 	})
 	defer done()
 	// The first request probes the channel natively once; the refusal is

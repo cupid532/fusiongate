@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.16
+
+- Reuse separate native/compression-aware HTTP pools per egress, retaining SSRF and HTTP/2 support. Retire pools on egress replacement and shutdown, not on each request.
+- Add provider stream_start_timeout_ms and stream_idle_timeout_ms (zero resets to inheritance). First-byte timeout inherits the provider request timeout unless explicitly overridden; active streams use a sliding idle limit, non-streaming requests retain their absolute deadline.
+- Restrict learned protocol fallback to explicit endpoint rejection, invalidate learning on credential/address/policy changes, and count probes and conversions as separate bounded attempts.
+- Reject lossy conversion of hosted tools, grammar constraints, opaque reasoning and compacted context instead of silently removing requested capabilities. Native requests remain untouched.
+- Stop at complete framed stream terminals, cancel conversion immediately, reject premature EOF/error events, and never splice another upstream after output commitment.
+- Add HTTP/1.1 and HTTP/2 pool/compression tests, real 31-second first-byte regression, deadline/capability/truncation/resource-release tests.
+
 ## V3.15
 
 - Preserve settled response outcomes when the client disconnects during request cleanup, instead of overwriting success with `downstream_canceled`.

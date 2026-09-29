@@ -95,8 +95,12 @@ type passthroughTimedBody struct {
 func (b *passthroughTimedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if n > 0 {
-		b.once.Do(b.first)
-		b.timer.Reset(b.idle)
+		if b.first != nil {
+			b.once.Do(b.first)
+		}
+		if b.idle > 0 {
+			b.timer.Reset(b.idle)
+		}
 	}
 	if err != nil {
 		b.timer.Stop()
@@ -272,6 +276,17 @@ func passthroughResponseUsage(w http.ResponseWriter, resp *http.Response, format
 			}
 			if f, ok := w.(http.Flusher); ok {
 				f.Flush()
+			}
+		}
+		if tap != nil && tap.observer != nil {
+			if tap.observer.failed {
+				return errors.New("upstream stream failed"), "upstream_stream_error", usage()
+			}
+			if tap.observer.completed && err == nil {
+				break
+			}
+			if err == io.EOF && !tap.observer.completed && (format == "openai" || format == "anthropic") {
+				return io.ErrUnexpectedEOF, "upstream_incomplete_stream", usage()
 			}
 		}
 		if err != nil {

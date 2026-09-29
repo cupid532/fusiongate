@@ -74,3 +74,64 @@ func upstreamRedirectPolicy(cfg Config) func(*http.Request, []*http.Request) err
 func newUpstreamHTTPClient(cfg Config) *http.Client {
 	return &http.Client{Transport: newUpstreamHTTPTransport(cfg), CheckRedirect: upstreamRedirectPolicy(cfg)}
 }
+
+// Each egress owns two pools: raw transfer preserves compression bytes, while
+// conversion uses the original transport's automatic decompression.
+func (a *App) nativeTransport(base *http.Transport) *http.Transport {
+	a.transportMu.Lock()
+	defer a.transportMu.Unlock()
+	if a.nativeTransports == nil {
+		a.nativeTransports = make(map[*http.Transport]*http.Transport)
+	}
+	if t := a.nativeTransports[base]; t != nil {
+		return t
+	}
+	t := base.Clone()
+	t.DisableCompression = true
+	a.nativeTransports[base] = t
+	return t
+}
+func (a *App) retireTransport(base *http.Transport) {
+	a.transportMu.Lock()
+	defer a.transportMu.Unlock()
+	base.CloseIdleConnections()
+	if t := a.nativeTransports[base]; t != nil {
+		t.CloseIdleConnections()
+		delete(a.nativeTransports, base)
+	}
+}
+func (a *App) closeInferenceTransports() {
+	a.transportMu.Lock()
+	defer a.transportMu.Unlock()
+	for base, t := range a.nativeTransports {
+		base.CloseIdleConnections()
+		t.CloseIdleConnections()
+	}
+	a.nativeTransports = nil
+	if a.client != nil {
+		a.client.CloseIdleConnections()
+	}
+	if a.pricingClient != nil {
+		a.pricingClient.CloseIdleConnections()
+	}
+}
+func (a *App) streamTimeouts(p Provider) (start, idle time.Duration) {
+	start = time.Duration(p.RequestTimeoutMS) * time.Millisecond
+	if start <= 0 {
+		start = DefaultStreamStartTimeout
+	}
+	if a.cfg.StreamStartTimeout > 0 {
+		start = a.cfg.StreamStartTimeout
+	}
+	if p.StreamStartTimeoutMS > 0 {
+		start = time.Duration(p.StreamStartTimeoutMS) * time.Millisecond
+	}
+	idle = 5 * time.Minute
+	if a.cfg.StreamIdleTimeout > 0 {
+		idle = a.cfg.StreamIdleTimeout
+	}
+	if p.StreamIdleTimeoutMS > 0 {
+		idle = time.Duration(p.StreamIdleTimeoutMS) * time.Millisecond
+	}
+	return
+}

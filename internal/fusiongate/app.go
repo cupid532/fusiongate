@@ -38,7 +38,7 @@ type Config struct {
 }
 
 const (
-	DefaultStreamStartTimeout = 30 * time.Second
+	DefaultStreamStartTimeout = 120 * time.Second
 	DefaultFailureThreshold   = 5
 )
 
@@ -47,6 +47,8 @@ type App struct {
 	readDB                *sql.DB
 	cfg                   Config
 	aead                  cipher.AEAD
+	transportMu           sync.Mutex
+	nativeTransports      map[*http.Transport]*http.Transport
 	client                *http.Client
 	pricingClient         *http.Client
 	log                   *slog.Logger
@@ -128,6 +130,8 @@ type Provider struct {
 	HealthCheckEnabled      bool    `json:"health_check_enabled"`
 	MaxConcurrency          int     `json:"max_concurrency"`
 	RequestTimeoutMS        int     `json:"request_timeout_ms"`
+	StreamStartTimeoutMS    int     `json:"stream_start_timeout_ms"`
+	StreamIdleTimeoutMS     int     `json:"stream_idle_timeout_ms"`
 	FailureThreshold        int     `json:"failure_threshold"`
 	CooldownSeconds         int     `json:"cooldown_seconds"`
 	ConsecutiveFailures     int     `json:"consecutive_failures"`
@@ -274,9 +278,6 @@ func New(cfg Config) (*App, error) {
 	// value acts as an optional fuse cap.
 	if cfg.MaxConcurrentRequests <= 0 {
 		cfg.MaxConcurrentRequests = 64
-	}
-	if cfg.StreamStartTimeout <= 0 {
-		cfg.StreamStartTimeout = DefaultStreamStartTimeout
 	}
 	if cfg.StreamIdleTimeout <= 0 {
 		cfg.StreamIdleTimeout = 5 * time.Minute
@@ -506,6 +507,7 @@ func (a *App) Close() error {
 	if a.ipPool != nil {
 		a.ipPool.Close()
 	}
+	a.closeInferenceTransports()
 	return a.closeDatabases()
 }
 
@@ -730,6 +732,8 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "max_concurrency", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "health_check_enabled", "INTEGER NOT NULL DEFAULT 1"},
 		{"providers", "request_timeout_ms", "INTEGER NOT NULL DEFAULT 120000"},
+		{"providers", "stream_start_timeout_ms", "INTEGER NOT NULL DEFAULT 0"},
+		{"providers", "stream_idle_timeout_ms", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "failure_threshold", "INTEGER NOT NULL DEFAULT 5"},
 		{"providers", "cooldown_seconds", "INTEGER NOT NULL DEFAULT 30"},
 		{"providers", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"},

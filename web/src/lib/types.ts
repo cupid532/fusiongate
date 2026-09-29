@@ -59,6 +59,8 @@ export interface Provider {
   client_policy: string
   health_check_enabled: boolean
   max_concurrency: number
+  stream_start_timeout_ms?: number
+  stream_idle_timeout_ms?: number
   request_timeout_ms: number
   failure_threshold: number
   cooldown_seconds: number

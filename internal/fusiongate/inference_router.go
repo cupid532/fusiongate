@@ -302,7 +302,21 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			if attempt > 1 && !run.pause(r, attempt, channelDeadline) {
 				break
 			}
-			z, availability, ok := a.acquireInferenceRoute(keys, isolated, attempt)
+			compatible := make([]resolvedRoute, 0, len(keys))
+			for _, candidate := range keys {
+				if client, _, bridge := parseBridgeAdapter(inferenceAdapterID(candidate, run.path)); bridge {
+					if err := validateBridgeCapabilities(client, run.raw); err != nil {
+						run.lastErr = "capability_not_supported"
+						run.noteSkip("capability_not_supported")
+						continue
+					}
+				}
+				compatible = append(compatible, candidate)
+			}
+			if len(compatible) == 0 {
+				break
+			}
+			z, availability, ok := a.acquireInferenceRoute(compatible, isolated, attempt)
 			if !ok {
 				run.noteSkip(availability.Reason)
 				break
@@ -540,7 +554,13 @@ const maxInferenceRetryAfter = 30 * time.Second
 func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resolvedRoute, adapter string, onFirstByte func()) (attemptResult, context.CancelFunc) {
 	a := run.app
 	if client, target, ok := parseBridgeAdapter(adapter); ok {
-		return run.bridgeAttempt(w, r, z, client, target, onFirstByte)
+		result, cancel := run.bridgeAttempt(w, r, z, client, target, onFirstByte)
+		if result.Response != nil && result.Status >= 400 && protocolUnsupportedSignal(result.Response) {
+			protocolMemory.remember(z, target)
+			result.Retryable = true
+			result.Reason = "protocol_fallback"
+		}
+		return result, cancel
 	}
 	if run.path == "/v1/messages/count_tokens" && (!containsString(routeWireProtocols(z), wireMessages) || protocolMemory.unsupported(z, wireMessages)) {
 		return run.localCountTokens(w), func() {}
@@ -556,28 +576,22 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 	if !protocolUnsupportedSignal(result.Response) {
 		return result, cancel
 	}
-	// The channel answered that it does not serve this protocol at all. Serve the
-	// same request through the channel's other protocol, once, on the same
-	// channel: that is a property of the channel, not a failure of it.
 	if run.path == "/v1/messages/count_tokens" {
 		result.Response.Body.Close()
 		cancel()
 		protocolMemory.remember(z, wireMessages)
 		return run.localCountTokens(w), func() {}
 	}
+	// A probe is a real attempt. Learn only explicit endpoint rejection and
+	// let the normal bounded loop make (and log) any subsequent bridge call.
 	fallback := fallbackInferenceAdapter(z, run.path)
-	if _, _, ok := parseBridgeAdapter(fallback); !ok || r.Context().Err() != nil {
-		return result, cancel
-	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(result.Response.Body, maxPassthroughError))
-	result.Response.Body.Close()
-	cancel()
-	run.noteAdapter(z, fallback)
-	bridged, bridgeCancel := run.attempt(w, r, z, fallback, onFirstByte)
-	if bridged.Err == nil && bridged.Status > 0 && bridged.Status < 400 {
+	if _, _, ok := parseBridgeAdapter(fallback); ok {
 		protocolMemory.remember(z, client)
+		result.Retryable = true
+		result.Reason = "protocol_fallback"
 	}
-	return bridged, bridgeCancel
+	return result, cancel
+
 }
 
 // nativeBody is the client's own body. Only when the route maps the public name
@@ -659,17 +673,12 @@ func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute,
 		start = 120 * time.Second
 	}
 	if stream {
-		start = a.cfg.StreamStartTimeout
-		if start <= 0 {
-			start = defaultFailoverStartTimeout
-		}
+		start, _ = a.streamTimeouts(z.Provider)
 	}
 	timer := time.AfterFunc(start, cancelContext)
-	cleanup := func() {}
 	cancel := func() {
 		timer.Stop()
 		cancelContext()
-		cleanup()
 	}
 	failed := func(err error, reason string) (attemptResult, context.CancelFunc) {
 		status := http.StatusBadGateway
@@ -733,24 +742,16 @@ func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute,
 	clone.Timeout = 0
 	clone.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if transport, ok := client.Transport.(*http.Transport); ok && !bridged {
-		transport = transport.Clone()
-		// The body is forwarded byte for byte, including its own compression
-		// headers, so the transport must not negotiate on the client's behalf.
-		transport.DisableCompression = true
-		clone.Transport = transport
-		cleanup = transport.CloseIdleConnections
+		clone.Transport = a.nativeTransport(transport)
 	}
 	resp, err := clone.Do(req)
 	if err != nil {
 		return failed(err, "upstream_transport_error")
 	}
-	idle := a.cfg.StreamIdleTimeout
-	if idle <= 0 {
-		idle = defaultFailoverIdleTimeout
-	}
+	_, idle := a.streamTimeouts(z.Provider)
 	if !stream {
-		idle = start
-	}
+		idle = 0
+	} // Non-streaming requests retain the absolute deadline.
 	resp.Body = &passthroughTimedBody{ReadCloser: resp.Body, timer: timer, idle: idle, first: onFirstByte, cancel: cancelContext}
 	return attemptResult{
 		Status:     resp.StatusCode,
@@ -823,7 +824,7 @@ func (run *inferenceRun) recordAttempt(id string, z resolvedRoute, adapter strin
 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(request_id) DO UPDATE SET adapter_id=excluded.adapter_id,execution_mode=excluded.execution_mode,upstream_path=excluded.upstream_path`,
 		id, run.gatewayID, run.taskHash, run.taskSource, run.taskScope, z.Provider.ID, z.ProviderKeyID,
-		total, channelIndex, adapter, mode, run.protocol, inferenceAttemptPath(z, run.path, adapter),
+		total, channelIndex, adapter, mode, passthroughProtocol(inferenceAttemptPath(z, run.path, adapter)), inferenceAttemptPath(z, run.path, adapter),
 		string(order), "", "", now())
 }
 
@@ -892,6 +893,10 @@ func (run *inferenceRun) finish(w http.ResponseWriter, r *http.Request, stop str
 		// Downstream already owns the response. Layering an upstream status line
 		// or a synthesised gateway error on top of bytes the client has already
 		// received would corrupt the answer, so only the ledger record changes.
+		return
+	}
+	if run.lastErr == "capability_not_supported" {
+		failRequest(w, r, http.StatusBadRequest, "capability_not_supported", "no compatible channel can preserve the requested features; use a native protocol channel")
 		return
 	}
 	if run.last != nil {

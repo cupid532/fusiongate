@@ -71,7 +71,7 @@ func (m *ipPoolManager) Close() {
 	m.stopLocked()
 	for _, client := range m.clients {
 		if transport, ok := client.Transport.(*http.Transport); ok {
-			transport.CloseIdleConnections()
+			m.app.retireTransport(transport)
 		}
 	}
 	m.clients = map[int64]*http.Client{}
@@ -103,7 +103,7 @@ func (m *ipPoolManager) reconcileLocked(ctx context.Context) error {
 		m.stopLocked()
 		for _, client := range m.clients {
 			if transport, ok := client.Transport.(*http.Transport); ok {
-				transport.CloseIdleConnections()
+				m.app.retireTransport(transport)
 			}
 		}
 		m.clients = map[int64]*http.Client{}
@@ -146,7 +146,7 @@ func (m *ipPoolManager) reconcileLocked(ctx context.Context) error {
 	m.stopLocked()
 	for _, client := range m.clients {
 		if transport, ok := client.Transport.(*http.Transport); ok {
-			transport.CloseIdleConnections()
+			m.app.retireTransport(transport)
 		}
 	}
 	m.clients = map[int64]*http.Client{}
