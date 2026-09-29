@@ -1,5 +1,15 @@
 # Changelog
 
+## V3.17
+
+- Remove SQLite writes from the global route mutex. Persist in-memory health snapshots asynchronously with monotonic revisions so stale queued outcomes cannot overwrite newer completions.
+- Reserve bounded final-accounting capacity before upstream dispatch. Record first-byte time in memory, expose it in live admin requests, and commit final health, diagnostics, usage, cost-cycle and key debit together in an ordered transaction. Retain failed writes and apply admission backpressure rather than dropping accounting.
+- Add optional per-attempt connection wait/reuse, upstream header wait, first byte, first semantic output, cumulative downstream write, retry wait, conversion preparation and termination diagnostics. No credentials, request text or generated content are stored in diagnostics.
+- Fix request-ledger capacity aggregation across all rows; protect active long streams from the abandoned-row sweep and wait for recovery/health background workers on shutdown.
+- Recognize bounded gzip error payloads without altering passthrough bytes. Return an explicit upstream protocol-policy 403 without evading policy or disabling unrelated interfaces on the same channel.
+- Strengthen conversion capability checks in both directions; reject unrepresentable request controls and preserve strict function schemas and supported cache keys.
+- Add slow-writer/queue-saturation, 1/8/32 concurrency, phase-timing, compressed-policy isolation and health-ordering regressions.
+
 ## V3.16
 
 - Reuse separate native/compression-aware HTTP pools per egress, retaining SSRF and HTTP/2 support. Retire pools on egress replacement and shutdown, not on each request.

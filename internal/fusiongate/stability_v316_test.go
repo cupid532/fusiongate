@@ -189,7 +189,11 @@ func TestBridgeTerminalReleasesOpenUpstream(t *testing.T) {
 			finished := make(chan struct{})
 			go func() {
 				defer close(finished)
-				bridgeRequest(t, a, key, path, `{"model":"public-model","stream":true,"messages":[{"role":"user","content":"hello"}],"input":"hello"}`)
+				payload := `{"model":"public-model","stream":true,"messages":[{"role":"user","content":"hello"}]}`
+				if path == "/v1/responses" {
+					payload = `{"model":"public-model","stream":true,"input":"hello"}`
+				}
+				bridgeRequest(t, a, key, path, payload)
 			}()
 			select {
 			case <-finished:

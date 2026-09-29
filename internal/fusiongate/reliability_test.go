@@ -638,6 +638,7 @@ func TestProviderKeyTransportFailureIsIsolatedAndCooldownPersists(t *testing.T) 
 		t.Fatalf("key failure polluted provider state: failures=%d open=%v", providerFailures, providerOpen)
 	}
 	var cooldown string
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT COALESCE(cooldown_until,'') FROM provider_api_keys WHERE id=?`, failedID).Scan(&cooldown); err != nil || parseTime(cooldown) == nil {
 		t.Fatalf("persisted cooldown=%q err=%v", cooldown, err)
 	}
@@ -682,6 +683,7 @@ func TestRepeatedRateLimitsDoNotAutoDisableProvider(t *testing.T) {
 	var enabled, failures int
 	var status, lastError string
 	var circuitOpenUntil any
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError, &circuitOpenUntil); err != nil {
 		t.Fatal(err)
 	}
@@ -698,6 +700,7 @@ func TestRepeatedRateLimitsDoNotAutoDisableProvider(t *testing.T) {
 
 	a.completeRoute(z, attemptResult{Status: http.StatusOK, Handled: true}, time.Millisecond)
 	var recoveredCircuit any
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError, &recoveredCircuit); err != nil {
 		t.Fatal(err)
 	}
@@ -897,6 +900,7 @@ func TestProviderFailuresOpenCircuitWithoutChangingManualToggle(t *testing.T) {
 
 	var enabled, failures int
 	var status, lastError string
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError); err != nil {
 		t.Fatal(err)
 	}
@@ -907,6 +911,7 @@ func TestProviderFailuresOpenCircuitWithoutChangingManualToggle(t *testing.T) {
 		t.Fatal("circuit-open provider remained selectable")
 	}
 	a.completeRoute(z, attemptResult{Status: http.StatusOK, Handled: true}, time.Millisecond)
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT enabled,consecutive_failures,status,last_error FROM providers WHERE id=?`, providerID).Scan(&enabled, &failures, &status, &lastError); err != nil {
 		t.Fatal(err)
 	}

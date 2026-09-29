@@ -92,7 +92,7 @@ const fidelitySensitiveCodexRequest = `{"model":"public-model","instructions":"b
 {"type":"custom_tool_call","call_id":"c2","name":"apply_patch","input":"*** Begin Patch"},
 {"type":"function_call_output","call_id":"c1","output":"ok"},
 {"type":"custom_tool_call_output","call_id":"c2","output":"done"}]}`
-const codexRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"prompt_cache_key":"abc","reasoning":{"effort":"high","summary":"auto"},
+const codexRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"prompt_cache_key":"abc","reasoning":{"effort":"high"},
 "tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},{"type":"custom","name":"apply_patch","description":"patch"}],
 "input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
 {"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"},
@@ -132,7 +132,7 @@ func TestCodexResponsesBridgesToChatOnlyChannelAndLearns(t *testing.T) {
 	if body["model"] != "upstream-model" || body["stream"] != true {
 		t.Fatalf("bridged body model/stream wrong: %v", body)
 	}
-	for _, field := range []string{"store", "include", "prompt_cache_key", "text", "reasoning", "input", "instructions"} {
+	for _, field := range []string{"store", "include", "text", "reasoning", "input", "instructions"} {
 		if _, ok := body[field]; ok {
 			t.Fatalf("responses-only field %q leaked into chat body: %v", field, body)
 		}

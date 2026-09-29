@@ -31,7 +31,7 @@ var cycleCategories = []string{"openai", "claude", "grok", "gemini", "other"}
 // with the same FIFO ordering and never sit on the response hot path. The
 // category buckets keep the raw upstream cost so the console can apply the
 // channel's current multipliers at display time.
-func (a *App) queueCostCycleWrite(providerID int64, providerType, upstreamModel string, usage Usage) {
+func costCycleWrite(providerID int64, providerType, upstreamModel string, usage Usage) ledgerWrite {
 	priced := 0
 	category := "other"
 	if usage.CostType != "unknown" {
@@ -53,13 +53,13 @@ func (a *App) queueCostCycleWrite(providerID int64, providerType, upstreamModel 
 			other = usage.CostMicros
 		}
 	}
-	a.queueLedgerWrite(`INSERT INTO provider_cost_cycles(provider_id,started_at,reset_reason,requests,priced_requests,cost_micros,openai_micros,claude_micros,grok_micros,gemini_micros,other_micros)
+	return ledgerWrite{query: `INSERT INTO provider_cost_cycles(provider_id,started_at,reset_reason,requests,priced_requests,cost_micros,openai_micros,claude_micros,grok_micros,gemini_micros,other_micros)
 VALUES(?,?,?,1,?,?,?,?,?,?,?)
 ON CONFLICT(provider_id) DO UPDATE SET
 requests=requests+1,priced_requests=priced_requests+excluded.priced_requests,cost_micros=cost_micros+excluded.cost_micros,
 openai_micros=openai_micros+excluded.openai_micros,claude_micros=claude_micros+excluded.claude_micros,
-grok_micros=grok_micros+excluded.grok_micros,gemini_micros=gemini_micros+excluded.gemini_micros,other_micros=other_micros+excluded.other_micros`,
-		providerID, now(), "tracking_started", priced, usage.CostMicros, openai, claude, grok, gemini, other)
+grok_micros=grok_micros+excluded.grok_micros,gemini_micros=gemini_micros+excluded.gemini_micros,other_micros=other_micros+excluded.other_micros`, args: []any{
+		providerID, now(), "tracking_started", priced, usage.CostMicros, openai, claude, grok, gemini, other}}
 }
 
 // resetCostCycle starts a fresh accumulation period for one provider. When

@@ -60,6 +60,10 @@ type App struct {
 	providerKeyRoundRobin map[string]int
 	roundRobinCursor      map[string]int
 	smoothWeights         map[string]map[int64]float64
+	healthSequence        atomic.Int64
+	ledgerGeneralSlots    chan struct{}
+	ledgerAttemptSlots    chan struct{}
+	ledgerFirstBytes      sync.Map
 	ledgerMu              sync.RWMutex
 	ledgerWrites          chan ledgerWrite
 	ledgerWriterDone      chan struct{}
@@ -343,6 +347,10 @@ func New(cfg Config) (*App, error) {
 	readDB.SetMaxOpenConns(readPoolSize())
 	readDB.SetMaxIdleConns(readPoolSize())
 	a.readDB = readDB
+	if err := ensureColumn(context.Background(), a.db, "provider_api_keys", "health_revision", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		db.Close()
+		return nil, err
+	}
 	a.startLedgerWriter()
 	// Any open ledger row predating this process is abandoned work:
 	// close it once so the console stops reporting ghost in-flight attempts.
@@ -393,9 +401,11 @@ func deriveKeyMaterial(master []byte) []byte {
 
 // ledgerWrite is one queued request-ledger statement.
 type ledgerWrite struct {
-	query string
-	args  []any
-	done  chan struct{}
+	query   string
+	args    []any
+	done    chan struct{}
+	batch   []ledgerWrite
+	release chan struct{}
 }
 
 // ledgerWriteQueueSize bounds how many ledger statements may wait to be applied.
@@ -413,7 +423,10 @@ func readPoolSize() int {
 }
 
 func (a *App) startLedgerWriter() {
-	a.ledgerWrites = make(chan ledgerWrite, ledgerWriteQueueSize)
+	a.ledgerWrites = make(chan ledgerWrite, ledgerWriteQueueSize+ledgerAttemptCapacity)
+	a.ledgerGeneralSlots = make(chan struct{}, ledgerWriteQueueSize)
+	a.ledgerAttemptSlots = make(chan struct{}, ledgerAttemptCapacity)
+	a.healthSequence.Store(time.Now().UnixNano())
 	a.ledgerWriterDone = make(chan struct{})
 	go a.runLedgerWriter()
 }
@@ -423,11 +436,19 @@ func (a *App) startLedgerWriter() {
 func (a *App) runLedgerWriter() {
 	defer close(a.ledgerWriterDone)
 	for write := range a.ledgerWrites {
-		if write.query != "" {
-			if _, err := a.db.Exec(write.query, write.args...); err != nil {
-				a.metrics.ledgerWriteErrors.Add(1)
-				a.log.Error("request ledger write", "error", err)
+		for {
+			err := a.applyLedgerWrite(write)
+			if err == nil {
+				break
 			}
+			// Retain failed accounting work and backpressure later admission.
+			// Never discard a debit or final status on transient SQLite failure.
+			a.metrics.ledgerWriteErrors.Add(1)
+			a.log.Error("ledger persistence delayed; retaining batch", "error", err)
+			time.Sleep(100 * time.Millisecond)
+		}
+		if write.release != nil {
+			<-write.release
 		}
 		if write.done != nil {
 			close(write.done)
@@ -450,12 +471,13 @@ func (a *App) queueLedgerWrite(query string, args ...any) {
 		return
 	}
 	defer a.ledgerMu.RUnlock()
+	a.ledgerGeneralSlots <- struct{}{}
 	a.metrics.ledgerQueued.Add(1)
 	select {
-	case a.ledgerWrites <- ledgerWrite{query: query, args: args}:
+	case a.ledgerWrites <- ledgerWrite{query: query, args: args, release: a.ledgerGeneralSlots}:
 	default:
 		a.metrics.ledgerQueueWaits.Add(1)
-		a.ledgerWrites <- ledgerWrite{query: query, args: args}
+		a.ledgerWrites <- ledgerWrite{query: query, args: args, release: a.ledgerGeneralSlots}
 	}
 }
 
@@ -469,7 +491,8 @@ func (a *App) flushLedgerWrites() {
 		return
 	}
 	done := make(chan struct{})
-	queue <- ledgerWrite{done: done}
+	a.ledgerGeneralSlots <- struct{}{}
+	queue <- ledgerWrite{done: done, release: a.ledgerGeneralSlots}
 	a.ledgerMu.RUnlock()
 	<-done
 }
@@ -731,6 +754,8 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "client_policy", "TEXT NOT NULL DEFAULT 'any'"},
 		{"providers", "max_concurrency", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "health_check_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"providers", "health_revision", "INTEGER NOT NULL DEFAULT 0"},
+		{"request_ledger", "diagnostics_json", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "request_timeout_ms", "INTEGER NOT NULL DEFAULT 120000"},
 		{"providers", "stream_start_timeout_ms", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "stream_idle_timeout_ms", "INTEGER NOT NULL DEFAULT 0"},

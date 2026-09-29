@@ -2,6 +2,7 @@ package fusiongate
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -41,10 +42,14 @@ func (a *App) reconcileStartupLedgerRows() {
 // younger than that are left alone even if their final UPDATE was delayed.
 func (a *App) reconcileOpenLedgerRows(ctx context.Context) error {
 	cutoff := time.Now().UTC().Add(-ledgerReconcileHardAge).Format(time.RFC3339Nano)
-	_, err := a.db.ExecContext(ctx,
-		"UPDATE request_ledger SET completed_at=?, success=0, status_code=0, error_type='ledger_stale_closed' WHERE completed_at IS NULL AND created_at < ?",
-		now(), cutoff,
-	)
+	query := "UPDATE request_ledger SET completed_at=?, success=0, status_code=0, error_type='ledger_stale_closed' WHERE completed_at IS NULL AND created_at < ?"
+	args := []any{now(), cutoff}
+	active := []string{}
+	a.ledgerFirstBytes.Range(func(key, value any) bool { active = append(active, "?"); args = append(args, key); return true })
+	if len(active) > 0 {
+		query += " AND request_id NOT IN (" + strings.Join(active, ",") + ")"
+	}
+	_, err := a.db.ExecContext(ctx, query, args...)
 	return err
 }
 

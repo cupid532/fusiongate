@@ -108,6 +108,7 @@ type recoveryScheduler struct {
 	started  bool
 	cancel   context.CancelFunc
 	done     chan struct{}
+	workers  sync.WaitGroup
 }
 
 func newRecoveryScheduler(a *App) *recoveryScheduler {
@@ -166,6 +167,8 @@ func (s *recoveryScheduler) stop() {
 	s.mu.Unlock()
 	if started && cancel != nil {
 		cancel()
+		<-s.done
+		s.workers.Wait()
 	}
 }
 
@@ -208,7 +211,9 @@ func (s *recoveryScheduler) tick(ctx context.Context) {
 			s.releaseProbe(fault.Scope)
 			return
 		}
+		s.workers.Add(1)
 		go func(f recoveryFault) {
+			defer s.workers.Done()
 			defer func() { <-s.slots; s.releaseProbe(f.Scope) }()
 			s.probe(ctx, f)
 		}(fault)
@@ -410,6 +415,10 @@ ON CONFLICT(scope) DO UPDATE SET
 // does not reset the ladder and get hammered.
 func (a *App) noteRecoverySuccess(ctx context.Context, scope string) {
 	if scope == "" {
+		return
+	}
+	var exists bool
+	if a.reader().QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM recovery_faults WHERE scope=? AND status<>?)`, scope, recoveryStatusHealthy).Scan(&exists) != nil || !exists {
 		return
 	}
 	stamp := now()

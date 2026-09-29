@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -2225,7 +2227,7 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	}
 
 	args = append(args, limit)
-	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.routing_strategy,l.candidate_count,l.stop_reason,l.candidate_exclusions,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(l.api_key_id,0),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms,COALESCE(ia.execution_mode,''),COALESCE(ia.adapter_id,''),COALESCE(ia.upstream_path,'') FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id LEFT JOIN inference_attempts ia ON ia.request_id=l.request_id WHERE ` + whereClause + ` ORDER BY l.id DESC LIMIT ?`
+	query := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.routing_strategy,l.candidate_count,l.stop_reason,l.candidate_exclusions,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(l.api_key_id,0),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.provider_key_id,l.provider_key_name,l.provider_key_hint,l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms,COALESCE(ia.execution_mode,''),COALESCE(ia.adapter_id,''),COALESCE(ia.upstream_path,''),COALESCE(ia.upstream_protocol,''),l.diagnostics_json FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id LEFT JOIN inference_attempts ia ON ia.request_id=l.request_id WHERE ` + whereClause + ` ORDER BY l.id DESC LIMIT ?`
 	rows, err := a.reader().Query(query, args...)
 	if err != nil {
 		fail(w, 500, "database_error", err.Error())
@@ -2244,10 +2246,22 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
 		var requestTimeoutMS int64
-		var executionMode, adapterID, upstreamPath string
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &routingStrategy, &candidateCount, &stopReason, &candidateExclusions, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyID, &apiKeyName, &apiKeyPrefix, &providerKeyID, &providerKeyName, &providerKeyHint, &clientIP, &reasoningEffort, &requestTimeoutMS, &executionMode, &adapterID, &upstreamPath); err != nil {
+		var executionMode, adapterID, upstreamPath, upstreamProtocol, diagnosticsJSON string
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &routingStrategy, &candidateCount, &stopReason, &candidateExclusions, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyID, &apiKeyName, &apiKeyPrefix, &providerKeyID, &providerKeyName, &providerKeyHint, &clientIP, &reasoningEffort, &requestTimeoutMS, &executionMode, &adapterID, &upstreamPath, &upstreamProtocol, &diagnosticsJSON); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
+		}
+		var diagnostics any
+		if diagnosticsJSON != "" {
+			_ = json.Unmarshal([]byte(diagnosticsJSON), &diagnostics)
+		}
+		if !firstByte.Valid {
+			if pending, ok := a.ledgerFirstBytes.Load(rid); ok {
+				v := pending.(*atomic.Int64).Load()
+				if v >= 0 {
+					firstByte = sql.NullInt64{Int64: v, Valid: true}
+				}
+			}
 		}
 		var firstByteMS any
 		if firstByte.Valid {
@@ -2255,12 +2269,13 @@ func (a *App) requests(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		}
 		rowStale := false
 		if completed == "" {
-			rowStale = ledgerRowStale(created, requestTimeoutMS, serverNow)
+			_, active := a.ledgerFirstBytes.Load(rid)
+			rowStale = !active && ledgerRowStale(created, requestTimeoutMS, serverNow)
 		}
 		if routingStrategy != "" {
 			candidateCountValue = candidateCount
 		}
-		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "routing_strategy": routingStrategy, "candidate_count": candidateCountValue, "stop_reason": stopReason, "candidate_exclusions": candidateExclusions, "provider_name": providerName, "api_key_id": apiKeyID, "api_key_name": apiKeyName, "api_key_prefix": apiKeyPrefix, "provider_key_id": providerKeyID, "provider_key_name": providerKeyName, "provider_key_hint": providerKeyHint, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported), "reasoning_effort": reasoningEffort, "stale": rowStale, "execution_mode": executionMode, "adapter_id": adapterID, "upstream_path": upstreamPath})
+		out = append(out, map[string]any{"id": id, "request_id": rid, "gateway_request_id": gatewayID, "attempt": attempt, "retry_reason": retryReason, "routing_strategy": routingStrategy, "candidate_count": candidateCountValue, "stop_reason": stopReason, "candidate_exclusions": candidateExclusions, "provider_name": providerName, "api_key_id": apiKeyID, "api_key_name": apiKeyName, "api_key_prefix": apiKeyPrefix, "provider_key_id": providerKeyID, "provider_key_name": providerKeyName, "provider_key_hint": providerKeyHint, "client_ip": clientIP, "created_at": created, "completed_at": completed, "running": completed == "", "first_byte_ms": firstByteMS, "model": pm, "upstream_model": um, "protocol": proto, "stream": strBool(stream), "success": strBool(success), "status_code": status, "error_type": et, "latency_ms": latency, "input_tokens": input, "output_tokens": output, "cached_tokens": cached, "reasoning_tokens": reasoning, "total_tokens": input + output, "cost_micros": cost, "cost_type": ct, "usage_reported": strBool(usageReported), "reasoning_effort": reasoningEffort, "stale": rowStale, "execution_mode": executionMode, "adapter_id": adapterID, "upstream_path": upstreamPath, "upstream_protocol": upstreamProtocol, "diagnostics": diagnostics})
 	}
 	if err := rows.Err(); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())

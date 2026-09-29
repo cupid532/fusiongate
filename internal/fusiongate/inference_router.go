@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -188,6 +190,7 @@ type inferenceRun struct {
 	last       *http.Response
 	lastErr    string
 	lastCode   int
+	retryWait  time.Duration
 }
 
 // noteSkip keeps the most informative reason a channel was passed over.
@@ -304,8 +307,8 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			}
 			compatible := make([]resolvedRoute, 0, len(keys))
 			for _, candidate := range keys {
-				if client, _, bridge := parseBridgeAdapter(inferenceAdapterID(candidate, run.path)); bridge {
-					if err := validateBridgeCapabilities(client, run.raw); err != nil {
+				if client, target, bridge := parseBridgeAdapter(inferenceAdapterID(candidate, run.path)); bridge {
+					if err := validateBridgeRoute(client, target, run.raw, run.path, candidate); err != nil {
 						run.lastErr = "capability_not_supported"
 						run.noteSkip("capability_not_supported")
 						continue
@@ -327,13 +330,24 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 				a.metrics.failovers.Add(1)
 			}
 			started := time.Now()
-			id := a.startLedger(run.key, z, run.protocol, run.stream, run.clientIP, run.gatewayID, run.reasoning, run.attempts, run.lastErr)
+			id := a.startLedger(run.key, z, run.protocol, run.stream, run.clientIP, run.gatewayID, run.reasoning, run.attempts, run.lastErr, r.Context())
+			if id == "" {
+				a.completeRoute(z, attemptResult{Reason: "downstream_canceled", Err: r.Context().Err()}, 0)
+				run.stop(r, "downstream_canceled")
+				return
+			}
 			run.lastID = id
 			adapter := inferenceAdapterID(z, run.path)
 			run.recordAttempt(id, z, adapter, run.attempts, index, attempt)
 
+			diagnostics := &attemptDiagnostics{start: started, RetryWaitMS: run.retryWait.Milliseconds()}
+			run.retryWait = 0
+			attemptRequest := r.WithContext(context.WithValue(r.Context(), diagnosticsKey{}, diagnostics))
+			output := &diagnosticWriter{ResponseWriter: w, diagnostics: diagnostics, stream: run.stream}
+			output.observer.onOutput = diagnostics.firstOutput
 			var firstByte time.Duration
-			result, cancel := run.attempt(w, r, z, adapter, func() {
+			result, cancel := run.attempt(output, attemptRequest, z, adapter, func() {
+				diagnostics.firstByte()
 				if firstByte == 0 {
 					firstByte = time.Since(started)
 				}
@@ -360,7 +374,7 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 						// The error body exceeded the bounded buffer: forward the
 						// original bytes rather than truncating the upstream answer.
 						run.committed = true
-						result.Err, result.Reason = passthroughResponse(w, result.Response)
+						result.Err, result.Reason = passthroughResponse(output, result.Response)
 						run.last = nil
 						stop = "error_body_limit"
 						if result.Err != nil {
@@ -375,7 +389,11 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 					// A deliberate upstream answer for this request. It is
 					// forwarded verbatim, which ends the request.
 					run.committed = true
-					result.Err, result.Reason, result.Usage = passthroughResponseUsage(w, result.Response, passthroughUsageFormat(inferenceUpstreamPath(z, run.path)))
+					previousReason := result.Reason
+					result.Err, result.Reason, result.Usage = passthroughResponseUsage(output, result.Response, passthroughUsageFormat(inferenceUpstreamPath(z, run.path)))
+					if result.Reason == "" {
+						result.Reason = previousReason
+					}
 					if result.Usage.Reported {
 						cost(z, &result.Usage)
 					}
@@ -411,7 +429,10 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			}
 			result.Reason = reason
 			run.lastErr = reason
-			a.completeRoute(z, result, time.Since(started), firstByte)
+			finalWrites := []ledgerWrite{}
+			a.completeRouteWithWriter(z, result, time.Since(started), func(query string, args ...any) {
+				finalWrites = append(finalWrites, ledgerWrite{query: query, args: args})
+			}, firstByte)
 
 			success := status < 400 && result.Err == nil
 			// Passthrough usage comes from the passive tap and bridged usage from
@@ -421,8 +442,8 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			if usage.CostType == "" {
 				usage.CostType = "unknown"
 			}
-			a.endLedger(id, z.Provider.ID, run.key.ID, z.Provider.Type, z.Route.UpstreamModel, success, status, reason, started, usage)
-			run.annotate(id, stop)
+			finalWrites = append(finalWrites, ledgerWrite{query: `UPDATE request_ledger SET diagnostics_json=?,routing_strategy=?,candidate_count=?,candidate_exclusions=?,stop_reason=? WHERE request_id=?`, args: []any{diagnostics.encoded(reason, success), inferenceStrategy, run.count, run.exclusionJSON(), stop, id}})
+			a.endLedger(id, z.Provider.ID, run.key.ID, z.Provider.Type, z.Route.UpstreamModel, success, status, reason, started, usage, finalWrites...)
 			if success {
 				run.success = true
 				run.noteSuccess(r, z, index)
@@ -514,6 +535,8 @@ func (run *inferenceRun) retain(result attemptResult) bool {
 // channel wins, but it is capped by the channel window: a long upstream pause is
 // a reason to try a different channel, not to hold the client.
 func (run *inferenceRun) pause(r *http.Request, attempt int, channelDeadline time.Time) bool {
+	started := time.Now()
+	defer func() { run.retryWait += time.Since(started) }()
 	delay := inferenceRetryDelay(attempt)
 	if wait := run.retryAfter(); wait > delay {
 		delay = wait
@@ -555,6 +578,11 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 	a := run.app
 	if client, target, ok := parseBridgeAdapter(adapter); ok {
 		result, cancel := run.bridgeAttempt(w, r, z, client, target, onFirstByte)
+		if protocolPolicyDenied(result.Response) {
+			result.Retryable = false
+			result.Reason = "upstream_protocol_denied"
+			return result, cancel
+		}
 		if result.Response != nil && result.Status >= 400 && protocolUnsupportedSignal(result.Response) {
 			protocolMemory.remember(z, target)
 			result.Retryable = true
@@ -566,6 +594,11 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 		return run.localCountTokens(w), func() {}
 	}
 	result, cancel := a.inferenceAttempt(r, run.nativeBody(z), z, inferenceUpstreamPath(z, run.path), run.stream, onFirstByte)
+	if protocolPolicyDenied(result.Response) {
+		result.Retryable = false
+		result.Reason = "upstream_protocol_denied"
+		return result, cancel
+	}
 	client := clientWireProtocol(run.path)
 	if result.Response == nil || result.Status < 400 {
 		if client != "" && result.Response != nil {
@@ -675,7 +708,20 @@ func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute,
 	if stream {
 		start, _ = a.streamTimeouts(z.Provider)
 	}
-	timer := time.AfterFunc(start, cancelContext)
+	diagnostics := diagnosticFor(ctx)
+	var streamStarted atomic.Bool
+	timer := time.AfterFunc(start, func() {
+		if diagnostics != nil {
+			kind := "upstream_start_timeout"
+			if !stream {
+				kind = "upstream_total_timeout"
+			} else if streamStarted.Load() {
+				kind = "upstream_idle_timeout"
+			}
+			diagnostics.timedOut(kind)
+		}
+		cancelContext()
+	})
 	cancel := func() {
 		timer.Stop()
 		cancelContext()
@@ -709,6 +755,9 @@ func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute,
 			base.RawQuery += "&"
 		}
 		base.RawQuery += incoming.URL.RawQuery
+	}
+	if diagnostics != nil {
+		ctx = httptrace.WithClientTrace(ctx, diagnostics.trace())
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base.String(), bytes.NewReader(raw))
 	if err != nil {
@@ -752,7 +801,12 @@ func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute,
 	if !stream {
 		idle = 0
 	} // Non-streaming requests retain the absolute deadline.
-	resp.Body = &passthroughTimedBody{ReadCloser: resp.Body, timer: timer, idle: idle, first: onFirstByte, cancel: cancelContext}
+	resp.Body = &passthroughTimedBody{ReadCloser: resp.Body, timer: timer, idle: idle, first: func() {
+		streamStarted.Store(true)
+		if onFirstByte != nil {
+			onFirstByte()
+		}
+	}, cancel: cancelContext}
 	return attemptResult{
 		Status:     resp.StatusCode,
 		Response:   resp,
@@ -886,7 +940,7 @@ func (run *inferenceRun) noteSuccess(r *http.Request, z resolvedRoute, index int
 
 // finish completes the response.
 func (run *inferenceRun) finish(w http.ResponseWriter, r *http.Request, stop string) {
-	if run.lastID != "" {
+	if run.lastID != "" && !run.committed {
 		run.annotate(run.lastID, stop)
 	}
 	if run.committed {

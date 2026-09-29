@@ -737,6 +737,18 @@ export function Requests() {
                                     <div><div className="text-muted-foreground">Protocol</div><div className="font-mono">{r.protocol}</div></div>
                                     <div><div className="text-muted-foreground">转发方式</div><div className="font-mono">{r.execution_mode === "bridge" ? `协议转换 ${r.adapter_id?.replace(/^bridge:/, "") ?? ""}` : r.execution_mode === "native" ? "原样透传" : r.execution_mode || "---"}</div></div>
                                     <div><div className="text-muted-foreground">上游路径</div><div className="break-all font-mono">{r.upstream_path || "---"}</div></div>
+                                    <div><div className="text-muted-foreground">上游协议</div><div className="font-mono">{r.upstream_protocol || "---"}</div></div>
+                                    {r.diagnostics && <>
+                                      <div><div className="text-muted-foreground">终止原因</div><div className="font-mono">{r.diagnostics.termination_reason || "---"}</div></div>
+                                      <div><div className="text-muted-foreground">连接复用</div><div>{r.diagnostics.connection_reused ? "是" : "否"}</div></div>
+                                      {([
+                                        ["连接等待", r.diagnostics.connection_wait_ms], ["上游响应头等待", r.diagnostics.upstream_wait_ms],
+                                        ["首个响应字节", r.diagnostics.first_byte_ms], ["首次有效输出", r.diagnostics.first_output_ms],
+                                        ["下游写入累计", r.diagnostics.downstream_write_ms], ["重试等待", r.diagnostics.retry_wait_ms],
+                                        ["协议转换准备", r.diagnostics.conversion_prepare_ms],
+                                      ] as const).map(([label, value]) => <div key={label}><div className="text-muted-foreground">{label}</div><div className="font-mono">{value == null ? "未采集" : `${value} ms`}</div></div>)}
+                                      <div className="text-muted-foreground md:col-span-2">首包与有效输出为本次尝试开始后的时间点；其他项为阶段耗时，不应直接相加。压缩透传无法观察的有效输出时间不作估算。</div>
+                                    </>}
                                   </div>
                                 </div>
                               </motion.div>

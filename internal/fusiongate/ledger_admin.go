@@ -40,13 +40,14 @@ func (a *App) ledgerUsage() (estBytes, rows int64, err error) {
 		"request_id", "created_at", "completed_at", "public_model", "upstream_model",
 		"protocol", "error_type", "cost_type", "gateway_request_id", "retry_reason",
 		"client_ip", "api_key_name", "api_key_prefix", "provider_name", "reasoning_effort",
+		"diagnostics_json", "candidate_exclusions", "stop_reason",
 	}
 	parts := make([]string, 0, len(cols))
 	for _, c := range cols {
 		parts = append(parts, fmt.Sprintf("COALESCE(LENGTH(%s),0)", c))
 	}
 	textSQL := strings.Join(parts, "+")
-	if err = a.reader().QueryRow(`SELECT COUNT(*),COALESCE(`+textSQL+`,0) FROM request_ledger`).Scan(&rows, &estBytes); err != nil {
+	if err = a.reader().QueryRow(`SELECT COUNT(*),COALESCE(SUM(`+textSQL+`),0) FROM request_ledger`).Scan(&rows, &estBytes); err != nil {
 		return 0, 0, err
 	}
 	estBytes += rows * ledgerRowOverhead

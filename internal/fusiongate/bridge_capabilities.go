@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Native requests never enter here. A bridge must not pretend unsupported
@@ -14,6 +15,31 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 	}
 	reject := func(field string) error {
 		return fmt.Errorf("capability_not_supported: %s requires a native channel", field)
+	}
+	// Unrecognized fields must not silently disappear through a converter.
+	allowed := "model stream messages tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort stream_options"
+	switch client {
+	case wireResponses:
+		allowed = "model stream input instructions tools tool_choice parallel_tool_calls temperature top_p max_output_tokens reasoning text store prompt_cache_key include"
+	case wireMessages:
+		allowed = "model stream messages system tools tool_choice temperature top_p max_tokens stop_sequences"
+	case wireGemini:
+		allowed = "contents systemInstruction generationConfig tools toolConfig"
+	}
+	for field, value := range body {
+		if value != nil && !containsString(strings.Fields(allowed), field) {
+			return reject(field)
+		}
+	}
+	if body["store"] == true {
+		return reject("store")
+	}
+	if reasoning := asMap(body["reasoning"]); reasoning != nil {
+		for field := range reasoning {
+			if field != "effort" {
+				return reject("reasoning." + field)
+			}
+		}
 	}
 	for _, field := range []string{"context_management", "previous_response_id", "conversation", "truncation", "background", "audio", "modalities"} {
 		if value, ok := body[field]; ok && value != nil && value != false && value != "" {
@@ -63,10 +89,10 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 		case map[string]any:
 			kind := asString(v["type"])
 			switch kind {
-			case "compaction", "compaction_summary", "item_reference", "local_shell_call", "local_shell_call_output", "web_search_call", "image_generation_call", "redacted_thinking":
+			case "compaction", "compaction_summary", "item_reference", "local_shell_call", "local_shell_call_output", "web_search_call", "image_generation_call", "redacted_thinking", "reasoning", "thinking", "input_file", "file", "input_audio", "audio", "document", "video":
 				return reject(kind)
 			}
-			if v["encrypted_content"] != nil || v["signature"] != nil {
+			if v["encrypted_content"] != nil || v["signature"] != nil || v["thoughtSignature"] != nil || v["thought"] == true || v["cache_control"] != nil {
 				return reject("opaque context")
 			}
 			for _, item := range v {
@@ -77,9 +103,45 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 		}
 		return nil
 	}
-	for _, field := range []string{"input", "messages", "contents"} {
+	for _, field := range []string{"input", "messages", "contents", "system", "systemInstruction"} {
 		if err := inspect(body[field]); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// Validate both legs: the intermediate Chat shape alone does not establish
+// that the destination can represent all of its fields.
+func validateBridgeRoute(client, target string, raw []byte, path string, z resolvedRoute) error {
+	chat, _, _, err := bridgeClientToChat(client, raw, path)
+	if err != nil {
+		return err
+	}
+	allowed := "model messages stream stream_options tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort"
+	switch target {
+	case wireChat:
+		return nil
+	case wireMessages:
+		allowed = "model messages stream stream_options tools tool_choice temperature top_p max_tokens max_completion_tokens stop"
+	}
+	for field, value := range chat {
+		if value != nil && !containsString(strings.Fields(allowed), field) {
+			return fmt.Errorf("capability_not_supported: %s cannot be preserved by %s", field, target)
+		}
+	}
+	if z.Provider.Type == "codex_oauth" {
+		for _, field := range []string{"temperature", "top_p", "max_tokens", "max_completion_tokens"} {
+			if chat[field] != nil {
+				return fmt.Errorf("capability_not_supported: %s cannot be preserved by this channel", field)
+			}
+		}
+	}
+	if target == wireMessages {
+		for _, value := range anySlice(chat["tools"]) {
+			if asMap(asMap(value)["function"])["strict"] != nil {
+				return fmt.Errorf("capability_not_supported: strict function schemas require a compatible channel")
+			}
 		}
 	}
 	return nil

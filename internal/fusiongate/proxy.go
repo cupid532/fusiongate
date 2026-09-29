@@ -110,6 +110,7 @@ func observeFirstByte(body io.ReadCloser, onFirstByte func()) io.ReadCloser {
 // sseUsageObserver passively reads OpenAI-style SSE events for their final usage
 // payload. It never changes the response bytes sent to the downstream client.
 type sseUsageObserver struct {
+	onOutput    func()
 	pending     []byte
 	usage       Usage
 	usageFormat string
@@ -157,6 +158,10 @@ func (o *sseUsageObserver) observeCompletion(event []byte) {
 	var decoded map[string]any
 	if json.Unmarshal([]byte(payload), &decoded) != nil {
 		return
+	}
+	if o.onOutput != nil && semanticStreamEvent(decoded) {
+		o.onOutput()
+		o.onOutput = nil
 	}
 	kind, _ := decoded["type"].(string)
 	if decoded["error"] != nil || kind == "error" || kind == "response.failed" || kind == "response.incomplete" {
@@ -984,7 +989,11 @@ func codexResponsesBodyFromChat(raw []byte, upstreamModel string) ([]byte, error
 			tool, _ := value.(map[string]any)
 			function, _ := tool["function"].(map[string]any)
 			if tool["type"] == "function" && function != nil {
-				converted = append(converted, map[string]any{"type": "function", "name": function["name"], "description": function["description"], "parameters": function["parameters"]})
+				convertedTool := map[string]any{"type": "function", "name": function["name"], "description": function["description"], "parameters": function["parameters"]}
+				if strict, ok := function["strict"]; ok {
+					convertedTool["strict"] = strict
+				}
+				converted = append(converted, convertedTool)
 			}
 		}
 		if len(converted) > 0 {

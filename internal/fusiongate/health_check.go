@@ -28,6 +28,7 @@ type HealthChecker struct {
 	mu            sync.Mutex
 	running       bool
 	cancel        context.CancelFunc
+	done          chan struct{}
 }
 
 type healthCheckResult struct {
@@ -82,6 +83,7 @@ func (h *HealthChecker) Start(ctx context.Context) {
 	h.running = true
 	ctx, cancel := context.WithCancel(ctx)
 	h.cancel = cancel
+	h.done = make(chan struct{})
 	h.mu.Unlock()
 
 	go h.run(ctx)
@@ -89,27 +91,34 @@ func (h *HealthChecker) Start(ctx context.Context) {
 
 func (h *HealthChecker) Stop() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.cancel != nil {
-		h.cancel()
-		h.cancel = nil
+	cancel, done := h.cancel, h.done
+	h.cancel = nil
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		if done != nil {
+			<-done
+		}
 	}
+	h.mu.Lock()
 	h.running = false
+	h.mu.Unlock()
 }
 
 func (h *HealthChecker) run(ctx context.Context) {
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
+	defer close(h.done)
 
-	// 启动时立即检查一次（延迟30秒避免启动拥堵）
-	time.AfterFunc(30*time.Second, func() {
-		h.checkBatch(ctx)
-	})
+	initial := time.NewTimer(30 * time.Second)
+	defer initial.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-initial.C:
+			h.checkBatch(ctx)
 		case <-ticker.C:
 			h.checkBatch(ctx)
 		}
@@ -122,7 +131,7 @@ func (h *HealthChecker) checkBatch(parent context.Context) {
 	}
 
 	// 查询需要检查的 OAuth providers（按上次检查时间排序，优先检查旧的）
-	rows, err := h.app.db.Query(`
+	rows, err := h.app.reader().QueryContext(parent, `
 		SELECT id FROM providers 
 		WHERE auth_kind='oauth' AND enabled=1 AND health_check_enabled=1
 		ORDER BY COALESCE(last_health_check_at, '1970-01-01') ASC

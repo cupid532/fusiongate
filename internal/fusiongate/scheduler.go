@@ -418,7 +418,7 @@ func (a *App) acquireRoute(routes []resolvedRoute, tried map[int64]bool, strateg
 
 func isNeutralResult(result attemptResult) bool {
 	switch result.Reason {
-	case "protocol_fallback", "capability_not_supported", "route_configuration_error", "protocol_not_supported", "invalid_request", "downstream_write_error", "downstream_canceled", "upstream_route_not_found":
+	case "upstream_protocol_denied", "protocol_fallback", "capability_not_supported", "route_configuration_error", "protocol_not_supported", "invalid_request", "downstream_write_error", "downstream_canceled", "upstream_route_not_found":
 		return true
 	}
 	return false
@@ -455,7 +455,11 @@ func providerStatus(result attemptResult) string {
 }
 
 func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.Duration, firstByte ...time.Duration) {
+	a.completeRouteWithWriter(z, result, latency, a.queueLedgerWrite, firstByte...)
+}
+func (a *App) completeRouteWithWriter(z resolvedRoute, result attemptResult, latency time.Duration, persist func(string, ...any), firstByte ...time.Duration) {
 	a.routeMu.Lock()
+	revision := a.healthSequence.Add(1)
 	state := a.stateForLocked(z.Provider)
 	if state.Inflight > 0 {
 		state.Inflight--
@@ -489,15 +493,12 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 		if message == "" && result.Err != nil {
 			message = result.Err.Error()
 		}
-		_, err := a.db.Exec(`UPDATE provider_api_keys SET status=?,last_error=?,cooldown_until=?,updated_at=? WHERE id=?`, providerStatus(result), sanitizeError(message), openUntil.UTC().Format(time.RFC3339Nano), now(), z.ProviderKeyID)
-		if err != nil {
-			a.log.Error("provider key health update", "provider_key_id", z.ProviderKeyID, "error", err)
-		}
+		persist(`UPDATE provider_api_keys SET status=?,last_error=?,cooldown_until=?,updated_at=?,health_revision=? WHERE id=? AND health_revision<?`, providerStatus(result), sanitizeError(message), openUntil.UTC().Format(time.RFC3339Nano), now(), revision, z.ProviderKeyID, revision)
 		return
 	}
 	if z.ProviderKeyID > 0 && !isProviderFailure(result) {
 		delete(a.providerKeyCooldowns, z.ProviderKeyID)
-		_, _ = a.db.Exec(`UPDATE provider_api_keys SET status='healthy',last_error='',cooldown_until=NULL,updated_at=? WHERE id=?`, now(), z.ProviderKeyID)
+
 	}
 	if isNeutralResult(result) {
 		a.routeMu.Unlock()
@@ -595,10 +596,10 @@ func (a *App) completeRoute(z resolvedRoute, result attemptResult, latency time.
 	}
 	a.routeMu.Unlock()
 
-	_, err := a.db.Exec(`UPDATE providers SET status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_first_byte_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=? WHERE id=?`, status, failures, nullableTime(openUntil), lastError, ewma, ewmaFirstByte, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), z.Provider.ID)
-	if err != nil {
-		a.log.Error("provider health update", "provider_id", z.Provider.ID, "error", err)
+	if z.ProviderKeyID > 0 {
+		persist(`UPDATE provider_api_keys SET status='healthy',last_error='',cooldown_until=NULL,updated_at=?,health_revision=? WHERE id=? AND health_revision<?`, now(), revision, z.ProviderKeyID, revision)
 	}
+	persist(`UPDATE providers SET status=?,consecutive_failures=?,circuit_open_until=?,last_error=?,last_latency_ms=?,last_first_byte_ms=?,last_success_at=CASE WHEN ?='' THEN last_success_at ELSE ? END,last_failure_at=CASE WHEN ?='' THEN last_failure_at ELSE ? END,updated_at=?,health_revision=? WHERE id=? AND health_revision<?`, status, failures, nullableTime(openUntil), lastError, ewma, ewmaFirstByte, lastSuccessAt, lastSuccessAt, lastFailureAt, lastFailureAt, now(), revision, z.Provider.ID, revision)
 }
 
 func nullableTime(v string) any {

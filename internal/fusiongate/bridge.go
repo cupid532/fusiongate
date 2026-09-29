@@ -3,6 +3,7 @@ package fusiongate
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -263,8 +264,7 @@ func protocolUnsupportedSignal(resp *http.Response) bool {
 	default:
 		return false
 	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
-	resp.Body = &prefixedPassthroughBody{Reader: io.MultiReader(bytes.NewReader(body), resp.Body), Closer: resp.Body}
+	body := protocolErrorPayload(resp)
 	var rejection struct {
 		Error struct {
 			Code string `json:"code"`
@@ -1474,12 +1474,16 @@ func completedResponsesFromChat(chat []byte, model string, custom map[string]boo
 func (run *inferenceRun) bridgeAttempt(w http.ResponseWriter, r *http.Request, z resolvedRoute, client, target string, onFirstByte func()) (attemptResult, context.CancelFunc) {
 	a := run.app
 	noop := func() {}
+	conversionStart := time.Now()
 	chat, stream, custom, err := bridgeClientToChat(client, run.raw, run.path)
 	if err == nil {
 		var body []byte
 		var path string
 		body, path, err = bridgeUpstreamBody(target, chat, z)
 		if err == nil {
+			if d := diagnosticFor(r.Context()); d != nil {
+				d.conversion(time.Since(conversionStart))
+			}
 			result, cancel := a.inferenceSend(r, body, z, path, stream, onFirstByte, true)
 			if result.Response == nil || result.Status >= 400 {
 				return result, cancel
@@ -1550,4 +1554,47 @@ func (run *inferenceRun) writeBridged(w http.ResponseWriter, client string, chat
 		return writeGeminiStream(w, chat, model, run.gatewayID, run.geminiSSE)
 	}
 	return attemptResult{Status: http.StatusNotImplemented, Reason: "protocol_not_supported", Err: fmt.Errorf("client protocol %q", client)}
+}
+
+// This denial is scoped to the API protocol, not the credential. Return it
+// verbatim without attempting to evade policy or cooling down unrelated APIs.
+func protocolPolicyDenied(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		return false
+	}
+	body := protocolErrorPayload(resp)
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &payload) == nil && payload.Error.Code == "gateway_protocol_policy_denied"
+}
+
+// Inspect compressed errors without changing the native response body/headers.
+// Both wire and decoded peeks are bounded; truncated/unknown encodings are not
+// evidence of unsupported protocols.
+func protocolErrorPayload(resp *http.Response) []byte {
+	wire, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
+	resp.Body = &prefixedPassthroughBody{Reader: io.MultiReader(bytes.NewReader(wire), resp.Body), Closer: resp.Body}
+	if err != nil || len(wire) > 64<<10 {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+		return wire
+	case "gzip":
+		reader, err := gzip.NewReader(bytes.NewReader(wire))
+		if err != nil {
+			return nil
+		}
+		defer reader.Close()
+		decoded, err := io.ReadAll(io.LimitReader(reader, (64<<10)+1))
+		if err != nil || len(decoded) > 64<<10 {
+			return nil
+		}
+		return decoded
+	default:
+		return nil
+	}
 }

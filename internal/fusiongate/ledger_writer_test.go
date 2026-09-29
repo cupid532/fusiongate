@@ -26,8 +26,8 @@ func TestLedgerWritesAreQueuedOffTheRequestPath(t *testing.T) {
 	a.recordFirstByte(attemptID, time.Now().Add(-30*time.Millisecond))
 	a.endLedger(attemptID, route.Provider.ID, key.ID, "openai", route.Route.UpstreamModel, true, 200, "", time.Now().Add(-50*time.Millisecond), Usage{Input: 7, Output: 11, Reported: true})
 
-	if queued := a.metrics.ledgerQueued.Load() - before; queued != 4 {
-		t.Fatalf("queued ledger writes = %d, want 4 (first-byte, cycle, key spend, completion — a synchronous write would not be counted)", queued)
+	if queued := a.metrics.ledgerQueued.Load() - before; queued != 2 {
+		t.Fatalf("queued ledger writes = %d, want 2 (admission and atomic completion batch)", queued)
 	}
 
 	a.flushLedgerWrites()

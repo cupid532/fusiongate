@@ -48,7 +48,7 @@ func compatibleResponsesBodyFromRequest(raw []byte, upstreamModel string) ([]byt
 		"model": upstreamModel, "messages": messages, "stream": true,
 		"stream_options": map[string]any{"include_usage": true},
 	}
-	for _, key := range []string{"temperature", "top_p", "parallel_tool_calls", "seed", "stop", "user", "service_tier"} {
+	for _, key := range []string{"temperature", "top_p", "parallel_tool_calls", "seed", "stop", "user", "service_tier", "prompt_cache_key"} {
 		if value, ok := source[key]; ok {
 			body[key] = value
 		}

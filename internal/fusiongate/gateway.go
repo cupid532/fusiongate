@@ -747,8 +747,18 @@ func requestReasoningEffort(body map[string]any) string {
 // startLedger records the beginning of one upstream attempt and returns the
 // attempt's stable request_id. The write is queued, so the caller never waits for
 // SQLite before dispatching the upstream request.
-func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID, reasoningEffort string, attempt int, retryReason string) string {
+func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bool, clientIP, gatewayID, reasoningEffort string, attempt int, retryReason string, contexts ...context.Context) string {
+	ctx := context.Background()
+	if len(contexts) > 0 {
+		ctx = contexts[0]
+	}
+	if !a.reserveLedgerCompletion(ctx) {
+		return ""
+	}
 	attemptID := gatewayID + "_a" + strconv.Itoa(attempt)
+	first := &atomic.Int64{}
+	first.Store(-1)
+	a.ledgerFirstBytes.Store(attemptID, first)
 	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name,provider_key_id,provider_key_name,provider_key_hint,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name, z.ProviderKeyID, z.ProviderKeyName, z.ProviderKeyHint, reasoningEffort)
 	return attemptID
 }
@@ -764,20 +774,33 @@ func (a *App) recordFirstByte(attemptID string, start time.Time) {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	a.queueLedgerWrite(`UPDATE request_ledger SET first_byte_ms=? WHERE request_id=? AND first_byte_ms IS NULL`, elapsed, attemptID)
+	if pending, ok := a.ledgerFirstBytes.Load(attemptID); ok {
+		pending.(*atomic.Int64).CompareAndSwap(-1, elapsed)
+	}
 }
 
-func (a *App) endLedger(attemptID string, providerID, apiKeyID int64, providerType, upstreamModel string, success bool, status int, errorType string, start time.Time, usage Usage) {
+func (a *App) endLedger(attemptID string, providerID, apiKeyID int64, providerType, upstreamModel string, success bool, status int, errorType string, start time.Time, usage Usage, extra ...ledgerWrite) {
 	if attemptID == "" {
 		return
 	}
+	batch := append([]ledgerWrite{}, extra...)
 	if apiKeyID > 0 && usage.CostMicros > 0 {
-		a.queueLedgerWrite(`UPDATE api_keys SET spent_micros=spent_micros+? WHERE id=?`, usage.CostMicros, apiKeyID)
+		batch = append(batch, ledgerWrite{query: `UPDATE api_keys SET spent_micros=spent_micros+? WHERE id=?`, args: []any{usage.CostMicros, apiKeyID}})
 	}
 	if providerID > 0 {
-		a.queueCostCycleWrite(providerID, providerType, upstreamModel, usage)
+		batch = append(batch, costCycleWrite(providerID, providerType, upstreamModel, usage))
 	}
-	a.queueLedgerWrite(`UPDATE request_ledger SET completed_at=?,success=?,status_code=?,error_type=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_tokens=?,reasoning_tokens=?,cost_micros=?,cost_type=?,usage_reported=? WHERE request_id=?`, now(), boolInt(success), status, errorType, time.Since(start).Milliseconds(), usage.Input, usage.Output, usage.Cached, usage.Reasoning, usage.CostMicros, usage.CostType, boolInt(usage.Reported), attemptID)
+	var firstByte any
+	reserved := false
+	if value, ok := a.ledgerFirstBytes.LoadAndDelete(attemptID); ok {
+		reserved = true
+		if elapsed := value.(*atomic.Int64).Load(); elapsed >= 0 {
+			firstByte = elapsed
+		}
+	}
+	batch = append(batch, ledgerWrite{query: `UPDATE request_ledger SET completed_at=?,success=?,status_code=?,error_type=?,latency_ms=?,input_tokens=?,output_tokens=?,cached_tokens=?,reasoning_tokens=?,cost_micros=?,cost_type=?,usage_reported=?,first_byte_ms=COALESCE(first_byte_ms,?) WHERE request_id=?`, args: []any{now(), boolInt(success), status, errorType, time.Since(start).Milliseconds(), usage.Input, usage.Output, usage.Cached, usage.Reasoning, usage.CostMicros, usage.CostType, boolInt(usage.Reported), firstByte, attemptID}})
+	a.queueLedgerCompletion(batch, reserved)
+
 }
 
 func cost(z resolvedRoute, usage *Usage) {

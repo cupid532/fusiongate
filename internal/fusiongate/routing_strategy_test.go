@@ -242,6 +242,7 @@ func TestRateLimitDoesNotPolluteAdaptiveLatency(t *testing.T) {
 	var status string
 	var latencyMS, firstByteMS int64
 	var circuitOpenUntil string
+	a.flushLedgerWrites()
 	if err := a.db.QueryRow(`SELECT status,last_latency_ms,last_first_byte_ms,circuit_open_until FROM providers WHERE id=?`, providerID).Scan(&status, &latencyMS, &firstByteMS, &circuitOpenUntil); err != nil {
 		t.Fatal(err)
 	}

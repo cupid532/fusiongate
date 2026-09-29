@@ -224,6 +224,18 @@ export interface RequestLedgerRow {
   execution_mode?: string
   adapter_id?: string
   upstream_path?: string
+  upstream_protocol?: string
+  diagnostics?: {
+    connection_wait_ms?: number
+    upstream_wait_ms?: number
+    first_byte_ms?: number
+    first_output_ms?: number
+    downstream_write_ms?: number
+    retry_wait_ms?: number
+    conversion_prepare_ms?: number
+    connection_reused?: boolean
+    termination_reason?: string
+  }
 }
 
 export interface RequestLedgerTotals {

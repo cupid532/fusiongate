@@ -188,6 +188,18 @@ describe("Requests filters", () => {
     expect(screen.getAllByText("0", { selector: "div.font-mono" }).length).toBeGreaterThanOrEqual(4)
   })
 
+  it("shows optional phase diagnostics without inventing missing timings", async () => {
+    list.mockReturnValue({ ...page([5], 1), items: [{ ...row(5), upstream_protocol: "openai_responses", diagnostics: { connection_wait_ms: 12, upstream_wait_ms: 140, first_byte_ms: 155, downstream_write_ms: 2, retry_wait_ms: 0, connection_reused: true, termination_reason: "completed" } }] })
+    mount()
+    await screen.findByText("model-5")
+    fireEvent.click(screen.getByText("model-5").closest("tr")!)
+    expect(screen.getByText("openai_responses")).toBeTruthy()
+    expect(screen.getByText("12 ms")).toBeTruthy()
+    expect(screen.getByText("140 ms")).toBeTruthy()
+    expect(screen.getByText("completed")).toBeTruthy()
+    expect(screen.getAllByText("未采集")).toHaveLength(2)
+  })
+
   it("keeps quick-range bounds identical after time passes, filters change and pages load", async () => {
     const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2024-02-29T12:00:00Z"))
     list.mockImplementation((params) => page(params.has("before") ? [3, 2] : [5, 4]))

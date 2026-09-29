@@ -147,6 +147,20 @@ func TestLiveRequestLedgerAndFirstByteTiming(t *testing.T) {
 		a.Router().ServeHTTP(rec, req)
 		close(done)
 	}()
+	defer func() {
+		select {
+		case releaseFirstByte <- struct{}{}:
+		default:
+		}
+		select {
+		case finishResponse <- struct{}{}:
+		default:
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+		}
+	}()
 	select {
 	case <-upstreamStarted:
 	case <-time.After(2 * time.Second):
@@ -164,8 +178,9 @@ func TestLiveRequestLedgerAndFirstByteTiming(t *testing.T) {
 	for {
 		a.flushLedgerWrites()
 		var first sql.NullInt64
-		if err := a.db.QueryRow(`SELECT first_byte_ms FROM request_ledger LIMIT 1`).Scan(&first); err != nil {
-			t.Fatal(err)
+		current := requestListForTest(t, a)
+		if len(current) > 0 {
+			first = current[0].FirstByteMS
 		}
 		if first.Valid {
 			if first.Int64 < 50 {
