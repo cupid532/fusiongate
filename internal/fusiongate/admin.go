@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -108,6 +109,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusTooManyRequests, "rate_limit_exceeded", "too many sign-in attempts")
 		return
 	}
+	a.passwordMu.RLock()
+	defer a.passwordMu.RUnlock()
 	var h string
 	if err := a.db.QueryRow(`SELECT value FROM settings WHERE key='admin_password_hash'`).Scan(&h); err != nil || !checkPassword(in.Password, h) {
 		fail(w, 401, "invalid_credentials", "invalid credentials")
@@ -194,6 +197,8 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request, _ adminCtx)
 		fail(w, http.StatusBadRequest, "invalid_request", "new password must be at least 8 characters")
 		return
 	}
+	a.passwordMu.Lock()
+	defer a.passwordMu.Unlock()
 	var h string
 	if err := a.db.QueryRow(`SELECT value FROM settings WHERE key='admin_password_hash'`).Scan(&h); err != nil || !checkPassword(in.CurrentPassword, h) {
 		time.Sleep(400 * time.Millisecond)
@@ -201,10 +206,26 @@ func (a *App) changePassword(w http.ResponseWriter, r *http.Request, _ adminCtx)
 		return
 	}
 	newHash := passwordHash(in.NewPassword, randomBytes(16))
-	if _, err := a.db.Exec(`UPDATE settings SET value=? WHERE key='admin_password_hash'`, newHash); err != nil {
+	res, err := a.db.Exec(`UPDATE settings SET value=? WHERE key='admin_password_hash' AND value=?`, newHash, h)
+	if err != nil {
 		fail(w, http.StatusInternalServerError, "internal_error", "failed to update password")
 		return
 	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		fail(w, http.StatusConflict, "password_changed", "password changed concurrently; sign in again")
+		return
+	}
+	currentID := ""
+	if cookie, err := r.Cookie("fg_admin"); err == nil {
+		currentID = a.sign(cookie.Value)
+	}
+	a.sessionMu.Lock()
+	for id := range a.adminSessions {
+		if id != currentID {
+			delete(a.adminSessions, id)
+		}
+	}
+	a.sessionMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -1214,7 +1235,7 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		}
 	}
 	if discoveryConnectionChanged {
-		if _, err := tx.ExecContext(r.Context(), `DELETE FROM provider_api_key_models WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, id); err != nil {
+		if _, err := tx.ExecContext(r.Context(), `DELETE FROM provider_api_key_model_health WHERE provider_key_id IN (SELECT id FROM provider_api_keys WHERE provider_id=?)`, id); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
@@ -1961,6 +1982,28 @@ func (a *App) keyUpdate(w http.ResponseWriter, r *http.Request, id string) {
 		fail(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	if in.Name != nil {
+		value := strings.TrimSpace(*in.Name)
+		if value == "" {
+			fail(w, http.StatusBadRequest, "invalid_request", "name is required")
+			return
+		}
+		in.Name = &value
+	}
+	if in.RPMLimit != nil && *in.RPMLimit < 0 {
+		fail(w, http.StatusBadRequest, "invalid_request", "rpm_limit must be zero or greater")
+		return
+	}
+	if in.BudgetUSD != nil && (math.IsNaN(*in.BudgetUSD) || math.IsInf(*in.BudgetUSD, 0) || *in.BudgetUSD < 0 || *in.BudgetUSD >= float64(math.MaxInt64)/1_000_000) {
+		fail(w, http.StatusBadRequest, "invalid_request", "budget_usd must be nonnegative and fit in integer microdollars")
+		return
+	}
+	if in.ExpiresAt != nil && *in.ExpiresAt != "" {
+		if _, err := time.Parse(time.RFC3339, *in.ExpiresAt); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", "expires_at must be RFC3339")
+			return
+		}
+	}
 	sets := []string{}
 	args := []any{}
 	if in.Name != nil {
@@ -1973,11 +2016,11 @@ func (a *App) keyUpdate(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	if in.AllowModels != nil {
 		sets = append(sets, "allow_models=?")
-		args = append(args, *in.AllowModels)
+		args = append(args, normalizeModelList(*in.AllowModels))
 	}
 	if in.DenyModels != nil {
 		sets = append(sets, "deny_models=?")
-		args = append(args, *in.DenyModels)
+		args = append(args, normalizeModelList(*in.DenyModels))
 	}
 	if in.AllowImages != nil {
 		sets = append(sets, "allow_images=?")

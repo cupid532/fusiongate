@@ -360,7 +360,7 @@ func (a *App) setIPPoolRuntimeError(id int64, err error) {
 
 func (a *App) validateIPPoolNode(id int64) error {
 	var enabled int
-	if err := a.db.QueryRow(`SELECT enabled FROM ip_pool_nodes WHERE id=?`, id).Scan(&enabled); err != nil {
+	if err := a.reader().QueryRow(`SELECT enabled FROM ip_pool_nodes WHERE id=?`, id).Scan(&enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return errors.New("selected IP pool node does not exist")
 		}

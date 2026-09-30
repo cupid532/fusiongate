@@ -194,7 +194,7 @@ func (a *App) authenticateKey(r *http.Request) (authKey, bool) {
 	x.AllowAudio = strBool(allowAudio)
 	x.Revoked = strBool(revoked)
 	x.ExpiresAt = parseTime(expiresAt)
-	if x.Revoked || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) {
+	if x.Revoked || x.BudgetMicros < 0 || (expiresAt != "" && x.ExpiresAt == nil) || (x.ExpiresAt != nil && time.Now().After(*x.ExpiresAt)) {
 		return authKey{}, false
 	}
 	// Only budgeted keys need the ledger aggregate, which is the most expensive part

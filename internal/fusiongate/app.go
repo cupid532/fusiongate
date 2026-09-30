@@ -83,6 +83,7 @@ type App struct {
 	loginMu               sync.Mutex
 	loginAttempts         map[string]*rateWindow
 	loginVerifiers        chan struct{}
+	passwordMu            sync.RWMutex
 	sessionMu             sync.Mutex
 	adminSessions         map[string]adminSession
 	ready                 atomic.Bool
@@ -267,9 +268,6 @@ type Usage struct {
 func New(cfg Config) (*App, error) {
 	if cfg.MasterKey == "" {
 		return nil, errors.New("FUSIONGATE_MASTER_KEY is required (32 random bytes, base64 encoded)")
-	}
-	if cfg.AdminPassword == "" {
-		return nil, errors.New("FUSIONGATE_ADMIN_PASSWORD is required on first and subsequent startup")
 	}
 	if cfg.DataDir == "" {
 		cfg.DataDir = "./data"
@@ -1125,15 +1123,17 @@ func (a *App) ensureAdmin(password string) error {
 	var h string
 	err := a.db.QueryRow(`SELECT value FROM settings WHERE key='admin_password_hash'`).Scan(&h)
 	if errors.Is(err, sql.ErrNoRows) {
+		if len(password) < 8 {
+			return errors.New("FUSIONGATE_ADMIN_PASSWORD must contain at least 8 characters on first startup")
+		}
 		_, err = a.db.Exec(`INSERT INTO settings(key,value) VALUES('admin_password_hash',?)`, passwordHash(password, randomBytes(16)))
 		return err
 	}
 	if err != nil {
 		return err
 	}
-	if !checkPassword(password, h) {
-		return errors.New("FUSIONGATE_ADMIN_PASSWORD does not match the configured administrator password")
-	}
+	// The environment bootstraps a new database; existing databases own the
+	// password so a console password change survives the next restart.
 	return nil
 }
 func (a *App) encrypt(v string) ([]byte, error) {

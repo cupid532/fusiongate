@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.21
+
+- Fix single-Key PATCH SQL bindings and make metadata, model selections, exclusions and legacy credentials atomic. Restore editable per-Key egress controls with explicit save/cancel and differential payloads.
+- Persist new-Key model policies and share model selection/route synchronization across both management APIs. Derive omitted allowlists from selected models, preserve sibling fixed/default/fallback routes, re-enable explicit selections, carry discovered capabilities and clean dangling aliases.
+- Preserve user model permissions during connection/credential edits while invalidating stale health data. Treat the environment administrator password as first-start bootstrap only; console password changes survive restarts and revoke other sessions without interrupting the current session.
+- Introduce provider backup format v2 with model policies, allowlists, Key/route exclusions, archive state and explicit empty inventories. Retain v1 merge compatibility, preserve channels with no Keys, clear stale restored health and reject invalid cost multipliers. Surface import/export errors and import warnings in the console.
+- Validate access-key expiry, budget, name and RPM updates; reject malformed stored expiries and negative budgets during authentication. Add isolated backend and console regressions for all audited defects.
+
 ## V3.20
 
 - Keep channel-table columns readable on narrow screens by preserving a minimum table width and preventing one-character wrapping. Horizontal scrolling stays inside a labelled, keyboard-accessible region without widening the page.

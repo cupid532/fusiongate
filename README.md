@@ -192,9 +192,9 @@ sudo bash install.sh
 | 变量 | 说明 |
 |---|---|
 | `FUSIONGATE_MASTER_KEY` | 必填，base64 编码的随机 32 字节主密钥。丢失后无法解密既有上游凭据。 |
-| `FUSIONGATE_ADMIN_PASSWORD` | 必填，首次运行初始化管理员密码；之后必须保持一致。 |
+| `FUSIONGATE_ADMIN_PASSWORD` | 首次运行必填（至少 8 字符），用于初始化管理员密码；已有数据库使用库内密码，页面改密后重启不会被此变量覆盖或阻止。 |
 | `FUSIONGATE_MASTER_KEY_FILE` | 可选，读取主密钥的文件路径；生产 Compose 使用该方式挂载 secret。 |
-| `FUSIONGATE_ADMIN_PASSWORD_FILE` | 可选，读取管理员密码的文件路径；生产 Compose 使用该方式挂载 secret。 |
+| `FUSIONGATE_ADMIN_PASSWORD_FILE` | 可选，读取首次初始化密码的文件路径；生产 Compose 使用该方式挂载 secret，指定的文件需可读取。 |
 | `FUSIONGATE_ADDR` | 监听地址，默认 `127.0.0.1:8787`。 |
 | `FUSIONGATE_DATA_DIR` | SQLite 数据目录，默认 `./data`。 |
 | `FUSIONGATE_MAX_FAILOVER_ATTEMPTS` | 可选保险丝：单次请求最多尝试的上游渠道数。默认不限（逐个试完请求内全部候选渠道后才返回失败），渠道越多尝试越多；设为 N（N≥1）时恢复固定上限，用于避免失效渠道造成重试风暴。 |
@@ -226,6 +226,8 @@ IP 池由 FusionGate 管理节点元数据与渠道绑定，实际多协议网�
 ## 备份与恢复
 
 停止服务后，备份数据目录中的 `fusiongate.db`（以及 WAL / SHM 文件，如存在）和 `FUSIONGATE_MASTER_KEY`。恢复时同时恢复数据库并使用**相同主密钥**。建议对备份进行加密。
+
+控制台“渠道备份”不是完整数据库恢复：它按渠道名称和上游 Key 指纹合并配置，保留文件之外的 Key、路由及别名，不包含 OAuth 凭据、下游访问密钥、管理员密码或出口节点。v2 保存归档状态、模型策略、白名单、模型清单和排除规则；匹配 Key 的显式空清单会清空库存，旧 v1 缺失字段则保留现有设置（新 Key 使用默认值）。出口节点按名称匹配，不存在时降级并返回警告。导出含上游密钥，请按秘密文件保管。
 
 ## 已知范围和后续工作
 

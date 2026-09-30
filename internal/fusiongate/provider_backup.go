@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -12,7 +13,7 @@ import (
 
 const (
 	providerBackupFormat      = "fusiongate-provider-backup"
-	providerBackupVersion     = 1
+	providerBackupVersion     = 2
 	providerBackupMaxChannels = 200
 	providerBackupMaxKeys     = 500
 	providerBackupMaxRoutes   = 5000
@@ -34,45 +35,55 @@ type providerBackupAlias struct {
 }
 
 type providerBackupProvider struct {
-	Name                 string                `json:"name"`
-	Type                 string                `json:"type"`
-	BaseURL              string                `json:"base_url"`
-	WebsiteURL           string                `json:"website_url,omitempty"`
-	Notes                string                `json:"notes,omitempty"`
-	Enabled              bool                  `json:"enabled"`
-	Priority             int                   `json:"priority"`
-	Weight               int                   `json:"weight"`
-	PassthroughMode      string                `json:"passthrough_mode"`
-	ClientPolicy         string                `json:"client_policy"`
-	MaxConcurrency       int                   `json:"max_concurrency"`
-	RequestTimeoutMS     int                   `json:"request_timeout_ms"`
-	StreamStartTimeoutMS int                   `json:"stream_start_timeout_ms"`
-	StreamIdleTimeoutMS  int                   `json:"stream_idle_timeout_ms"`
-	FailureThreshold     int                   `json:"failure_threshold"`
-	CooldownSeconds      int                   `json:"cooldown_seconds"`
-	HealthCheckEnabled   *bool                 `json:"health_check_enabled,omitempty"`
-	DefaultModel         string                `json:"default_model,omitempty"`
-	KeySelectionMode     string                `json:"key_selection_mode,omitempty"`
-	ProtocolPolicy       string                `json:"protocol_policy,omitempty"`
-	ProtocolPreference   string                `json:"protocol_preference,omitempty"`
-	GroupName            string                `json:"group_name,omitempty"`
-	GroupSortOrder       int                   `json:"group_sort_order,omitempty"`
-	IPPoolNodeName       string                `json:"ip_pool_node_name,omitempty"`
-	Keys                 []providerBackupKey   `json:"keys"`
-	Routes               []providerBackupRoute `json:"routes,omitempty"`
+	Name                 string                         `json:"name"`
+	Type                 string                         `json:"type"`
+	BaseURL              string                         `json:"base_url"`
+	WebsiteURL           string                         `json:"website_url,omitempty"`
+	Notes                string                         `json:"notes,omitempty"`
+	Enabled              bool                           `json:"enabled"`
+	Archived             *bool                          `json:"archived,omitempty"`
+	Priority             int                            `json:"priority"`
+	Weight               int                            `json:"weight"`
+	PassthroughMode      string                         `json:"passthrough_mode"`
+	ClientPolicy         string                         `json:"client_policy"`
+	MaxConcurrency       int                            `json:"max_concurrency"`
+	RequestTimeoutMS     int                            `json:"request_timeout_ms"`
+	StreamStartTimeoutMS int                            `json:"stream_start_timeout_ms"`
+	StreamIdleTimeoutMS  int                            `json:"stream_idle_timeout_ms"`
+	FailureThreshold     int                            `json:"failure_threshold"`
+	CooldownSeconds      int                            `json:"cooldown_seconds"`
+	HealthCheckEnabled   *bool                          `json:"health_check_enabled,omitempty"`
+	DefaultModel         string                         `json:"default_model,omitempty"`
+	KeySelectionMode     string                         `json:"key_selection_mode,omitempty"`
+	ProtocolPolicy       string                         `json:"protocol_policy,omitempty"`
+	ProtocolPreference   string                         `json:"protocol_preference,omitempty"`
+	GroupName            string                         `json:"group_name,omitempty"`
+	GroupSortOrder       int                            `json:"group_sort_order,omitempty"`
+	IPPoolNodeName       string                         `json:"ip_pool_node_name,omitempty"`
+	Keys                 []providerBackupKey            `json:"keys"`
+	Routes               []providerBackupRoute          `json:"routes,omitempty"`
+	RouteExclusions      []providerBackupRouteExclusion `json:"route_exclusions"`
+}
+
+type providerBackupRouteExclusion struct {
+	PublicName    string `json:"public_name"`
+	UpstreamModel string `json:"upstream_model"`
 }
 
 type providerBackupKey struct {
 	Name               string                   `json:"name,omitempty"`
 	APIKey             string                   `json:"api_key"`
 	Model              string                   `json:"model,omitempty"`
+	ModelPolicy        string                   `json:"model_policy,omitempty"`
+	ModelAllowlist     *string                  `json:"model_allowlist,omitempty"`
 	EgressMode         string                   `json:"egress_mode"`
 	IPPoolNodeName     string                   `json:"ip_pool_node_name,omitempty"`
 	Enabled            bool                     `json:"enabled"`
 	HealthCheckEnabled *bool                    `json:"health_check_enabled,omitempty"`
-	CostMultiplier     float64                  `json:"cost_multiplier,omitempty"`
+	CostMultiplier     *float64                 `json:"cost_multiplier,omitempty"`
 	SortOrder          int                      `json:"sort_order"`
-	Models             []providerBackupKeyModel `json:"models,omitempty"`
+	Models             []providerBackupKeyModel `json:"models"`
+	ExcludeModels      []string                 `json:"exclude_models"`
 }
 
 type providerBackupKeyModel struct {
@@ -121,8 +132,14 @@ func (a *App) providerBackupExport(w http.ResponseWriter, r *http.Request, _ adm
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
 		return
 	}
-	rows, err := a.db.Query(`
-SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.notes,p.enabled,p.priority,p.weight,p.passthrough_mode,p.client_policy,
+	tx, err := a.reader().BeginTx(r.Context(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(r.Context(), `
+SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.notes,p.enabled,p.archived,p.priority,p.weight,p.passthrough_mode,p.client_policy,
        p.max_concurrency,p.request_timeout_ms,p.stream_start_timeout_ms,p.stream_idle_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,p.group_sort_order,
        COALESCE(g.name,''),COALESCE(n.name,''),p.credential,p.multi_key_initialized
 FROM providers p
@@ -137,9 +154,9 @@ ORDER BY p.priority DESC,p.id`)
 	pending := make([]providerBackupPending, 0)
 	for rows.Next() {
 		var item providerBackupPending
-		var enabled, healthCheckEnabled int
+		var enabled, archived, healthCheckEnabled int
 		if err := rows.Scan(&item.ID, &item.Provider.Name, &item.Provider.Type, &item.Provider.BaseURL, &item.Provider.WebsiteURL, &item.Provider.Notes,
-			&enabled, &item.Provider.Priority, &item.Provider.Weight, &item.Provider.PassthroughMode, &item.Provider.ClientPolicy,
+			&enabled, &archived, &item.Provider.Priority, &item.Provider.Weight, &item.Provider.PassthroughMode, &item.Provider.ClientPolicy,
 			&item.Provider.MaxConcurrency, &item.Provider.RequestTimeoutMS, &item.Provider.StreamStartTimeoutMS, &item.Provider.StreamIdleTimeoutMS, &item.Provider.FailureThreshold, &item.Provider.CooldownSeconds, &healthCheckEnabled,
 			&item.Provider.DefaultModel, &item.Provider.KeySelectionMode, &item.Provider.ProtocolPolicy, &item.Provider.ProtocolPreference, &item.Provider.GroupSortOrder, &item.Provider.GroupName, &item.Provider.IPPoolNodeName, &item.Credential, &item.Initialized); err != nil {
 			rows.Close()
@@ -147,6 +164,8 @@ ORDER BY p.priority DESC,p.id`)
 			return
 		}
 		item.Provider.HealthCheckEnabled = boolPtr(strBool(healthCheckEnabled))
+		item.Provider.Archived = boolPtr(strBool(archived))
+		item.Provider.RouteExclusions = []providerBackupRouteExclusion{}
 		item.Provider.Enabled = strBool(enabled)
 		pending = append(pending, item)
 	}
@@ -161,7 +180,7 @@ ORDER BY p.priority DESC,p.id`)
 	}
 
 	backup := providerBackupFile{Format: providerBackupFormat, Version: providerBackupVersion, ExportedAt: now(), ContainsSecrets: true, Providers: make([]providerBackupProvider, 0, len(pending))}
-	aliasRows, err := a.db.Query(`SELECT alias,target_model,enabled FROM model_aliases ORDER BY alias`)
+	aliasRows, err := tx.QueryContext(r.Context(), `SELECT alias,target_model,enabled FROM model_aliases ORDER BY alias`)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
@@ -177,14 +196,19 @@ ORDER BY p.priority DESC,p.id`)
 		alias.Enabled = strBool(enabled)
 		backup.ModelAliases = append(backup.ModelAliases, alias)
 	}
+	if err := aliasRows.Err(); err != nil {
+		aliasRows.Close()
+		fail(w, http.StatusInternalServerError, "database_error", err.Error())
+		return
+	}
 	if err := aliasRows.Close(); err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
 	for _, item := range pending {
 		provider := item.Provider
-		keyRows, err := a.db.Query(`
-SELECT k.id,k.credential,k.name,k.model,k.egress_mode,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.cost_multiplier,k.sort_order
+		keyRows, err := tx.QueryContext(r.Context(), `
+SELECT k.id,k.credential,k.name,k.model,k.model_policy,k.model_allowlist,k.egress_mode,COALESCE(n.name,''),k.enabled,k.health_check_enabled,k.cost_multiplier,k.sort_order
 FROM provider_api_keys k LEFT JOIN ip_pool_nodes n ON n.id=k.ip_pool_node_id
 WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 		if err != nil {
@@ -199,13 +223,17 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 		keys := make([]pendingKey, 0)
 		for keyRows.Next() {
 			var key pendingKey
+			var allowlist string
 			var enabled, healthCheckEnabled int
-			if err := keyRows.Scan(&key.ID, &key.Credential, &key.Backup.Name, &key.Backup.Model, &key.Backup.EgressMode, &key.Backup.IPPoolNodeName, &enabled, &healthCheckEnabled, &key.Backup.CostMultiplier, &key.Backup.SortOrder); err != nil {
+			if err := keyRows.Scan(&key.ID, &key.Credential, &key.Backup.Name, &key.Backup.Model, &key.Backup.ModelPolicy, &allowlist, &key.Backup.EgressMode, &key.Backup.IPPoolNodeName, &enabled, &healthCheckEnabled, &key.Backup.CostMultiplier, &key.Backup.SortOrder); err != nil {
 				keyRows.Close()
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
 			key.Backup.Enabled = strBool(enabled)
+			key.Backup.ModelAllowlist = &allowlist
+			key.Backup.Models = []providerBackupKeyModel{}
+			key.Backup.ExcludeModels = []string{}
 			healthEnabled := strBool(healthCheckEnabled)
 			key.Backup.HealthCheckEnabled = &healthEnabled
 			keys = append(keys, key)
@@ -226,7 +254,7 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 				fail(w, http.StatusInternalServerError, "credential_error", "could not decrypt a provider API key")
 				return
 			}
-			modelRows, queryErr := a.db.Query(`SELECT model,display_name,capabilities,enabled FROM provider_api_key_models WHERE provider_key_id=? ORDER BY model`, pendingKey.ID)
+			modelRows, queryErr := tx.QueryContext(r.Context(), `SELECT model,display_name,capabilities,enabled FROM provider_api_key_models WHERE provider_key_id=? ORDER BY model`, pendingKey.ID)
 			if queryErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", queryErr.Error())
 				return
@@ -252,21 +280,45 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
+			exclusionRows, err := tx.QueryContext(r.Context(), `SELECT model FROM provider_api_key_model_exclusions WHERE provider_key_id=? ORDER BY model`, pendingKey.ID)
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			for exclusionRows.Next() {
+				var model string
+				if err := exclusionRows.Scan(&model); err != nil {
+					exclusionRows.Close()
+					fail(w, http.StatusInternalServerError, "database_error", err.Error())
+					return
+				}
+				key.ExcludeModels = append(key.ExcludeModels, model)
+			}
+			if err := exclusionRows.Err(); err != nil {
+				exclusionRows.Close()
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			if err := exclusionRows.Close(); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
 			provider.Keys = append(provider.Keys, key)
 		}
 		if len(provider.Keys) == 0 {
-			if strBool(item.Initialized) {
-				continue
+			provider.Keys = []providerBackupKey{}
+			if !strBool(item.Initialized) {
+				legacy, decryptErr := a.decrypt(item.Credential)
+				if decryptErr != nil {
+					fail(w, http.StatusInternalServerError, "credential_error", "could not decrypt a provider credential")
+					return
+				}
+				allowlist := ""
+				provider.Keys = append(provider.Keys, providerBackupKey{Name: "Key 1", APIKey: legacy, ModelPolicy: "fallback", ModelAllowlist: &allowlist, Models: []providerBackupKeyModel{}, ExcludeModels: []string{}, EgressMode: providerKeyEgressInherit, Enabled: true})
 			}
-			legacy, decryptErr := a.decrypt(item.Credential)
-			if decryptErr != nil {
-				fail(w, http.StatusInternalServerError, "credential_error", "could not decrypt a provider credential")
-				return
-			}
-			provider.Keys = append(provider.Keys, providerBackupKey{Name: "默认 Key", APIKey: legacy, EgressMode: providerKeyEgressInherit, Enabled: true})
 		}
 
-		routeRows, err := a.db.Query(`
+		routeRows, err := tx.QueryContext(r.Context(), `
 SELECT public_name,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,cached_price_micros,output_price_micros,
        long_context_threshold,long_input_price_micros,long_cached_price_micros,long_output_price_micros,pricing_source
 FROM model_routes WHERE provider_id=? ORDER BY sort_order,id`, item.ID)
@@ -296,6 +348,29 @@ FROM model_routes WHERE provider_id=? ORDER BY sort_order,id`, item.ID)
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
+		exclusionRows, err := tx.QueryContext(r.Context(), `SELECT public_name,upstream_model FROM model_route_exclusions WHERE provider_id=? ORDER BY public_name,upstream_model`, item.ID)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		for exclusionRows.Next() {
+			var exclusion providerBackupRouteExclusion
+			if err := exclusionRows.Scan(&exclusion.PublicName, &exclusion.UpstreamModel); err != nil {
+				exclusionRows.Close()
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			provider.RouteExclusions = append(provider.RouteExclusions, exclusion)
+		}
+		if err := exclusionRows.Err(); err != nil {
+			exclusionRows.Close()
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if err := exclusionRows.Close(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
 		backup.Providers = append(backup.Providers, provider)
 	}
 
@@ -310,7 +385,7 @@ FROM model_routes WHERE provider_id=? ORDER BY sort_order,id`, item.ID)
 }
 
 func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
-	if backup.Format != providerBackupFormat || backup.Version != providerBackupVersion {
+	if backup.Format != providerBackupFormat || (backup.Version != 1 && backup.Version != providerBackupVersion) {
 		return fmt.Errorf("unsupported backup format or version")
 	}
 	if len(backup.Providers) == 0 || len(backup.Providers) > providerBackupMaxChannels {
@@ -391,11 +466,22 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 		if !validPreference || (!validProviderProtocol(provider.Type, provider.ProtocolPolicy, provider.ProtocolPreference) && !(provider.ProtocolPolicy == protocolFixed && strings.Contains(provider.ProtocolPreference, ","))) {
 			return fmt.Errorf("provider %q contains an invalid protocol preference", provider.Name)
 		}
-		if len(provider.Keys) == 0 || len(provider.Keys) > providerBackupMaxKeys {
-			return fmt.Errorf("provider %q must contain between 1 and %d keys", provider.Name, providerBackupMaxKeys)
+		if (backup.Version == 1 && len(provider.Keys) == 0) || len(provider.Keys) > providerBackupMaxKeys {
+			return fmt.Errorf("provider %q has an invalid key count (maximum %d)", provider.Name, providerBackupMaxKeys)
 		}
 		if len(provider.Routes) > providerBackupMaxRoutes {
 			return fmt.Errorf("provider %q contains too many routes", provider.Name)
+		}
+		if len(provider.RouteExclusions) > providerBackupMaxRoutes {
+			return fmt.Errorf("provider %q contains too many route exclusions", provider.Name)
+		}
+		for i := range provider.RouteExclusions {
+			exclusion := &provider.RouteExclusions[i]
+			exclusion.PublicName = normalizeProviderKeyModel(exclusion.PublicName)
+			exclusion.UpstreamModel = normalizeProviderKeyModel(exclusion.UpstreamModel)
+			if exclusion.PublicName == "" || exclusion.UpstreamModel == "" {
+				return fmt.Errorf("provider %q contains an invalid route exclusion", provider.Name)
+			}
 		}
 		seenKeys := map[string]struct{}{}
 		for keyIndex := range provider.Keys {
@@ -403,6 +489,30 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 			key.Name = strings.TrimSpace(key.Name)
 			key.APIKey = strings.TrimSpace(key.APIKey)
 			key.Model = normalizeProviderKeyModel(key.Model)
+			key.ModelPolicy = strings.ToLower(strings.TrimSpace(key.ModelPolicy))
+			if key.ModelPolicy != "" && !validProviderKeyModelPolicy(key.ModelPolicy) {
+				return fmt.Errorf("provider %q contains an invalid key model policy", provider.Name)
+			}
+			if key.ModelAllowlist != nil {
+				value := normalizeProviderKeyAllowlist(*key.ModelAllowlist)
+				key.ModelAllowlist = &value
+			}
+			if key.CostMultiplier != nil && (math.IsNaN(*key.CostMultiplier) || math.IsInf(*key.CostMultiplier, 0) || *key.CostMultiplier <= 0 || *key.CostMultiplier > 1000) {
+				return fmt.Errorf("provider %q contains an invalid key cost multiplier", provider.Name)
+			}
+			if key.CostMultiplier == nil {
+				value := 1.0
+				key.CostMultiplier = &value
+			}
+			if len(key.Models) > providerBackupMaxRoutes || len(key.ExcludeModels) > providerBackupMaxRoutes {
+				return fmt.Errorf("provider %q contains too many key models", provider.Name)
+			}
+			for i := range key.ExcludeModels {
+				key.ExcludeModels[i] = normalizeProviderKeyModel(key.ExcludeModels[i])
+				if key.ExcludeModels[i] == "" {
+					return fmt.Errorf("provider %q contains an empty excluded model", provider.Name)
+				}
+			}
 			key.IPPoolNodeName = strings.TrimSpace(key.IPPoolNodeName)
 			if key.APIKey == "" {
 				return fmt.Errorf("provider %q contains an empty API key", provider.Name)
@@ -417,14 +527,16 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 				return fmt.Errorf("provider %q contains a duplicate API key", provider.Name)
 			}
 			seenKeys[key.APIKey] = struct{}{}
+			seenModels := map[string]bool{}
 			for modelIndex := range key.Models {
 				model := &key.Models[modelIndex]
-				model.Model = strings.TrimSpace(model.Model)
+				model.Model = normalizeProviderKeyModel(model.Model)
 				model.DisplayName = strings.TrimSpace(model.DisplayName)
 				model.Capabilities = strings.TrimSpace(model.Capabilities)
-				if model.Model == "" {
-					return fmt.Errorf("provider %q contains an empty discovered model", provider.Name)
+				if model.Model == "" || seenModels[model.Model] {
+					return fmt.Errorf("provider %q contains an empty or duplicate discovered model", provider.Name)
 				}
+				seenModels[model.Model] = true
 				if model.Capabilities == "" {
 					model.Capabilities = "chat,stream"
 				}
@@ -516,7 +628,11 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 		if provider.IPPoolNodeName != "" && providerNodeID == nil {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("渠道 %s 的出口节点 %s 不存在，已改为本机直连", provider.Name, provider.IPPoolNodeName))
 		}
-		firstEncrypted, encryptErr := a.encrypt(provider.Keys[0].APIKey)
+		firstKey := ""
+		if len(provider.Keys) > 0 {
+			firstKey = provider.Keys[0].APIKey
+		}
+		firstEncrypted, encryptErr := a.encrypt(firstKey)
 		if encryptErr != nil {
 			fail(w, http.StatusInternalServerError, "credential_error", encryptErr.Error())
 			return
@@ -550,7 +666,7 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 		if provider.HealthCheckEnabled != nil {
 			healthCheckEnabled = *provider.HealthCheckEnabled
 		}
-		if _, updateErr := tx.Exec(`UPDATE providers SET health_check_enabled=?,updated_at=? WHERE id=?`, boolInt(healthCheckEnabled), now(), providerID); updateErr != nil {
+		if _, updateErr := tx.Exec(`UPDATE providers SET health_check_enabled=?,archived=COALESCE(?,archived),updated_at=? WHERE id=?`, boolInt(healthCheckEnabled), maybeBool(provider.Archived), now(), providerID); updateErr != nil {
 			fail(w, http.StatusInternalServerError, "database_error", updateErr.Error())
 			return
 		}
@@ -577,14 +693,19 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 			if key.HealthCheckEnabled != nil {
 				healthCheckEnabled = *key.HealthCheckEnabled
 			}
-			costMultiplier := key.CostMultiplier
-			if costMultiplier <= 0 {
-				costMultiplier = 1
+			costMultiplier := *key.CostMultiplier
+			var policyArg any
+			if key.ModelPolicy != "" {
+				policyArg = key.ModelPolicy
+			}
+			allowlist := ""
+			if key.ModelAllowlist != nil {
+				allowlist = *key.ModelAllowlist
 			}
 			var keyID int64
 			findKeyErr := tx.QueryRow(`SELECT id FROM provider_api_keys WHERE provider_id=? AND fingerprint=?`, providerID, fingerprint).Scan(&keyID)
 			if errors.Is(findKeyErr, sql.ErrNoRows) {
-				res, insertErr := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,ip_pool_node_id,enabled,health_check_enabled,cost_multiplier,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'untested',?,?)`, providerID, encrypted, fingerprint, providerKeyHint(key.APIKey), key.Name, key.Model, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), costMultiplier, key.SortOrder, now(), now())
+				res, insertErr := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,model_policy,model_allowlist,egress_mode,ip_pool_node_id,enabled,health_check_enabled,cost_multiplier,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'untested',?,?)`, providerID, encrypted, fingerprint, providerKeyHint(key.APIKey), key.Name, key.Model, firstNonEmpty(key.ModelPolicy, "fallback"), allowlist, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), costMultiplier, key.SortOrder, now(), now())
 				if insertErr != nil {
 					fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
 					return
@@ -595,11 +716,27 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 				fail(w, http.StatusInternalServerError, "database_error", findKeyErr.Error())
 				return
 			} else {
-				if _, updateErr := tx.Exec(`UPDATE provider_api_keys SET credential=?,key_hint=?,name=?,model=?,egress_mode=?,ip_pool_node_id=?,enabled=?,health_check_enabled=?,cost_multiplier=?,sort_order=?,status='untested',last_error='',updated_at=? WHERE id=?`, encrypted, providerKeyHint(key.APIKey), key.Name, key.Model, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), costMultiplier, key.SortOrder, now(), keyID); updateErr != nil {
+				if _, updateErr := tx.Exec(`UPDATE provider_api_keys SET credential=?,key_hint=?,name=?,model=?,model_policy=COALESCE(?,model_policy),model_allowlist=COALESCE(?,model_allowlist),egress_mode=?,ip_pool_node_id=?,enabled=?,health_check_enabled=?,cost_multiplier=?,sort_order=?,status='untested',last_error='',updated_at=? WHERE id=?`, encrypted, providerKeyHint(key.APIKey), key.Name, key.Model, policyArg, key.ModelAllowlist, egressMode, keyNodeID, boolInt(key.Enabled), boolInt(healthCheckEnabled), costMultiplier, key.SortOrder, now(), keyID); updateErr != nil {
 					fail(w, http.StatusInternalServerError, "database_error", updateErr.Error())
 					return
 				}
 				result.KeysUpdated++
+			}
+			if _, err := tx.Exec(`DELETE FROM provider_api_key_model_health WHERE provider_key_id=?`, keyID); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			if key.ExcludeModels != nil {
+				if _, err := tx.Exec(`DELETE FROM provider_api_key_model_exclusions WHERE provider_key_id=?`, keyID); err != nil {
+					fail(w, http.StatusInternalServerError, "database_error", err.Error())
+					return
+				}
+				for _, model := range key.ExcludeModels {
+					if _, err := tx.Exec(`INSERT OR IGNORE INTO provider_api_key_model_exclusions(provider_key_id,model,created_at) VALUES(?,?,?)`, keyID, model, now()); err != nil {
+						fail(w, http.StatusInternalServerError, "database_error", err.Error())
+						return
+					}
+				}
 			}
 			if key.Models != nil {
 				if _, deleteErr := tx.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID); deleteErr != nil {
@@ -619,6 +756,18 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 			}
 		}
 
+		if provider.RouteExclusions != nil {
+			if _, err := tx.Exec(`DELETE FROM model_route_exclusions WHERE provider_id=?`, providerID); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			for _, exclusion := range provider.RouteExclusions {
+				if _, err := tx.Exec(`INSERT OR IGNORE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, exclusion.PublicName, exclusion.UpstreamModel, now()); err != nil {
+					fail(w, http.StatusInternalServerError, "database_error", err.Error())
+					return
+				}
+			}
+		}
 		for _, route := range provider.Routes {
 			var routeID int64
 			findRouteErr := tx.QueryRow(`SELECT id FROM model_routes WHERE public_name=? AND provider_id=? AND upstream_model=?`, route.PublicName, providerID, route.UpstreamModel).Scan(&routeID)
@@ -662,6 +811,7 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 	}
 	for _, providerID := range changedProviderIDs {
 		a.resetProviderRuntime(providerID)
+		a.resetProviderKeysRuntime(a.providerKeyIDs(providerID))
 		a.resetProviderKeyRoundRobin(providerID)
 	}
 	writeJSON(w, http.StatusOK, result)

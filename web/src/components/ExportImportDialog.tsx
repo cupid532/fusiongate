@@ -1,7 +1,8 @@
 import { useRef, useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { FileUp } from "lucide-react"
-import { api, getCsrfToken } from "@/lib/api"
+import { api, apiDownload, saveBlob } from "@/lib/api"
+import { refreshProviderViews } from "@/lib/provider-management"
 import {
   Dialog,
   DialogContent,
@@ -18,6 +19,8 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
   const [tab, setTab] = useState<"import" | "export">("import")
   const [content, setContent] = useState("")
   const [exporting, setExporting] = useState(false)
+  const [error, setError] = useState("")
+  const [result, setResult] = useState<{ providers_created: number; providers_updated: number; warnings?: string[] } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -25,8 +28,9 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
     if (!file) return
     const reader = new FileReader()
     reader.onload = () => {
-      if (typeof reader.result === "string") setContent(reader.result)
+      if (typeof reader.result === "string") { setContent(reader.result); setError(""); setResult(null) }
     }
+    reader.onerror = () => setError("无法读取备份文件")
     reader.readAsText(file)
     // Reset the input so the same file can be selected again if needed.
     e.target.value = ""
@@ -34,15 +38,12 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
 
   const doExport = async () => {
     setExporting(true)
+    setError("")
     try {
-      const res = await fetch("/api/admin/providers/export", { method: "POST", headers: { "X-CSRF-Token": getCsrfToken() } })
-      const blob = await res.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = "fusiongate-providers.json"
-      a.click()
-      URL.revokeObjectURL(url)
+      const blob = await apiDownload("/api/admin/providers/export", { method: "POST" })
+      saveBlob(blob, "fusiongate-providers.json")
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "导出失败")
     } finally {
       setExporting(false)
     }
@@ -50,23 +51,25 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
 
   const doImport = useMutation({
     mutationFn: async () => {
+      setError("")
+      setResult(null)
       const data = JSON.parse(content)
-      return api("/api/admin/providers/import", { method: "POST", body: JSON.stringify(data) })
+      return api<NonNullable<typeof result>>("/api/admin/providers/import", { method: "POST", body: JSON.stringify(data) })
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["providers"] })
-      qc.invalidateQueries({ queryKey: ["routes"] })
-      onOpenChange(false)
+    onSuccess: async (data) => {
+      setResult(data)
       setContent("")
+      await refreshProviderViews(qc)
     },
+    onError: (reason) => setError(reason instanceof SyntaxError ? "备份 JSON 格式不正确" : reason instanceof Error ? reason.message : "导入失败"),
   })
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(value) => { if (!doImport.isPending && !exporting) onOpenChange(value) }}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>渠道备份</DialogTitle>
-          <DialogDescription>导出或导入渠道配置（含 Key 与模型路由）。</DialogDescription>
+          <DialogDescription>按渠道名称和 Key 指纹合并配置，保留备份之外的 Key 与路由；不恢复访问密钥、密码或出口节点。</DialogDescription>
         </DialogHeader>
 
         <div className="flex gap-1.5">
@@ -88,6 +91,8 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
           ))}
         </div>
 
+        {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}
+        {result && <div role="status" className="space-y-2 text-sm"><p>导入完成：新增 {result.providers_created} 个渠道，更新 {result.providers_updated} 个渠道。</p>{result.warnings?.map((warning, index) => <p key={index} className="break-words text-amber-700 dark:text-amber-400">{warning}</p>)}</div>}
         {tab === "import" ? (
           <>
             <div className="space-y-2">
@@ -101,14 +106,14 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
               </div>
               <Textarea
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
+                onChange={(e) => { setContent(e.target.value); setError(""); setResult(null) }}
                 placeholder="粘贴导出的渠道备份 JSON"
                 className="min-h-[200px] font-mono text-xs"
               />
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>
-                取消
+              <Button variant="outline" disabled={doImport.isPending} onClick={() => onOpenChange(false)}>
+                {result ? "关闭" : "取消"}
               </Button>
               <Button onClick={() => doImport.mutate()} disabled={!content.trim() || doImport.isPending}>
                 {doImport.isPending ? "导入中…" : "导入"}
@@ -117,7 +122,7 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
           </>
         ) : (
           <>
-            <p className="text-sm text-muted-foreground">导出包含渠道、Key 和模型路由的完整备份（含密钥）。</p>
+            <p className="text-sm text-muted-foreground">导出渠道、上游 Key、模型清单、路由和排除规则，含上游密钥，请妥善保管。</p>
             <DialogFooter>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 取消

@@ -748,7 +748,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		if in.HealthCheckEnabled != nil {
 			healthCheckEnabled = *in.HealthCheckEnabled
 		}
-		res, err := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,ip_pool_node_id,enabled,health_check_enabled,cost_multiplier,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'untested',?,?)`, providerID, encrypted, a.providerKeyFingerprint(in.APIKey), providerKeyHint(in.APIKey), in.Name, in.Model, in.EgressMode, nodeArg, boolInt(enabled), boolInt(healthCheckEnabled), in.CostMultiplier, nextOrder, now(), now())
+		res, err := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,model_policy,model_allowlist,egress_mode,ip_pool_node_id,enabled,health_check_enabled,cost_multiplier,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'untested',?,?)`, providerID, encrypted, a.providerKeyFingerprint(in.APIKey), providerKeyHint(in.APIKey), in.Name, in.Model, in.ModelPolicy, in.ModelAllowlist, in.EgressMode, nodeArg, boolInt(enabled), boolInt(healthCheckEnabled), in.CostMultiplier, nextOrder, now(), now())
 		if err != nil {
 			lowerError := strings.ToLower(err.Error())
 			if strings.Contains(lowerError, "provider key limit reached") {
@@ -780,7 +780,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 type providerModelManagementItem struct {
 	KeyID          int64    `json:"key_id"`
 	ModelPolicy    string   `json:"model_policy"`
-	ModelAllowlist string   `json:"model_allowlist"`
+	ModelAllowlist *string  `json:"model_allowlist"`
 	Models         []string `json:"models"`
 	ExcludeModels  []string `json:"exclude_models"`
 }
@@ -800,6 +800,28 @@ func (a *App) saveProviderModelManagement(ctx context.Context, providerID int64,
 		return nil, err
 	}
 	defer tx.Rollback()
+	statuses, err := a.saveProviderModelManagementTx(ctx, tx, providerID, items)
+	if err != nil {
+		return statuses, err
+	}
+	var selected []string
+	for _, item := range items {
+		selected = append(selected, item.Models...)
+	}
+	added, err := a.syncProviderModelRoutes(ctx, tx, providerID, selected)
+	if err != nil {
+		return statuses, err
+	}
+	if err := tx.Commit(); err != nil {
+		return statuses, err
+	}
+	if added > 0 {
+		a.triggerPricingSync()
+	}
+	return statuses, nil
+}
+
+func (a *App) saveProviderModelManagementTx(ctx context.Context, tx *sql.Tx, providerID int64, items []providerModelManagementItem) ([]providerModelManagementStatus, error) {
 	statuses := make([]providerModelManagementStatus, 0, len(items))
 	seen := make(map[int64]bool, len(items))
 	for _, item := range items {
@@ -810,24 +832,31 @@ func (a *App) saveProviderModelManagement(ctx context.Context, providerID int64,
 			return statuses, errors.New(st.Error)
 		}
 		seen[item.KeyID] = true
+		var currentPolicy, currentAllowlist string
+		if err := tx.QueryRowContext(ctx, `SELECT model_policy,model_allowlist FROM provider_api_keys WHERE id=? AND provider_id=?`, item.KeyID, providerID).Scan(&currentPolicy, &currentAllowlist); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				st.Error = "key not found"
+				statuses = append(statuses, st)
+				return statuses, errors.New(st.Error)
+			}
+			return statuses, err
+		}
 		policy := strings.ToLower(strings.TrimSpace(item.ModelPolicy))
 		if policy == "" {
-			policy = "fallback"
+			policy = currentPolicy
 		}
 		if !validProviderKeyModelPolicy(policy) {
 			st.Error = "invalid model policy"
 			statuses = append(statuses, st)
 			return statuses, errors.New(st.Error)
 		}
-		allowlist := normalizeProviderKeyAllowlist(item.ModelAllowlist)
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_api_keys WHERE id=? AND provider_id=?`, item.KeyID, providerID).Scan(&exists); err != nil {
-			return statuses, err
-		}
-		if exists != 1 {
-			st.Error = "key not found"
-			statuses = append(statuses, st)
-			return statuses, errors.New(st.Error)
+		allowlist := currentAllowlist
+		if item.ModelAllowlist != nil {
+			allowlist = normalizeProviderKeyAllowlist(*item.ModelAllowlist)
+		} else {
+			if item.Models != nil {
+				allowlist = normalizeProviderKeyAllowlist(strings.Join(item.Models, ","))
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE provider_api_keys SET model_policy=?,model_allowlist=?,updated_at=? WHERE id=? AND provider_id=?`, policy, allowlist, now(), item.KeyID, providerID); err != nil {
 			return statuses, err
@@ -847,6 +876,9 @@ func (a *App) saveProviderModelManagement(ctx context.Context, providerID int64,
 			if _, err := tx.ExecContext(ctx, `DELETE FROM provider_api_key_models WHERE provider_key_id=? AND lower(model)=?`, item.KeyID, m); err != nil {
 				return statuses, err
 			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM provider_api_key_model_health WHERE provider_key_id=? AND lower(model)=?`, item.KeyID, m); err != nil {
+				return statuses, err
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_model_exclusions(provider_key_id,model,created_at) VALUES(?,?,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET created_at=excluded.created_at`, item.KeyID, m, now()); err != nil {
 				return statuses, err
 			}
@@ -864,6 +896,10 @@ func (a *App) saveProviderModelManagement(ctx context.Context, providerID int64,
 					return statuses, e
 				}
 				inventory = append(inventory, m)
+			}
+			if e = rows.Err(); e != nil {
+				rows.Close()
+				return statuses, e
 			}
 			if e = rows.Close(); e != nil {
 				return statuses, e
@@ -892,99 +928,190 @@ func (a *App) saveProviderModelManagement(ctx context.Context, providerID int64,
 		st.Status = "saved"
 		statuses = append(statuses, st)
 	}
-	// Sync model_routes so the gateway can actually route to models that
-	// were just enabled (or stop routing to models that were just removed).
-	//
-	// The management dialog operates on per-Key inventory
-	// (provider_api_key_models), but the gateway resolves requests against
-	// model_routes.  Before this, saving in the dialog silently updated
-	// only the Key layer — the route table was never touched, so the model
-	// never appeared in routing or health checks.
-	//
-	// Strategy: compute the *union* of every enabled model across all Keys
-	// for this provider.  Models in that union that have no model_routes row
-	// get one created; models NOT in the union (and not enabled anywhere)
-	// get their route removed and an exclusion recorded so re-discovery
-	// does not immediately add them back.
-	allEnabled := map[string]bool{}
-	{
-		rows, e := tx.QueryContext(ctx, `
-			SELECT DISTINCT LOWER(m.model) FROM provider_api_key_models m
-			JOIN provider_api_keys k ON k.id=m.provider_key_id
-			WHERE k.provider_id=? AND m.enabled=1`, providerID)
-		if e != nil {
-			return statuses, e
-		}
-		for rows.Next() {
-			var m string
-			if e = rows.Scan(&m); e != nil {
-				rows.Close()
-				return statuses, e
-			}
-			allEnabled[m] = true
-		}
-		if e = rows.Close(); e != nil {
-			return statuses, e
-		}
-	}
-	stamp := now()
-	routeAdded := 0
-	for m := range allEnabled {
-		if _, e := tx.ExecContext(ctx, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?)`, providerID, m, m); e != nil {
-			return statuses, e
-		}
-		res, e := tx.ExecContext(ctx, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
-SELECT ?,?,?,?,?,?,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),?,?,?,?
-WHERE NOT EXISTS(SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(upstream_model)=?)`, m, providerID, m, "chat,stream", 1, 0, m, 0, 0, stamp, stamp, providerID, m)
-		if e != nil {
-			return statuses, e
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			routeAdded++
-		}
-	}
-	// Remove routes for models that no longer have any enabled Key.
-	{
-		rows, e := tx.QueryContext(ctx, `SELECT id,LOWER(upstream_model) FROM model_routes WHERE provider_id=?`, providerID)
-		if e != nil {
-			return statuses, e
-		}
-		type routeRow struct {
-			id    int64
-			model string
-		}
-		var existing []routeRow
-		for rows.Next() {
-			var rr routeRow
-			if e = rows.Scan(&rr.id, &rr.model); e != nil {
-				rows.Close()
-				return statuses, e
-			}
-			existing = append(existing, rr)
-		}
-		if e = rows.Close(); e != nil {
-			return statuses, e
-		}
-		for _, rr := range existing {
-			if allEnabled[rr.model] {
-				continue
-			}
-			if _, e = tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, rr.model, rr.model, stamp); e != nil {
-				return statuses, e
-			}
-			if _, e = tx.ExecContext(ctx, `DELETE FROM model_routes WHERE id=?`, rr.id); e != nil {
-				return statuses, e
-			}
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return statuses, err
-	}
-	if routeAdded > 0 {
-		a.triggerPricingSync()
-	}
 	return statuses, nil
+}
+
+func (a *App) syncProviderModelRoutes(ctx context.Context, tx *sql.Tx, providerID int64, selected []string) (int, error) {
+	type keyModels struct {
+		policy, allowlist, fixed string
+		inventory, exclusions    map[string]bool
+	}
+	var defaultModel string
+	if err := tx.QueryRowContext(ctx, `SELECT default_model FROM providers WHERE id=?`, providerID).Scan(&defaultModel); err != nil {
+		return 0, err
+	}
+	keys := map[int64]*keyModels{}
+	rows, err := tx.QueryContext(ctx, `SELECT id,model_policy,model_allowlist,model FROM provider_api_keys WHERE provider_id=?`, providerID)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var id int64
+		key := &keyModels{inventory: map[string]bool{}, exclusions: map[string]bool{}}
+		if err := rows.Scan(&id, &key.policy, &key.allowlist, &key.fixed); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys[id] = key
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	capabilities := map[string]string{}
+	rows, err = tx.QueryContext(ctx, `SELECT m.provider_key_id,m.model,m.enabled,m.capabilities FROM provider_api_key_models m JOIN provider_api_keys k ON k.id=m.provider_key_id WHERE k.provider_id=?`, providerID)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var id int64
+		var model, caps string
+		var enabled int
+		if err := rows.Scan(&id, &model, &enabled, &caps); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		model = normalizeProviderKeyModel(model)
+		keys[id].inventory[model] = strBool(enabled)
+		if enabled != 0 {
+			capabilities[model] = mergeCapabilities(capabilities[model], caps)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT e.provider_key_id,e.model FROM provider_api_key_model_exclusions e JOIN provider_api_keys k ON k.id=e.provider_key_id WHERE k.provider_id=?`, providerID)
+	if err != nil {
+		return 0, err
+	}
+	for rows.Next() {
+		var id int64
+		var model string
+		if err := rows.Scan(&id, &model); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		keys[id].exclusions[normalizeProviderKeyModel(model)] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	// Disabled cards retain their route configuration for a later re-enable.
+	// Model eligibility itself uses the same policy as gateway selection.
+	supports := func(model string) bool {
+		for _, key := range keys {
+			if providerKeySupportsModel(key.policy, key.allowlist, key.fixed, defaultModel, model, key.inventory, key.exclusions) {
+				return true
+			}
+		}
+		return false
+	}
+	explicit := map[string]bool{}
+	for _, model := range selected {
+		model = normalizeProviderKeyModel(model)
+		if model != "" {
+			explicit[model] = true
+		}
+	}
+	stamp, added := now(), 0
+	models := make([]string, 0, len(capabilities))
+	for model := range capabilities {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		if !supports(model) {
+			continue
+		}
+		if explicit[model] {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?)`, providerID, model, model); err != nil {
+				return 0, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE model_routes SET enabled=1,capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, capabilities[model], stamp, providerID, model); err != nil {
+				return 0, err
+			}
+		}
+		res, err := tx.ExecContext(ctx, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
+SELECT ?,?,?,?,1,0,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),0,0,?,?
+WHERE NOT EXISTS(SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(upstream_model)=?)
+AND NOT EXISTS(SELECT 1 FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?))`, model, providerID, model, capabilities[model], model, stamp, stamp, providerID, model, providerID, model, model)
+		if err != nil {
+			return 0, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		added += int(n)
+	}
+	type routeModel struct {
+		id                   int64
+		publicName, upstream string
+	}
+	rows, err = tx.QueryContext(ctx, `SELECT id,public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID)
+	if err != nil {
+		return 0, err
+	}
+	var existing []routeModel
+	for rows.Next() {
+		var route routeModel
+		if err := rows.Scan(&route.id, &route.publicName, &route.upstream); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		existing = append(existing, route)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	for _, route := range existing {
+		if supports(route.upstream) {
+			continue
+		}
+		model := normalizeProviderKeyModel(route.upstream)
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, route.publicName, model, stamp); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM model_routes WHERE id=?`, route.id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM model_aliases WHERE target_model=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, route.publicName, route.publicName); err != nil {
+			return 0, err
+		}
+	}
+	return added, nil
+}
+
+func mergeCapabilities(existing, additional string) string {
+	seen := map[string]bool{}
+	var values []string
+	for _, value := range strings.Split(existing+","+additional, ",") {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			values = append(values, value)
+		}
+	}
+	if len(values) == 0 {
+		return "chat,stream"
+	}
+	sort.Strings(values)
+	return strings.Join(values, ",")
 }
 
 func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID, keyID int64, action string) {
@@ -1087,7 +1214,13 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		}
 		var currentMode string
 		var currentNode sql.NullInt64
-		if err := a.db.QueryRow(`SELECT egress_mode,ip_pool_node_id FROM provider_api_keys WHERE id=? AND provider_id=?`, keyID, providerID).Scan(&currentMode, &currentNode); err != nil {
+		tx, err := a.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		defer tx.Rollback()
+		if err := tx.QueryRowContext(r.Context(), `SELECT egress_mode,ip_pool_node_id FROM provider_api_keys WHERE id=? AND provider_id=?`, keyID, providerID).Scan(&currentMode, &currentNode); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				fail(w, http.StatusNotFound, "not_found", "API key card not found")
 			} else {
@@ -1114,7 +1247,7 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 		if effectiveMode == providerKeyEgressNode && effectiveNode != nil && *effectiveNode > 0 {
 			nodeArg = *effectiveNode
 		}
-		res, err := a.db.Exec(`UPDATE provider_api_keys SET credential=COALESCE(?,credential),fingerprint=COALESCE(?,fingerprint),key_hint=COALESCE(?,key_hint),name=COALESCE(?,name),model=COALESCE(?,model),model_policy=COALESCE(?,model_policy),model_allowlist=COALESCE(?,model_allowlist),egress_mode=COALESCE(?,egress_mode),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,enabled=COALESCE(?,enabled),health_check_enabled=COALESCE(?,health_check_enabled),cost_multiplier=COALESCE(?,cost_multiplier),sort_order=COALESCE(?,sort_order),status=CASE WHEN ? THEN 'untested' ELSE status END,last_error=CASE WHEN ? THEN '' ELSE last_error END,updated_at=? WHERE id=? AND provider_id=?`, encryptedArg, fingerprintArg, hintArg, nameArg, modelArg, egressArg, policyArg, allowlistArg, in.EgressMode != nil || in.IPPoolNodeID != nil, nodeArg, maybeBool(in.Enabled), maybeBool(in.HealthCheckEnabled), in.CostMultiplier, in.SortOrder, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, now(), keyID, providerID)
+		res, err := tx.ExecContext(r.Context(), `UPDATE provider_api_keys SET credential=COALESCE(?,credential),fingerprint=COALESCE(?,fingerprint),key_hint=COALESCE(?,key_hint),name=COALESCE(?,name),model=COALESCE(?,model),model_policy=COALESCE(?,model_policy),model_allowlist=COALESCE(?,model_allowlist),egress_mode=COALESCE(?,egress_mode),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,enabled=COALESCE(?,enabled),health_check_enabled=COALESCE(?,health_check_enabled),cost_multiplier=COALESCE(?,cost_multiplier),sort_order=COALESCE(?,sort_order),status=CASE WHEN ? THEN 'untested' ELSE status END,last_error=CASE WHEN ? THEN '' ELSE last_error END,updated_at=? WHERE id=? AND provider_id=?`, encryptedArg, fingerprintArg, hintArg, nameArg, modelArg, policyArg, allowlistArg, egressArg, in.EgressMode != nil || in.IPPoolNodeID != nil, nodeArg, maybeBool(in.Enabled), maybeBool(in.HealthCheckEnabled), in.CostMultiplier, in.SortOrder, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil, now(), keyID, providerID)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "unique") {
 				fail(w, http.StatusConflict, "duplicate_api_key", "this API key already exists in the provider")
@@ -1128,66 +1261,63 @@ func (a *App) providerKeyByID(w http.ResponseWriter, r *http.Request, providerID
 			return
 		}
 		runtimeChanged := encryptedArg != nil || modelArg != nil || egressArg != nil || in.IPPoolNodeID != nil || (in.Enabled != nil && *in.Enabled)
-		if runtimeChanged {
-			a.resetProviderKeyRuntime(keyID)
-		}
 		if in.HealthCheckEnabled != nil {
 			status, message := "untested", ""
 			if !*in.HealthCheckEnabled {
 				status, message = "disabled", "health checks disabled for this API key"
 			}
-			_, _ = a.db.Exec(`UPDATE provider_api_keys SET status=?,last_error=?,updated_at=? WHERE id=? AND provider_id=?`, status, message, now(), keyID, providerID)
-		}
-		if encryptedArg != nil {
-			_, _ = a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
-		}
-		for _, model := range in.RemoveModels {
-			model = normalizeProviderKeyModel(model)
-			if model == "" {
-				continue
-			}
-			if _, err := a.db.Exec(`DELETE FROM provider_api_key_models WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, model); err != nil {
+			if _, err := tx.ExecContext(r.Context(), `UPDATE provider_api_keys SET status=?,last_error=?,updated_at=? WHERE id=? AND provider_id=?`, status, message, now(), keyID, providerID); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
-			_, _ = a.db.Exec(`DELETE FROM provider_api_key_model_health WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, model)
-			_, _ = a.db.Exec(`INSERT INTO provider_api_key_model_exclusions(provider_key_id,model,created_at) VALUES(?,?,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET created_at=excluded.created_at`, keyID, model, now())
 		}
-		if in.Models != nil {
-			selected := map[string]bool{}
-			for _, model := range *in.Models {
-				if normalized := normalizeProviderKeyModel(model); normalized != "" {
-					selected[normalized] = true
-					_, _ = a.db.Exec(`DELETE FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, normalized)
-				}
-			}
-			for model := range selected {
-				if _, insertErr := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,enabled,discovered_at) VALUES(?,?,?,'chat,stream',1,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET enabled=1`, keyID, model, model, now()); insertErr != nil {
-					fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
-					return
-				}
-			}
-			modelRows, queryErr := a.db.Query(`SELECT model FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
-			if queryErr != nil {
-				fail(w, http.StatusInternalServerError, "database_error", queryErr.Error())
+		if encryptedArg != nil {
+			if _, err := tx.ExecContext(r.Context(), `DELETE FROM provider_api_key_model_health WHERE provider_key_id=?`, keyID); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
-			var inventory []string
-			for modelRows.Next() {
-				var model string
-				if modelRows.Scan(&model) == nil {
-					inventory = append(inventory, model)
-				}
+		}
+		var selected []string
+		modelsChanged := in.Models != nil || len(in.RemoveModels) > 0
+		if modelsChanged {
+			item := providerModelManagementItem{KeyID: keyID, ExcludeModels: in.RemoveModels}
+			if in.Models != nil {
+				item.Models = *in.Models
+				selected = item.Models
 			}
-			_ = modelRows.Close()
-			for _, model := range inventory {
-				_, _ = a.db.Exec(`UPDATE provider_api_key_models SET enabled=? WHERE provider_key_id=? AND model=?`, boolInt(selected[strings.ToLower(model)]), keyID, model)
+			if in.ModelAllowlist != nil {
+				item.ModelAllowlist = in.ModelAllowlist
+			}
+			if _, err := a.saveProviderModelManagementTx(r.Context(), tx, providerID, []providerModelManagementItem{item}); err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+		}
+		added := 0
+		if modelsChanged || policyArg != nil || allowlistArg != nil || modelArg != nil {
+			added, err = a.syncProviderModelRoutes(r.Context(), tx, providerID, selected)
+			if err != nil {
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
 			}
 		}
 		// Keep the legacy provider credential synchronized with the current first
 		// card. New runtimes never select it after initialization, but this makes
 		// a binary rollback preserve the same primary credential.
-		_, _ = a.db.Exec(`UPDATE providers SET credential=COALESCE((SELECT credential FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1),credential),updated_at=? WHERE id=?`, providerID, now(), providerID)
+		if _, err := tx.ExecContext(r.Context(), `UPDATE providers SET credential=COALESCE((SELECT credential FROM provider_api_keys WHERE provider_id=? ORDER BY sort_order,id LIMIT 1),credential),updated_at=? WHERE id=?`, providerID, now(), providerID); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if runtimeChanged || modelsChanged || policyArg != nil || allowlistArg != nil {
+			a.resetProviderKeyRuntime(keyID)
+		}
+		if added > 0 {
+			a.triggerPricingSync()
+		}
 		writeJSON(w, http.StatusOK, map[string]bool{"updated": true})
 	case http.MethodDelete:
 		tx, err := a.db.BeginTx(r.Context(), nil)

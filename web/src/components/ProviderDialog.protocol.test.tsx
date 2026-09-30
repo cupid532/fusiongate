@@ -121,8 +121,8 @@ describe("ProviderDialog passthrough", () => {
     }))
     show(provider())
     fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
-    const egress = await screen.findByRole("combobox", { name: "出口（只读）" })
-    expect((egress as HTMLSelectElement).disabled).toBe(true)
+    const egress = await screen.findByRole("combobox", { name: "出口" })
+    await waitFor(() => expect((egress as HTMLSelectElement).disabled).toBe(false))
     expect(requests).toHaveLength(0)
     const cost = screen.getByRole("spinbutton", { name: "成本倍率" })
     fireEvent.change(cost, { target: { value: "1.25" } })
@@ -133,6 +133,27 @@ describe("ProviderDialog passthrough", () => {
     expect(requests.find((r) => r.url === "/api/admin/providers/7/keys/3")?.body).not.toHaveProperty("egress_mode")
     expect(requests.find((r) => r.url === "/api/admin/providers/7/keys/3")?.body).not.toHaveProperty("ip_pool_node_id")
     expect(requests.some((r) => r.url === "/api/admin/providers/7")).toBe(false)
+  })
+
+  it.each([
+    ["direct", { egress_mode: "direct", ip_pool_node_id: 0 }],
+    ["node:8", { egress_mode: "node", ip_pool_node_id: 8 }],
+  ])("explicitly saves Key egress %s without modifying model policy", async (value, expected) => {
+    setup()
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
+      const url = String(input)
+      if (options?.body) requests.push({ url, body: JSON.parse(String(options.body)) })
+      const body = url.endsWith("/keys") ? [{ id: 3, name: "主 Key", key_hint: "***", enabled: true, health_check_enabled: true, egress_mode: "inherit", cost_multiplier: 1, models: [] }] : url.endsWith("/ip-pool") ? [{ id: 8, name: "出口节点", protocol: "socks5", enabled: true }] : []
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
+    }))
+    show(provider())
+    fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
+    const egress = await screen.findByRole("combobox", { name: "出口" })
+    await waitFor(() => expect((egress as HTMLSelectElement).disabled).toBe(false))
+    fireEvent.change(egress, { target: { value } })
+    expect(requests).toHaveLength(0)
+    fireEvent.click(screen.getByRole("button", { name: "保存 Key" }))
+    await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7/keys/3")?.body).toEqual(expected))
   })
 
   it("saves and clears the merchant URL with channel parameters", async () => {

@@ -93,7 +93,7 @@ func TestProviderBackupExportDoesNotFallBackToInitializedLegacyCredential(t *tes
 	if err := json.Unmarshal(recorder.Body.Bytes(), &backup); err != nil {
 		t.Fatal(err)
 	}
-	if len(backup.Providers) != 0 {
+	if len(backup.Providers) != 1 || len(backup.Providers[0].Keys) != 0 {
 		t.Fatalf("keyless initialized providers=%#v", backup.Providers)
 	}
 }

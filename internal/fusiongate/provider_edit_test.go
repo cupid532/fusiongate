@@ -396,12 +396,15 @@ func TestEditProviderLaterMutationFailureRollsBackProvider(t *testing.T) {
 	if _, err := a.db.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at) VALUES(?,?,?,?,?)`, keyID, "stable-model", "Stable Model", "chat", now()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.db.Exec(`CREATE TRIGGER fail_provider_inventory_cleanup BEFORE DELETE ON provider_api_key_models BEGIN SELECT RAISE(ABORT, 'forced inventory cleanup failure'); END`); err != nil {
+	if _, err := a.db.Exec(`INSERT INTO provider_api_key_model_health(provider_key_id,model,status,last_checked_at) VALUES(?,'stable-model','healthy',?)`, keyID, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.db.Exec(`CREATE TRIGGER fail_provider_health_cleanup BEFORE DELETE ON provider_api_key_model_health BEGIN SELECT RAISE(ABORT, 'forced health cleanup failure'); END`); err != nil {
 		t.Fatal(err)
 	}
 
 	rec := patchProviderForTest(t, a, id, `{"baseURL":"http://replacement.test","notes":"must roll back"}`)
-	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "forced inventory cleanup failure") {
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "forced health cleanup failure") {
 		t.Fatalf("patch status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
