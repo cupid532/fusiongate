@@ -42,6 +42,14 @@ describe("channel management workflow", () => {
     await waitFor(() => expect(screen.getAllByRole("row")[1].textContent).toContain("Second"))
     expect(screen.getByText("待检活")).toBeTruthy()
   })
+  it("keeps narrow channel tables readable inside a keyboard-accessible scroll region", async () => {
+    showProviders()
+    await screen.findByRole("checkbox", { name: "选择 First" })
+    expect(screen.getByRole("region", { name: "渠道列表" }).tabIndex).toBe(0)
+    const table = screen.getByRole("table")
+    expect(table.classList.contains("min-w-[48rem]")).toBe(true)
+    expect(table.classList.contains("whitespace-nowrap")).toBe(true)
+  })
 })
 
 describe("reorderProviderIDs", () => {

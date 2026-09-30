@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.20
+
+- Keep channel-table columns readable on narrow screens by preserving a minimum table width and preventing one-character wrapping. Horizontal scrolling stays inside a labelled, keyboard-accessible region without widening the page.
+- Add a responsive-table regression while retaining the channel editor and bulk-operation workflow from V3.18/V3.19.
+
 ## V3.19
 
 - Protect existing Key egress overrides by making the single-Key egress control read-only: the unchanged server's PATCH binding misroutes these fields into model policy/allowlist. Channel default and bulk egress updates remain available; Key name, enabled state, health switch and cost are independently saved.
