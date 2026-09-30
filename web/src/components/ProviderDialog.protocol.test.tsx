@@ -111,7 +111,7 @@ describe("ProviderDialog passthrough", () => {
     await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7")?.body).toMatchObject({ health_check_enabled: true }))
   })
 
-  it("saves Key egress and cost independently of channel settings", async () => {
+  it("preserves Key egress while explicitly saving cost independently of channel settings", async () => {
     setup()
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, options?: RequestInit) => {
       const url = String(input)
@@ -121,17 +121,17 @@ describe("ProviderDialog passthrough", () => {
     }))
     show(provider())
     fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
-    const egress = await screen.findByRole("combobox", { name: "出口" })
-    fireEvent.change(egress, { target: { value: "direct" } })
+    const egress = await screen.findByRole("combobox", { name: "出口（只读）" })
+    expect((egress as HTMLSelectElement).disabled).toBe(true)
     expect(requests).toHaveLength(0)
-    fireEvent.click(screen.getByRole("button", { name: "保存 Key" }))
-    await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7/keys/3")?.body).toMatchObject({ egress_mode: "direct", ip_pool_node_id: null }))
     const cost = screen.getByRole("spinbutton", { name: "成本倍率" })
     fireEvent.change(cost, { target: { value: "1.25" } })
     fireEvent.blur(cost)
     expect(requests.some((r) => r.body.cost_multiplier === 1.25)).toBe(false)
     fireEvent.click(screen.getByRole("button", { name: "保存 Key" }))
     await waitFor(() => expect(requests.some((r) => r.url === "/api/admin/providers/7/keys/3" && r.body.cost_multiplier === 1.25)).toBe(true))
+    expect(requests.find((r) => r.url === "/api/admin/providers/7/keys/3")?.body).not.toHaveProperty("egress_mode")
+    expect(requests.find((r) => r.url === "/api/admin/providers/7/keys/3")?.body).not.toHaveProperty("ip_pool_node_id")
     expect(requests.some((r) => r.url === "/api/admin/providers/7")).toBe(false)
   })
 

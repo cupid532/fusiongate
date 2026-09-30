@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.19
+
+- Protect existing Key egress overrides by making the single-Key egress control read-only: the unchanged server's PATCH binding misroutes these fields into model policy/allowlist. Channel default and bulk egress updates remain available; Key name, enabled state, health switch and cost are independently saved.
+- Reinstall locked frontend dependencies in the console build script before regenerating embedded assets, preventing stale local dependency contents from diverging from CI builds.
+
 ## V3.18
 
 - Reorganize upstream management into a persistent-navigation editor and a selectable channel table with group/default-egress filters, separate merchant links, configuration-vs-health status, priority-order previews, and direct Key/model/egress/ledger navigation.
