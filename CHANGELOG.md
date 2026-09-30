@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.18
+
+- Reorganize upstream management into a persistent-navigation editor and a selectable channel table with group/default-egress filters, separate merchant links, configuration-vs-health status, priority-order previews, and direct Key/model/egress/ledger navigation.
+- Restore bulk default-egress selection for API channels and share the same explicit-choice dialog with OAuth credentials. Keep independent Key egress overrides intact, disable unavailable nodes, expose loading failures, and require read-back verification after an uncertain write.
+- Add per-item bulk priority, group and archive edits using existing admin endpoints, with success/error/unknown/skipped results and failed-item-only retries. Preserve hidden selections and complete channel reorder payloads; drag ordering stays within a priority tier.
+- Fix channel egress clearing to submit zero and use differential PATCH payloads so unrelated edits do not resubmit connection settings. Replace implicit Key blur/change saves with explicit per-Key save/cancel controls; retain drafts across editor sections and discard them when reopening after close.
+- Clarify Key inventory, enabled models and public routes; improve editor busy states, validation, cache refresh, node batch outcomes, data-load errors and cross-page links. Point the development console at the local 8787 service by default, with an optional development-upstream override.
+- Refresh current console/protocol documentation and add frontend regression coverage. No backend routing, database or inference behavior changes.
+
 ## V3.17
 
 - Remove SQLite writes from the global route mutex. Persist in-memory health snapshots asynchronously with monotonic revisions so stale queued outcomes cannot overwrite newer completions.

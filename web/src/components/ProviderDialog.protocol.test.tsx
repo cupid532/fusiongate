@@ -38,6 +38,38 @@ function show(p: Provider | null) {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("ProviderDialog passthrough", () => {
+  it("clears channel egress with zero and leaves other connection settings untouched", async () => {
+    setup()
+    show(provider({ ip_pool_node_id: 8 }))
+    fireEvent.click(screen.getByRole("button", { name: /转发与调度/ }))
+    const egress = screen.getByRole("combobox", { name: "渠道默认出口" })
+    await waitFor(() => expect((egress as HTMLSelectElement).disabled).toBe(false))
+    fireEvent.change(egress, { target: { value: "direct" } })
+    fireEvent.click(screen.getByRole("button", { name: "保存渠道参数" }))
+    await waitFor(() => expect(requests.find((request) => request.url === "/api/admin/providers/7")?.body).toEqual({ ip_pool_node_id: 0 }))
+  })
+
+  it("retains unsaved model drafts across section changes and discards them when reopened", async () => {
+    setup()
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const body = String(input).endsWith("/keys") ? [{ id: 3, name: "主 Key", key_hint: "***", enabled: true, model_policy: "fallback", egress_mode: "inherit", models: [{ model: "model-a", enabled: false }] }] : []
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
+    }))
+    const channel = provider()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const content = (open: boolean) => <QueryClientProvider client={client}><ConfirmProvider><ProviderDialog open={open} provider={channel} onOpenChange={() => {}} /></ConfirmProvider></QueryClientProvider>
+    const view = render(content(true))
+    fireEvent.click(screen.getByRole("button", { name: /模型管理/ }))
+    fireEvent.click(await screen.findByRole("switch", { name: "主 Key 模型 model-a" }))
+    fireEvent.click(screen.getByRole("button", { name: /连接信息/ }))
+    fireEvent.click(screen.getByRole("button", { name: /模型管理/ }))
+    expect(screen.getByRole("switch", { name: "主 Key 模型 model-a" }).getAttribute("aria-checked")).toBe("true")
+    view.rerender(content(false))
+    view.rerender(content(true))
+    fireEvent.click(screen.getByRole("button", { name: /模型管理/ }))
+    await waitFor(() => expect(screen.getByRole("switch", { name: "主 Key 模型 model-a" }).getAttribute("aria-checked")).toBe("false"))
+  })
+
   it("keeps the protocol choice unless it is changed", async () => {
     setup()
     show(provider({ passthrough_supported: true }))
@@ -91,10 +123,14 @@ describe("ProviderDialog passthrough", () => {
     fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
     const egress = await screen.findByRole("combobox", { name: "出口" })
     fireEvent.change(egress, { target: { value: "direct" } })
+    expect(requests).toHaveLength(0)
+    fireEvent.click(screen.getByRole("button", { name: "保存 Key" }))
     await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7/keys/3")?.body).toMatchObject({ egress_mode: "direct", ip_pool_node_id: null }))
     const cost = screen.getByRole("spinbutton", { name: "成本倍率" })
     fireEvent.change(cost, { target: { value: "1.25" } })
     fireEvent.blur(cost)
+    expect(requests.some((r) => r.body.cost_multiplier === 1.25)).toBe(false)
+    fireEvent.click(screen.getByRole("button", { name: "保存 Key" }))
     await waitFor(() => expect(requests.some((r) => r.url === "/api/admin/providers/7/keys/3" && r.body.cost_multiplier === 1.25)).toBe(true))
     expect(requests.some((r) => r.url === "/api/admin/providers/7")).toBe(false)
   })
@@ -114,7 +150,7 @@ describe("ProviderDialog passthrough", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "API 地址" }), { target: { value: "https://new.example" } })
     fireEvent.change(screen.getByRole("textbox", { name: "商家地址（选填）" }), { target: { value: "https://merchant.example/credit" } })
     fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
-    fireEvent.change(screen.getByRole("textbox", { name: "首张 API Key" }), { target: { value: "sk-first" } })
+    fireEvent.change(screen.getByLabelText("首张 API Key"), { target: { value: "sk-first" } })
     fireEvent.click(screen.getByRole("button", { name: "创建渠道" }))
     await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers")?.body).toMatchObject({ credential: "sk-first", name: "新渠道", website_url: "https://merchant.example/credit" }))
     await waitFor(() => expect(screen.getByRole("heading", { name: "管理渠道 · 新渠道" })).toBeTruthy())

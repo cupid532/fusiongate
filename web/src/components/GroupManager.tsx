@@ -1,6 +1,8 @@
 import { useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { refreshProviderViews } from "@/lib/provider-management"
+import { QueryError } from "@/components/ui/query-error"
 import type { ProviderGroup } from "@/lib/types"
 import {
   Dialog,
@@ -19,7 +21,7 @@ export function GroupManager({ open, onOpenChange }: { open: boolean; onOpenChan
   const confirmDelete = useConfirmDelete()
   const [name, setName] = useState("")
 
-  const { data: groups = [], isLoading } = useQuery({
+  const { data: groups = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ["provider-groups"],
     queryFn: () => api<ProviderGroup[]>("/api/admin/provider-groups"),
     enabled: open,
@@ -28,14 +30,14 @@ export function GroupManager({ open, onOpenChange }: { open: boolean; onOpenChan
   const create = useMutation({
     mutationFn: async (n: string) => api("/api/admin/provider-groups", { method: "POST", body: JSON.stringify({ name: n }) }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["provider-groups"] })
+      void refreshProviderViews(qc)
       setName("")
     },
   })
 
   const remove = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/provider-groups/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["provider-groups"] }),
+    onSuccess: () => refreshProviderViews(qc),
   })
 
   return (
@@ -43,7 +45,7 @@ export function GroupManager({ open, onOpenChange }: { open: boolean; onOpenChan
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>渠道分组</DialogTitle>
-          <DialogDescription>创建分组，然后在渠道编辑里把渠道分配到分组。</DialogDescription>
+          <DialogDescription>创建分组后，可在渠道编辑或列表的批量“设置分组”里分配渠道。</DialogDescription>
         </DialogHeader>
 
         <div className="flex items-end gap-2">
@@ -56,7 +58,7 @@ export function GroupManager({ open, onOpenChange }: { open: boolean; onOpenChan
         </div>
 
         <div className="space-y-1.5">
-          {isLoading ? (
+          {isError ? <QueryError title="无法读取分组" error={error} onRetry={() => void refetch()} className="p-3" /> : isLoading ? (
             <div className="py-4 text-center text-sm text-muted-foreground">加载中…</div>
           ) : groups.length === 0 ? (
             <div className="py-4 text-center text-sm text-muted-foreground">还没有分组</div>

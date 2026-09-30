@@ -38,7 +38,18 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   }
   const res = await fetch(path, { ...options, method, headers })
   const isJson = res.headers.get("content-type")?.includes("application/json")
-  const data = isJson ? await res.json() : null
+  let data: unknown = null
+  if (isJson) {
+    const text = await res.text()
+    try {
+      data = text ? JSON.parse(text) : null
+    } catch {
+      if (res.status === 401 || res.status === 403) reportUnauthorized()
+      throw new ApiError(res.ok ? 502 : res.status, "invalid_response", `网关返回了无法解析的数据（HTTP ${res.status}），请刷新核对操作结果`)
+    }
+  } else if (res.ok && res.status !== 204) {
+    throw new ApiError(502, "invalid_response", "网关未返回预期的 JSON 数据，请检查连接并刷新核对操作结果")
+  }
   if (!res.ok) {
     const err = (data as { error?: { message?: string; code?: string } })?.error
     const apiError = new ApiError(res.status, err?.code ?? "error", err?.message ?? res.statusText)
@@ -108,7 +119,7 @@ export function saveBlob(blob: Blob, filename: string) {
 }
 
 export const providerKeysApi = {
-  list: (providerId: number) => api<import("@/lib/types").ProviderKey[]>(`/api/admin/providers/${providerId}/keys`),
+  list: (providerId: number, signal?: AbortSignal) => api<import("@/lib/types").ProviderKey[]>(`/api/admin/providers/${providerId}/keys`, { signal }),
   create: (providerId: number, body: Record<string, unknown>) => api(`/api/admin/providers/${providerId}/keys`, { method: "POST", body: JSON.stringify(body) }),
   patch: (providerId: number, keyId: number, body: Record<string, unknown>) => api(`/api/admin/providers/${providerId}/keys/${keyId}`, { method: "PATCH", body: JSON.stringify(body) }),
   remove: (providerId: number, keyId: number) => api(`/api/admin/providers/${providerId}/keys/${keyId}`, { method: "DELETE" }),

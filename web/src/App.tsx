@@ -60,7 +60,7 @@ function PageSkeleton() {
 // Page, so `#settings` produced an unhandled switch case and rendered an
 // entirely blank content area under a topbar that still said 概览.
 function pageFromHash(): Page {
-  const raw = decodeURIComponent(location.hash.replace(/^#/, ""))
+  const raw = decodeURIComponent(location.hash.replace(/^#/, "").split("?")[0])
   return isPage(raw) ? raw : "dashboard"
 }
 
@@ -119,7 +119,7 @@ export default function App() {
   // Normalise a bad hash in the address bar so a reload doesn't land on it
   // again and the URL matches what is actually on screen.
   useEffect(() => {
-    const raw = decodeURIComponent(location.hash.replace(/^#/, ""))
+    const raw = decodeURIComponent(location.hash.replace(/^#/, "").split("?")[0])
     if (raw && !isPage(raw)) location.replace(`#${page}`)
   }, [page])
 

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Check, RefreshCw, Save, Search, Trash2 } from "lucide-react"
 import { providerModelsApi } from "@/lib/api"
+import { refreshProviderViews } from "@/lib/provider-management"
 import type { ProviderKey, ProviderKeyModel } from "@/lib/types"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
@@ -46,17 +47,19 @@ function sameDraft(a: Draft, b: Draft) {
 
 const EMPTY_KEYS: ProviderKey[] = []
 
-type PanelProps = { open: boolean; providerId: number; providerName?: string; onClose?: () => void; onDirtyChange?: (dirty: boolean) => void }
+type PanelProps = { open: boolean; providerId: number; providerName?: string; onClose?: () => void; onDirtyChange?: (dirty: boolean) => void; onBusyChange?: (busy: boolean) => void }
 
-export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange }: PanelProps) {
+export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange, onBusyChange }: PanelProps) {
   const qc = useQueryClient()
   const [selectedKeyId, setSelectedKeyId] = useState<number | null>(null)
   const [search, setSearch] = useState("")
   const [modelFilter, setModelFilter] = useState<ModelFilter>("all")
   const [error, setError] = useState("")
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
+  const [notice, setNotice] = useState("")
+  const previousKeys = useRef<ProviderKey[]>([])
 
-  const { data: keys = EMPTY_KEYS, isLoading, isError, error: loadError } = useQuery({ queryKey: ["provider-keys", providerId], queryFn: () => providerModelsApi.listKeys(providerId), enabled: open })
+  const { data: keys = EMPTY_KEYS, isLoading, isError, error: loadError } = useQuery({ queryKey: ["provider-keys", providerId], queryFn: ({ signal }) => providerModelsApi.listKeys(providerId, signal), enabled: open })
 
   useEffect(() => {
     setSearch("")
@@ -64,15 +67,22 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange }
     setError("")
     setSelectedKeyId(null)
     setDrafts({})
+    previousKeys.current = []
+    setNotice("")
   }, [providerId])
 
   useEffect(() => {
+    const previous = previousKeys.current
     setDrafts((current) => {
       const next = { ...current }
-      for (const key of keys) if (!next[key.id]) next[key.id] = draftFor(key)
+      for (const key of keys) {
+        const baseline = previous.find((item) => item.id === key.id)
+        if (!next[key.id] || baseline && sameDraft(next[key.id], draftFor(baseline))) next[key.id] = draftFor(key)
+      }
       for (const id of Object.keys(next)) if (!keys.some((key) => key.id === Number(id))) delete next[Number(id)]
       return next
     })
+    previousKeys.current = keys
     if (selectedKeyId == null && keys[0]) setSelectedKeyId(keys[0].id)
     else if (selectedKeyId != null && !keys.some((key) => key.id === selectedKeyId)) setSelectedKeyId(keys[0]?.id ?? null)
   }, [keys, selectedKeyId])
@@ -101,16 +111,17 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange }
   }
   const save = useMutation({
     mutationFn: () => providerModelsApi.saveManagement(providerId, keys.map((key) => { const value = drafts[key.id] ?? draftFor(key); return { key_id: key.id, model_policy: value.policy, models: [...value.models], exclude_models: [...value.removed] } })),
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       setError("")
-      await qc.invalidateQueries({ queryKey: ["provider-keys", providerId] })
+      await refreshProviderViews(qc)
       setDrafts({})
-      void qc.invalidateQueries({ queryKey: ["providers"] })
-      void qc.invalidateQueries({ queryKey: ["routes"] })
+      setNotice(`已保存 ${result.keys.filter((item) => item.status === "saved").length} 张 Key 的模型配置，并同步公共路由。`)
     },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存模型设置失败"),
   })
   const discover = useMutation({ mutationFn: (keyId: number) => providerModelsApi.discover(providerId, keyId), onSuccess: refresh, onError: (reason) => setError(reason instanceof Error ? reason.message : "识别模型失败") })
+  const busy = save.isPending || discover.isPending
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
 
   const setModels = (key: ProviderKey, selected: string[]) => updateDraft(key, (value) => ({ ...value, models: new Set(selected), removed: new Set([...value.removed].filter((model) => !selected.includes(model))) }))
   const toggleModel = (key: ProviderKey, model: ProviderKeyModel, enabled: boolean) => {
@@ -126,11 +137,13 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange }
   const selectedInInventory = draft ? allModels.filter((model) => draft.models.has(model.model)).length : 0
 
   return <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <p className="text-xs text-muted-foreground">库存是上游发现的模型；启用模型是此 Key 允许使用的清单；公共路由是客户端可访问的模型名。修改清单后点击“保存模型配置”，识别模型不等于检活。</p>
+      {notice && <p role="status" className="text-xs text-emerald-600">{notice}</p>}
       {error && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
       {isLoading ? <div className="py-8 text-center text-sm text-muted-foreground">加载中…</div> : isError ? <div role="alert" className="py-8 text-center text-sm text-destructive">{loadError instanceof Error ? loadError.message : "读取模型失败"}</div> : keys.length === 0 ? <div className="py-8 text-center text-sm text-muted-foreground">还没有 API Key，请先在 Key 管理中添加。</div> : <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[13rem_minmax(0,1fr)]">
         <aside className="min-h-0 space-y-1 overflow-y-auto rounded-md border p-2"><div className="px-2 pb-2 text-xs font-medium text-muted-foreground">API Keys（{keys.length}）</div>{keys.map((key) => { const value = drafts[key.id] ?? draftFor(key); return <button key={key.id} type="button" onClick={() => setSelectedKeyId(key.id)} className={`flex w-full items-start justify-between gap-2 rounded-md px-2 py-2 text-left text-sm ${selectedKeyId === key.id ? "bg-primary/10 text-primary" : "hover:bg-muted/50"}`}><span className="min-w-0"><span className="block truncate font-medium">{keyLabel(key)}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{key.key_hint}</span><span className="block text-[11px] text-muted-foreground">{value.policy === "allowlist" ? "仅清单" : "兼容模式"}{value.policy === "allowlist" && value.models.size === 0 ? " · 未承担模型" : ""}</span></span><span className="shrink-0 text-xs text-muted-foreground">{value.models.size}</span></button> })}</aside>
         <section className="min-h-0 overflow-y-auto rounded-md border">{selectedKey && draft && <>
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b p-3"><div><div className="text-sm font-medium">{keyLabel(selectedKey)}</div><div className="font-mono text-xs text-muted-foreground">{selectedKey.key_hint} · Key 已启用 {enabledCount}/{allModels.length} · 公共路由 {selectedKey.routable_models ?? allModels.filter((model) => model.route_status === "routed").length}</div>{draft.policy === "fallback" ? <div className="mt-1 text-xs text-amber-600">兼容模式：已发现库存按 Key 开关生效；无库存时才使用渠道默认模型。</div> : draft.models.size === 0 ? <div className="mt-1 text-xs text-destructive">allowlist 为空：此 Key 当前不承担任何模型。</div> : <div className="mt-1 text-xs text-muted-foreground">仅清单中的模型可路由。</div>}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => discover.mutate(selectedKey.id)} disabled={discover.isPending}><RefreshCw className={discover.isPending ? "animate-spin" : ""} />{discover.isPending ? "识别中…" : "识别模型"}</Button><Button size="sm" variant="outline" onClick={() => setModels(selectedKey, allModels.map((model) => model.model))} disabled={save.isPending || allModels.length === 0}><Check />全选</Button><Button size="sm" variant="outline" onClick={() => setModels(selectedKey, [])} disabled={save.isPending}><Check />全不选</Button><Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || !dirty}><Save />{save.isPending ? "保存中…" : "保存全部 Key"}</Button></div></div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b p-3"><div><div className="text-sm font-medium">{keyLabel(selectedKey)}</div><div className="font-mono text-xs text-muted-foreground">{selectedKey.key_hint} · Key 已启用 {enabledCount}/{allModels.length} · 公共路由 {selectedKey.routable_models ?? allModels.filter((model) => model.route_status === "routed").length}</div>{draft.policy === "fallback" ? <div className="mt-1 text-xs text-amber-600">兼容模式：已发现库存按 Key 开关生效；无库存时才使用渠道默认模型。</div> : draft.models.size === 0 ? <div className="mt-1 text-xs text-destructive">allowlist 为空：此 Key 当前不承担任何模型。</div> : <div className="mt-1 text-xs text-muted-foreground">仅清单中的模型可路由。</div>}</div><div className="flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => discover.mutate(selectedKey.id)} disabled={busy || dirty} title={dirty ? "请先保存模型草稿，避免识别结果与草稿混淆" : "查询上游模型库存，不发起生成检活"}><RefreshCw className={discover.isPending ? "animate-spin" : ""} />{discover.isPending ? "识别中…" : "识别模型"}</Button><Button size="sm" variant="outline" onClick={() => setModels(selectedKey, allModels.map((model) => model.model))} disabled={busy || allModels.length === 0}><Check />全选</Button><Button size="sm" variant="outline" onClick={() => setModels(selectedKey, [])} disabled={busy}><Check />全不选</Button><Button size="sm" onClick={() => save.mutate()} disabled={busy || !dirty}><Save />{save.isPending ? "保存中…" : "保存模型配置"}</Button></div></div>
           <div className="flex flex-col gap-2 border-b p-3 sm:flex-row sm:items-center">
             <SegmentedTabs<ModelFilter>
               className="shrink-0"
@@ -157,7 +170,7 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange }
                 : modelFilter === "selected"
                   ? <>已选模型中没有匹配「{search.trim()}」的结果。</>
                   : "没有匹配的模型。"}
-          </div> : <div className="divide-y">{models.map((model) => <div key={model.model} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30"><Switch checked={draft.models.has(model.model)} disabled={save.isPending} onCheckedChange={(enabled) => toggleModel(selectedKey, model, enabled)} aria-label={`${keyLabel(selectedKey)} 模型 ${model.model}`} /><div className="min-w-0 flex-1"><div className="truncate font-mono text-sm" title={model.model}>{model.display_name || model.model}</div>{model.display_name && model.display_name !== model.model && <div className="truncate font-mono text-[11px] text-muted-foreground">{model.model}</div>}{model.health_error && <div className="break-words text-xs text-destructive">{model.health_error}</div>}{model.route_status === "routed" ? <div className="truncate text-xs text-emerald-600">公共路由：{model.public_names?.join(", ")}</div> : <div className="text-xs text-muted-foreground">尚未接入公共路由</div>}</div><div className="hidden shrink-0 text-right text-xs text-muted-foreground sm:block">{model.last_checked_at ? `${model.latency_ms} ms` : "尚未检活"}</div>{statusBadge(model.health_status)}<Button variant="ghost" size="icon" className="h-8 w-8" title="删除此模型" aria-label={`删除模型 ${model.model}`} disabled={save.isPending} onClick={() => updateDraft(selectedKey, (value) => { const models = new Set(value.models); models.delete(model.model); const removed = new Set(value.removed); removed.add(model.model); return { ...value, models, removed } })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></div>)}</div>}
+          </div> : <div className="divide-y">{models.map((model) => <div key={model.model} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30"><Switch checked={draft.models.has(model.model)} disabled={busy} onCheckedChange={(enabled) => toggleModel(selectedKey, model, enabled)} aria-label={`${keyLabel(selectedKey)} 模型 ${model.model}`} /><div className="min-w-0 flex-1"><div className="truncate font-mono text-sm" title={model.model}>{model.display_name || model.model}</div>{model.display_name && model.display_name !== model.model && <div className="truncate font-mono text-[11px] text-muted-foreground">{model.model}</div>}{model.health_error && <div className="break-words text-xs text-destructive">{model.health_error}</div>}{model.route_status === "routed" ? <div className="truncate text-xs text-emerald-600">公共路由：{model.public_names?.join(", ")}</div> : <div className="text-xs text-muted-foreground">尚未接入公共路由</div>}</div><div className="hidden shrink-0 text-right text-xs text-muted-foreground sm:block">{model.last_checked_at ? `${model.latency_ms} ms` : "尚未检活"}</div>{statusBadge(model.health_status)}<Button variant="ghost" size="icon" className="h-8 w-8" title="删除此模型" aria-label={`删除模型 ${model.model}`} disabled={busy} onClick={() => updateDraft(selectedKey, (value) => { const models = new Set(value.models); models.delete(model.model); const removed = new Set(value.removed); removed.add(model.model); return { ...value, models, removed } })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></div>)}</div>}
         </>}</section>
       </div>}
       {onClose && <div className="flex justify-end"><Button variant="outline" onClick={onClose}>关闭</Button></div>}

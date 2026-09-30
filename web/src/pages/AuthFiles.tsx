@@ -30,7 +30,7 @@ import { CodexCard } from "@/components/CodexCard"
 import { ProviderPassthroughLabel } from "@/components/ProviderPassthroughLabel"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { ModelPicker } from "@/components/ModelPicker"
-import { AuthEgressDialog } from "@/components/AuthEgressDialog"
+import { ProviderEgressDialog } from "@/components/ProviderEgressDialog"
 import { HealthCheckDialog } from "@/components/HealthCheckDialog"
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { extractJsonFromZip } from "@/lib/zip-extract"
@@ -589,10 +589,11 @@ export function AuthFiles() {
           autoStart
         />
       )}
-      <AuthEgressDialog
+      <ProviderEgressDialog
         open={egressOpen}
         onOpenChange={(v) => { setEgressOpen(v); if (!v) setEgressIds([]) }}
         providerIds={egressIds}
+        onApplied={(ids) => setSelected((previous) => new Set([...previous].filter((id) => !ids.includes(id))))}
       />
     </motion.div>
   )

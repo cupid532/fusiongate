@@ -206,6 +206,7 @@ export function Keys() {
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">访问密钥</h1>
+          <p className="mt-1 text-xs text-muted-foreground">这是客户端访问 FusionGate 的下游密钥；上游 API Key 请在上游渠道的 Key 管理中配置。</p>
           <p className="mt-1 text-sm text-muted-foreground">签发下游 API Key，按权限访问渠道和模型。</p>
         </div>
         <Button onClick={() => setCreating((v) => !v)}>

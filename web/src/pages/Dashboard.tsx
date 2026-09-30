@@ -127,6 +127,8 @@ export function Dashboard() {
   const setupDone = data && data.providers > 0 && data.models > 0 && data.keys > 0
   const baseUrl = `${location.origin}/v1`
 
+  if (isError) return <QueryError title="无法加载仪表盘数据" error={error} onRetry={() => void refetch()} />
+
   if (isLoading || !data) {
     return (
       <div>
@@ -141,10 +143,6 @@ export function Dashboard() {
         </div>
       </div>
     )
-  }
-
-  if (isError) {
-    return <QueryError title="无法加载仪表盘数据" error={error} onRetry={() => void refetch()} />
   }
 
   return (

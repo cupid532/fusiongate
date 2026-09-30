@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { Plus, Trash2, Plug, Settings2, Server, Wifi, WifiOff, Link2, Search, ListChecks } from "lucide-react"
 import { api } from "@/lib/api"
+import { applySequential, refreshProviderViews, type BatchItemResult } from "@/lib/provider-management"
+import { BatchResultPanel } from "@/components/BatchResultPanel"
 import type { IPPoolNode } from "@/lib/types"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -39,10 +41,11 @@ export function IPPool() {
   const [q, setQ] = useState("")
   const [multiSelect, setMultiSelect] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [batchResults, setBatchResults] = useState<BatchItemResult[]>([])
 
   const { data: nodes = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ["ippool"],
-    queryFn: () => api<IPPoolNode[]>("/api/admin/ip-pool"),
+    queryFn: ({ signal }) => api<IPPoolNode[]>("/api/admin/ip-pool", { signal }),
   })
 
   const filtered = useMemo(() => {
@@ -62,7 +65,7 @@ export function IPPool() {
     mutationFn: async () =>
       api("/api/admin/ip-pool", { method: "POST", body: JSON.stringify({ name, share_link: link }) }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["ippool"] })
+      void refreshProviderViews(qc)
       setName("")
       setLink("")
       setCreating(false)
@@ -73,7 +76,7 @@ export function IPPool() {
     mutationFn: async ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
       api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["ippool"] })
+      void refreshProviderViews(qc)
       setEditing(null)
       notifySuccess("节点已更新")
     },
@@ -81,39 +84,47 @@ export function IPPool() {
 
   const remove = useMutation({
     mutationFn: async (id: number) => api(`/api/admin/ip-pool/${id}`, { method: "DELETE" }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["ippool"] }),
+    onSuccess: () => refreshProviderViews(qc),
   })
 
   const toggle = useMutation({
     mutationFn: async ({ id, enabled }: { id: number; enabled: boolean }) =>
       api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["ippool"] }),
+    onSuccess: () => refreshProviderViews(qc),
   })
 
   const test = useMutation({
     mutationFn: async (id: number) => api<{ status: string; exit_ip: string; latency_ms: number }>(`/api/admin/ip-pool/${id}/test`, { method: "POST" }),
+    onSettled: () => refreshProviderViews(qc),
   })
 
   const batchToggle = useMutation({
     mutationFn: async ({ ids, enabled }: { ids: number[]; enabled: boolean }) => {
-      for (const id of ids) await api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) })
+      setBatchResults([])
+      return applySequential(nodes.filter((node) => ids.includes(node.id)), (id) => api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }), setBatchResults)
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["ippool"] })
-      setSelected(new Set())
-      notifySuccess(selected.size + " 个节点已更新")
+    onSuccess: async (results) => {
+      await refreshProviderViews(qc)
+      const successful = new Set(results.filter((item) => item.status === "success").map((item) => item.id))
+      setSelected((previous) => new Set([...previous].filter((id) => !successful.has(id))))
     },
   })
 
   const batchDelete = useMutation({
     mutationFn: async (ids: number[]) => {
-      for (const id of ids) await api(`/api/admin/ip-pool/${id}`, { method: "DELETE" })
+      setBatchResults([])
+      return applySequential(nodes.filter((node) => ids.includes(node.id)), (id) => api(`/api/admin/ip-pool/${id}`, { method: "DELETE" }), setBatchResults)
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["ippool"] })
-      setSelected(new Set())
+    onSuccess: async (results) => {
+      await refreshProviderViews(qc)
+      const successful = new Set(results.filter((item) => item.status === "success").map((item) => item.id))
+      setSelected((previous) => new Set([...previous].filter((id) => !successful.has(id))))
     },
   })
+
+  const batchBusy = batchToggle.isPending || batchDelete.isPending
+  const uncertainBatch = batchResults.some((item) => item.status === "unknown")
+  const hiddenSelected = nodes.filter((node) => selected.has(node.id) && !filtered.some((item) => item.id === node.id)).length
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
@@ -153,8 +164,8 @@ export function IPPool() {
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="总节点" value={nodeCounts.total} icon={<Server className="h-4 w-4" />} tone="text-foreground" sub="出站代理节点" />
-        <StatCard label="在线" value={nodeCounts.online} icon={<Wifi className="h-4 w-4" />} tone="text-emerald-600" sub="已启用" />
-        <StatCard label="离线" value={nodeCounts.offline} icon={<WifiOff className="h-4 w-4" />} tone="text-muted-foreground" sub="已停用" />
+        <StatCard label="已启用" value={nodeCounts.online} icon={<Wifi className="h-4 w-4" />} tone="text-emerald-600" sub="配置启用，不等于检测通过" />
+        <StatCard label="已停用" value={nodeCounts.offline} icon={<WifiOff className="h-4 w-4" />} tone="text-muted-foreground" sub="已停用" />
         <StatCard label="关联渠道" value={nodeCounts.providers} icon={<Link2 className="h-4 w-4" />} tone="text-primary" sub="使用代理的渠道数" />
       </div>
 
@@ -164,7 +175,7 @@ export function IPPool() {
             {multiSelect && selected.size > 0 && (
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-muted-foreground">已选 {selected.size}</span>
-                <Button size="sm" variant="outline" onClick={() => batchToggle.mutate({ ids: [...selected], enabled: true })}>
+                <Button size="sm" variant="outline" disabled={batchBusy || uncertainBatch} onClick={() => batchToggle.mutate({ ids: [...selected], enabled: true })}>
                   启用
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => batchToggle.mutate({ ids: [...selected], enabled: false })}>
@@ -173,6 +184,7 @@ export function IPPool() {
                 <Button
                   size="sm"
                   variant="destructive"
+                  disabled={batchBusy || uncertainBatch}
                   onClick={async () => {
                     const names = [...selected].map((id) => nodes.find((n) => n.id === id)?.name).filter(Boolean).slice(0, 5).join("、")
                     if (await confirm({ title: `删除选中的 ${selected.size} 个节点？`, description: `${names}${selected.size > 5 ? " 等" : ""}。此操作不可恢复。`, destructive: true, confirmLabel: `删除 ${selected.size} 个` })) {
@@ -184,7 +196,7 @@ export function IPPool() {
                 </Button>
               </div>
             )}
-            <Button size="sm" variant={multiSelect ? "default" : "outline"} onClick={() => { setMultiSelect((v) => !v); setSelected(new Set()) }}>
+            <Button size="sm" variant={multiSelect ? "default" : "outline"} disabled={batchBusy} onClick={() => { setMultiSelect((v) => !v); setSelected(new Set()) }}>
               <ListChecks className="h-4 w-4" />
               {multiSelect ? "退出多选" : "多选"}
             </Button>
@@ -193,6 +205,8 @@ export function IPPool() {
               <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="搜索节点" className="h-8 w-52 pl-8 text-xs" />
             </div>
           </div>
+          {batchResults.length > 0 && <div className="m-3"><BatchResultPanel results={batchResults} />{uncertainBatch && <Button size="sm" variant="outline" onClick={async () => { const result = await refetch(); if (!result.isError) setBatchResults([]) }}>刷新配置后重新选择</Button>}</div>}
+          {multiSelect && hiddenSelected > 0 && <p className="px-3 pb-2 text-xs text-amber-600">已选项中有 {hiddenSelected} 个不在当前筛选结果内。</p>}
           {isLoading ? (
             <div className="space-y-2 p-4">{Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-12 animate-pulse rounded-lg bg-muted/40" />)}</div>
           ) : isError ? (
@@ -206,7 +220,7 @@ export function IPPool() {
                   <tr className="border-b text-left text-xs text-muted-foreground">
                     {multiSelect && (
                       <th className="w-10 px-3 py-3">
-                        <input type="checkbox" aria-label="选择全部节点" checked={filtered.length > 0 && filtered.every((n) => selected.has(n.id))} onChange={(e) => { if (e.target.checked) setSelected(new Set(filtered.map((n) => n.id))); else setSelected(new Set()) }} />
+                        <input type="checkbox" aria-label="选择全部节点" disabled={batchBusy} checked={filtered.length > 0 && filtered.every((n) => selected.has(n.id))} onChange={(e) => { setSelected((previous) => { const next = new Set(previous); for (const node of filtered) { if (e.target.checked) next.add(node.id); else next.delete(node.id) } return next }) }} />
                       </th>
                     )}
                     <th className="px-4 py-3 font-medium">名称</th>
@@ -225,7 +239,7 @@ export function IPPool() {
                     <tr key={n.id} className="border-b border-border/50 last:border-0 even:bg-muted/30 hover:bg-muted/50 transition-colors duration-150">
                       {multiSelect && (
                         <td className="px-3 py-3">
-                          <input type="checkbox" aria-label={`选择 ${n.name}`} checked={selected.has(n.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(n.id); else next.delete(n.id); setSelected(next) }} />
+                          <input type="checkbox" aria-label={`选择 ${n.name}`} disabled={batchBusy} checked={selected.has(n.id)} onChange={(e) => { const next = new Set(selected); if (e.target.checked) next.add(n.id); else next.delete(n.id); setSelected(next) }} />
                         </td>
                       )}
                       <td className="px-4 py-3 font-medium">{n.name}</td>
@@ -239,7 +253,7 @@ export function IPPool() {
                         ) : n.last_error ? (
                           <Badge variant="danger" title={n.last_error}>错误</Badge>
                         ) : (
-                          <Badge variant="neutral">{n.status || "待检测"}</Badge>
+                          <Badge variant="neutral">{n.status === "ready" ? "节点就绪" : n.status === "pending" ? "待检测" : "状态未知"}</Badge>
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs tabular-nums text-muted-foreground">
@@ -250,16 +264,17 @@ export function IPPool() {
                       <td className="px-4 py-3 text-xs">{n.provider_count}</td>
                       <td className="px-4 py-3">
                         <div className="flex items-center justify-end gap-1">
-                          <Switch checked={n.enabled} onCheckedChange={(v) => toggle.mutate({ id: n.id, enabled: v })} aria-label={`${n.name} 开关`} />
-                          <Button variant="ghost" size="icon" onClick={() => { setEditing(n); setEditName(n.name); setEditLink(""); setEditEnabled(n.enabled) }} aria-label={`编辑 ${n.name}`}>
+                          <Switch checked={n.enabled} onCheckedChange={(v) => toggle.mutate({ id: n.id, enabled: v })} disabled={batchBusy || toggle.isPending} aria-label={`${n.name} 开关`} />
+                          <Button variant="ghost" size="icon" onClick={() => { setEditing(n); setEditName(n.name); setEditLink(""); setEditEnabled(n.enabled) }} disabled={batchBusy} aria-label={`编辑 ${n.name}`}>
                             <Settings2 className="h-4 w-4" />
                           </Button>
                           <Button
                             variant="ghost"
                             size="sm"
+                            disabled={batchBusy || test.isPending}
                             onClick={() =>
                               test.mutate(n.id, {
-                                onSuccess: (r) => notify({ tone: r.status === "ok" ? "success" : "error", title: `${n.name}：${r.status === "ok" ? "连通" : r.status}`, description: `出口 IP ${r.exit_ip} · 延迟 ${r.latency_ms} ms`, duration: 12_000 }),
+                                onSuccess: (result) => notify({ tone: result.status === "healthy" || result.status === "ok" ? "success" : "error", title: `${n.name}：${result.status === "healthy" || result.status === "ok" ? "检测通过" : "检测失败"}`, description: `出口 IP ${result.exit_ip || "未知"} · 延迟 ${result.latency_ms} ms`, duration: 12_000 }),
                               })
                             }
                           >
@@ -272,7 +287,7 @@ export function IPPool() {
                             onClick={async () => {
                               if (await confirmDelete(`节点「${n.name}」`)) remove.mutate(n.id)
                             }}
-                            aria-label={`删除 ${n.name}`}
+                            disabled={batchBusy || remove.isPending} aria-label={`删除 ${n.name}`}
                           >
                             <Trash2 className="h-4 w-4 text-destructive" />
                           </Button>

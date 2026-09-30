@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { Coins, Boxes, KeyRound, Server, Activity, BarChart3, Flame, RefreshCw, Shield, Zap, TrendingUp, Clock } from "lucide-react"
 import { api } from "@/lib/api"
+import { QueryError } from "@/components/ui/query-error"
 import type { APIKey, Provider, TokenUsageHeatmapCell, TokenUsageMetrics, TokenUsageResponse } from "@/lib/types"
 import { cn, formatCost, formatTokens } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -52,9 +53,9 @@ export function Usage() {
     return p.toString()
   }, [days, apiKeyId, providerId, model, tab])
 
-  const { data, isLoading, isFetching, refetch } = useQuery({
+  const { data, isLoading, isFetching, isError, error, refetch } = useQuery({
     queryKey: ["usage", days, apiKeyId, providerId, model, tab === "heatmap"],
-    queryFn: () => api<TokenUsageResponse>(`/api/admin/token-usage?${params}`),
+    queryFn: ({ signal }) => api<TokenUsageResponse>(`/api/admin/token-usage?${params}`, { signal }),
   })
 
   const maxTokens = useMemo(() => {
@@ -145,7 +146,7 @@ export function Usage() {
         ]}
       />
 
-      {isLoading || !data ? (
+      {isError ? <QueryError title="无法加载用量与费用" error={error} onRetry={() => void refetch()} retrying={isFetching} /> : isLoading || !data ? (
         <div className="p-8 text-center text-sm text-muted-foreground">加载中…</div>
       ) : (
         <div className="space-y-5">

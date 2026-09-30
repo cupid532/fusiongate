@@ -16,6 +16,7 @@ import { useConfirm } from "@/components/ui/confirm"
 import { QueryError } from "@/components/ui/query-error"
 import { useDebounced } from "@/lib/use-debounced"
 import { exactTimeRange, type TimeGranularity } from "@/lib/exact-time-range"
+import { usePageParams } from "@/lib/navigation"
 import { attemptLabel, attemptsForGatewayRequest } from "@/lib/request-attempts"
 
 type StatusFilter = "all" | "running" | "success" | "failed"
@@ -149,13 +150,15 @@ function ErrorTypeBadge({ type }: { type: string }) {
 const PAGE_LIMIT = 100
 
 export function Requests() {
+  const pageParams = usePageParams()
   const confirm = useConfirm()
   const [animateParent] = useAutoAnimate({ duration: 200 })
   const [status, setStatus] = useState<StatusFilter>("all")
   const [q, setQ] = useState("")
   // The query keys off the debounced value; the input stays fully responsive.
   const debouncedQ = useDebounced(q, 350)
-  const [providerId, setProviderId] = useState("")
+  const [providerId, setProviderId] = useState(() => new URLSearchParams(location.hash.split("?")[1]).get("provider") || "")
+  useEffect(() => { setProviderId(pageParams.get("provider") || "") }, [pageParams])
   const [apiKeyId, setApiKeyId] = useState("")
   const [range, setRange] = useState("")
   const [rangeAnchor, setRangeAnchor] = useState(0)
