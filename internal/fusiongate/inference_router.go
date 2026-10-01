@@ -621,7 +621,52 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 	if run.path == "/v1/messages/count_tokens" && (!containsString(routeWireProtocols(z), wireMessages) || protocolMemory.unsupported(z, wireMessages)) {
 		return run.localCountTokens(w), func() {}
 	}
-	result, cancel := a.inferenceAttempt(r, run.nativeBody(z), z, inferenceUpstreamPath(z, run.path), run.stream, onFirstByte)
+	body := run.nativeBody(z)
+	stream := run.stream
+	// The ChatGPT Codex backend accepts only non-persistent streaming Responses
+	// requests: it hard-rejects store=true and stream=false. The native
+	// Responses path already applies this normalisation (normalizedCodexResponsesBody
+	// plus SSE buffering in proxyUpstream), but the identity adapter forwarded
+	// bytes untouched, so a client that omitted store=false or asked for a
+	// non-streaming answer got a 400 from upstream. Normalise the request and,
+	// when the client wants JSON, buffer the forced stream back into one JSON
+	// document so the wire shape the client asked for is preserved.
+	codexResponses := z.Provider.Type == "codex_oauth" && run.path == "/v1/responses" && hasResponsesInput(body)
+	if codexResponses {
+		if normalized, err := normalizedCodexResponsesBody(body, z.Route.UpstreamModel); err == nil {
+			body = normalized
+		}
+		stream = true
+	}
+	result, cancel := a.inferenceAttempt(r, body, z, inferenceUpstreamPath(z, run.path), stream, onFirstByte)
+	if codexResponses && !run.stream && result.Response != nil && result.Status < 400 {
+		// The client asked for a JSON Responses answer, but the backend only
+		// streams. Buffer the forced SSE and hand back the completed JSON the
+		// client expects, mirroring proxyUpstream's BufferSSE path.
+		buffered, readErr := io.ReadAll(result.Response.Body)
+		result.Response.Body.Close()
+		result.Response = nil
+		cancel()
+		if readErr != nil {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_read_error", Err: readErr}, func() {}
+		}
+		completed, usage, transformErr := completedResponseFromSSE(buffered)
+		if transformErr != nil {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: transformErr}, func() {}
+		}
+		encoded, _, err := responsesJSONWithPublicModel(completed, z.Route.PublicName)
+		if err != nil {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_invalid_response", Err: err}, func() {}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-FusionGate-Request-ID", run.gatewayID)
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write(encoded); err != nil {
+			return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: err}, func() {}
+		}
+		result = attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
+		return result, func() {}
+	}
 	if protocolPolicyDenied(result.Response) {
 		result.Retryable = false
 		result.Reason = "upstream_protocol_denied"
@@ -676,6 +721,17 @@ func (run *inferenceRun) nativeBody(z resolvedRoute) []byte {
 		return run.raw
 	}
 	return encoded
+}
+
+// hasResponsesInput distinguishes real Responses payloads from generic
+// passthrough probes that intentionally exercise byte-for-byte identity.
+func hasResponsesInput(raw []byte) bool {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return false
+	}
+	_, ok := body["input"]
+	return ok
 }
 
 // requestedModel is the model name exactly as the client's body carries it.

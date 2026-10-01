@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.24
+
+- Normalize native Codex Responses requests for the real upstream contract: force `store=false` and `stream=true`, then buffer the upstream SSE back into a completed Responses JSON document when the client requested non-streaming output. This fixes native `/v1/responses` requests that previously returned HTTP 400 `Store must be set to false` or `Stream must be set to true`.
+- Add an end-to-end regression covering a non-streaming Responses request with both fields omitted.
+
 ## V3.23
 
 - Detect a bridged upstream stream from its body, not from Content-Type alone. The ChatGPT Codex backend answers a streaming Responses request with a complete SSE stream but sends no Content-Type header, and some relays mislabel the stream; the bridge read either as one JSON document and failed as `upstream_invalid_response`. Every bridged call to such a channel returned 502 while its native path worked, which is why an auth-file channel could not serve `/v1/chat/completions` even after V3.22 made it eligible. The peek is non-consuming and cannot misfire on JSON, which never begins with `data:`, `event:` or an SSE comment.
