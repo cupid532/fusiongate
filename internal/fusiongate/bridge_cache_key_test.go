@@ -117,9 +117,12 @@ func TestBridgeCacheKeyRejectsConflictsAndUnsupportedTargets(t *testing.T) {
 			t.Fatal("cache value leaked into diagnostics")
 		}
 	}
+	// A Messages target cannot carry a cache identity, so the key is dropped rather
+	// than refusing the request. Blocking a whole channel family over a cost hint
+	// kept Codex and OpenAI-style clients off every Claude-compatible channel.
 	raw := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"promptCacheKey":"session"}`)
-	if err := validateBridgeRoute(wireChat, wireMessages, raw, "/v1/chat/completions"); err == nil || !strings.Contains(bridgeRejectionReason(err), "prompt_cache_key") {
-		t.Fatalf("unsupported cache target was allowed: %v", err)
+	if err := validateBridgeRoute(wireChat, wireMessages, raw, "/v1/chat/completions"); err != nil {
+		t.Fatalf("cache key hint must be droppable for a messages target: %v", err)
 	}
 }
 

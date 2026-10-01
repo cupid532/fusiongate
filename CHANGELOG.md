@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.30
+
+- Make the channel families interchangeable, not just the client interfaces. An audit of every channel type against every client protocol found whole crossings refused by field-level gates, so a client could not use an entire channel family: a Codex client could not reach an Anthropic-compatible channel at all, and a Claude-style client could not reach a Chat-only channel while sending the cache markers it puts on every block.
+- Accept and drop the fields that only shape the answer, in every direction: the OpenAI-side hints (`prompt_cache_key`, `prompt_cache_options`, `prompt_cache_retention`, `reasoning_effort`, `parallel_tool_calls`, `seed`, frequency and presence penalties, `logprobs`, `user`, `service_tier`, `metadata`, `client_metadata`, a single `n`) and the Claude-side ones (`cache_control` breakpoints, `metadata.user_id`, the thinking budget, `top_k`). A converter that drops them still returns a usable answer.
+- Keep refusing what changes what the client gets rather than how it is shaped: a structured-output contract (`response_format`), a multi-choice request (`n>1`), hosted tools, a custom format outside text and grammar, replayed reasoning items and opaque context.
+- Add an interface matrix test asserting that every client protocol reaches every channel type, that every representative request shape converts into every target, and that the refusals above stay refusals; plus end-to-end tests for a Codex request bridged to a Messages-only channel and a Claude-style request bridged to a Chat-only channel.
+- Document the remaining structural gap: a Gemini channel speaks only the Gemini protocol, so Chat, Responses and Messages clients have no bridge target on it.
+
 ## V3.29
 
 - Serve a Codex request that declares shapes a Chat upstream cannot express instead of refusing it. The declarations are dropped and the request is bridged: `namespace` groups (sub-agent, plugin and MCP tools), the deferred `tool_search` declaration, a `web_search` the client already excluded from external access, and the client attribution metadata `client_metadata`. A current Codex build sends all of them on every request, so nothing from that client could reach a chat-only channel at all. Declaring fewer tools is always safe, because the model only calls a tool that was declared.

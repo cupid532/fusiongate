@@ -27,7 +27,7 @@ func rejectBridgeFeature(feature, reason string) error {
 		"promptCacheKey prompt_cache_key prompt_cache_options prompt_cache_retention client_metadata store include text.verbosity " +
 		"context_management previous_response_id " +
 		"conversation truncation background audio modalities metadata user stop seed frequency_penalty presence_penalty " +
-		"response_format service_tier verbosity logprobs top_logprobs reasoning reasoning.effort reasoning.summary " +
+		"response_format service_tier verbosity logprobs top_logprobs n reasoning reasoning.effort reasoning.summary " +
 		"reasoning.generate_summary reasoning.budget_tokens tools.function.strict tools.web_search tools.web_search_preview " +
 		"tools.file_search tools.code_interpreter tools.computer tools.computer_use_preview tools.image_generation tools.mcp " +
 		"tools.bash tools.text_editor tools.functionDeclarations tools.function_declarations compaction compaction_summary " +
