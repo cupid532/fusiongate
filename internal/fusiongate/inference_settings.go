@@ -189,7 +189,11 @@ CREATE TABLE IF NOT EXISTS inference_attempts (
   created_at TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS inference_attempts_gateway ON inference_attempts(gateway_request_id,created_at);
 CREATE INDEX IF NOT EXISTS inference_attempts_task ON inference_attempts(task_hash,task_scope,created_at);`)
-	return err
+	if err != nil {
+		return err
+	}
+	// V3.32 carries learned protocol facts across restarts.
+	return a.migrateProtocolCapabilities(ctx)
 }
 
 // migrateInferenceProviderColumns adds the opt-in recovery probe columns. They

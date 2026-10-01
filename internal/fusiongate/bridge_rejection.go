@@ -3,7 +3,6 @@ package fusiongate
 import (
 	"errors"
 	"sort"
-	"strings"
 )
 
 // Capability diagnostics carry known field names and fixed explanations, never
@@ -21,19 +20,13 @@ func (e *bridgeCapabilityError) Error() string {
 // a fixed spelling; a client's own field is kept when it is a bounded plain field
 // path, so an operator can see what a new client started sending. Request values
 // still never reach the diagnostics.
+//
+// The vocabulary of known names is derived from the field policy itself, so a
+// field can no longer be declared for acceptance yet be missing from the list of
+// printable names -- which is what used to turn a real, named field into a
+// redacted placeholder and hide what a client had just started sending.
 func rejectBridgeFeature(feature, reason string) error {
-	const known = "model stream messages input instructions system contents tools tool_choice parallel_tool_calls " +
-		"temperature top_p max_tokens max_completion_tokens max_output_tokens reasoning_effort stream_options " +
-		"promptCacheKey prompt_cache_key prompt_cache_options prompt_cache_retention client_metadata store include text.verbosity " +
-		"context_management previous_response_id " +
-		"conversation truncation background audio modalities metadata user stop seed frequency_penalty presence_penalty " +
-		"response_format service_tier verbosity logprobs top_logprobs n reasoning reasoning.effort reasoning.summary " +
-		"reasoning.generate_summary reasoning.budget_tokens tools.function.strict tools.web_search tools.web_search_preview " +
-		"tools.file_search tools.code_interpreter tools.computer tools.computer_use_preview tools.image_generation tools.mcp " +
-		"tools.bash tools.text_editor tools.functionDeclarations tools.function_declarations compaction compaction_summary " +
-		"item_reference local_shell_call local_shell_call_output web_search_call image_generation_call redacted_thinking " +
-		"thinking input_file file input_audio document video"
-	if feature != "opaque context" && feature != "custom tool grammar" && !containsString(strings.Fields(known), feature) {
+	if !knownBridgeFieldNames()[feature] {
 		feature = redactedFeatureName(feature)
 	}
 	return &bridgeCapabilityError{feature: feature, reason: reason}

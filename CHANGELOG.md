@@ -1,5 +1,87 @@
 # Changelog
 
+## V3.35
+
+- Let the caller accept a loss the bridge cannot avoid, instead of refusing every
+  time. A structured-output contract (`response_format`, or the `text.format` a
+  Responses client sends) is still refused by default, on every channel: handing
+  prose to a client that asked for JSON is worse than an error it can act on. But
+  only the caller knows whether its own parser can survive a degraded answer, and
+  a channel-wide switch would decide that for every client of the channel at once,
+  so the relaxation is requested per request with
+  `X-FusionGate-Accept-Lost-Contract: response_format`. A field outside the
+  relaxable set is ignored, so a typo cannot silently degrade an answer, and
+  nothing else about the request is relaxed.
+- Keep the consent narrow and visible: the consenting loss is recorded in the
+  console's field audit as a drop, with the reason, so an operator can see the one
+  case where a channel knowingly serves a degraded answer.
+- Leave the tool-schema contract refused even with consent. A channel that cannot
+  honour `tools.function.strict` may return arguments no client can parse, which
+  breaks an agent loop rather than a JSON reader, and that is not a loss a caller
+  can consent to on the channel's behalf.
+
+## V3.34
+
+- Show what the bridge policy does to each channel's fields, in the console. A
+  client that starts sending a field no bridge can express is answered with a 400
+  that names the field, and that used to be the whole diagnosis: answering "which
+  channel is being held back, and by which field" meant attaching a capture proxy
+  to a live client and reading one request body. The gateway now aggregates, per
+  channel, model and client protocol, every field it refused and every field it
+  dropped, and the new 字段兼容 page lists them by frequency with the reason and
+  the last time each was seen.
+- Aggregate refusals where the channel is known: the pre-flight check that holds a
+  channel back, and the conversion that fails on the request path, both record the
+  field against the channel that could not serve it.
+- Aggregate drops from the body the converter has already built, so the audit adds
+  no parse to the request path, and record them only for fields the policy
+  declares as dropped. The aggregate is deliberately in memory: writing a row per
+  refused request would put exactly the traffic that is already failing onto the
+  single SQLite writer shared with the ledger. The durable half -- which protocols
+  a channel serves -- remains persisted in `channel_protocol_capabilities`.
+- Read the intermediate-body dispositions off the converters instead of assuming
+  them: `prompt_cache_key` and `parallel_tool_calls` are carried by the Responses
+  converter and are no longer reported as dropped.
+
+## V3.33
+
+- Make the bridge field policy one declarative table instead of three
+  hand-synchronised string lists. Every field a bridge can accept, and every
+  field it must refuse, is now declared once with the protocols it can arrive
+  from and the reason a refusal prints. The per-client accept list, the
+  per-target accept list, and the list of names a rejection was allowed to print
+  were maintained separately, which is how a field could be accepted in one and
+  missing from another -- exactly the drift that turned a real field name into a
+  redacted placeholder and hid what a client had started sending.
+- Derive the printable name vocabulary from that same table. A declared field can
+  no longer be nameable in one place and anonymous in another; the names that
+  structural checks produce, and the two rules that are not field names, are
+  listed explicitly with the reason they cannot be table entries.
+- State each refusal's reason where the decision is made. A structured-output
+  contract, conversation state, a truncation or background request and a
+  non-text output modality now say why they are refused instead of sharing one
+  generic phrase, and the conditional rules (`n` above a single choice, `store`
+  set to true) keep their previous wording.
+- Add a table-driven test for the policy itself: the rules are unambiguous for
+  every protocol, every accepted rule is accepted end to end, every refused rule
+  is refused by name, every declared field is printable, and a field nobody
+  declared is refused as unrecognized rather than dropped silently.
+
+## V3.32
+
+- Keep learned protocol facts across a restart. The index that answers "does this channel serve this protocol" lived only in memory, so every restart reintroduced the exact cost it exists to avoid: the first request to each chat-only channel probed a native endpoint already proven missing, and paid an upstream round trip for it on the request the client was waiting on. The unexpired facts are now written through to `channel_protocol_capabilities` and restored at startup; the lifetime is unchanged and expired rows are pruned on load.
+- Stop erasing a route's declared protocol when its endpoint refuses. A failed native Responses call on a route that declared `protocol:responses` used to strip the capability from the row, which also removed the route from the Responses candidate list -- and nothing ever wrote the entry back, so an endpoint that was briefly down, or that appeared later, stayed unreachable for the life of the row. The failure is now recorded as a learned fact with a lifetime: the declaration stays, selection is suppressed until the fact expires, and any success clears it immediately.
+- Unify the two protocol layers so they cannot disagree. `routeProtocolEnabled` now reads the same learned index as the bridge planner, instead of consulting only the declaration, and a bridge target is still constrained by the declaration. A declaration says what a channel may serve; a learned fact says what it just proved. Neither can silently override the other in the other's direction.
+- Store expiry as unix nanoseconds rather than a formatted timestamp: RFC3339Nano trims trailing zeros from the fraction, which makes one instant compare as greater or smaller lexicographically depending on where its digits end.
+- Persist a learned fact only when it actually changes, and clear one only when there was something to clear. Writing on every call put a statement on the hot path of every successful request; the single SQLite writer is shared with the request ledger, which the performance regression test caught as an in-flight stream waiting for a saturated writer. A successful native call now queues nothing.
+
+## V3.31
+
+- Key protocol learning on the account, not on the access token. The bridge memory that records "this channel does not serve this protocol" hashed the credential into its key, so every OAuth refresh produced a key that matched nothing: the entry written a moment earlier became unreachable, the channel paid for the same doomed native attempt again on the first request after each refresh, and the abandoned entries stayed in the map until the TTL swept them. Subscription channels refresh routinely (FusionGate refreshes 15 minutes ahead of expiry), so the 30-minute memory was in practice much shorter for exactly the channels that need it most. The key now uses the provider Key row, else the account id, else the account email, and the credential value never enters it. Accounts stay distinct, because a second subscription can carry different entitlements.
+- Constrain a bridge target to the protocols the route's own capability evidence allows. Candidates still follow the channel type's preference order, but a protocol the route demonstrably does not serve is no longer chosen: converting into it spends an upstream call to rediscover what discovery already recorded, on the request the client is waiting on. OpenCode's `protocol:anthropic` spelling is read as Messages. A capability list that names no protocol stays silent rather than denying every bridge, so an ordinary route keeps exactly its previous behaviour.
+- Add regressions for the refresh, the two accounts of one channel, two Keys of one provider, the no-credential guarantee, the constrained target, the OpenCode spelling, and the unannotated route that must keep the type's preference.
+- Sharpen the V3.16 memory-key contract rather than drop it. That release required a different credential to inherit nothing from the previous one, which is why the token ended up in the key. The requirement is now stated at the granularity that actually carries entitlements: a different **account** inherits nothing, a renewed token of the same account inherits everything, and a different address still inherits nothing.
+
 ## V3.30
 
 - Make the channel families interchangeable, not just the client interfaces. An audit of every channel type against every client protocol found whole crossings refused by field-level gates, so a client could not use an entire channel family: a Codex client could not reach an Anthropic-compatible channel at all, and a Claude-style client could not reach a Chat-only channel while sending the cache markers it puts on every block.

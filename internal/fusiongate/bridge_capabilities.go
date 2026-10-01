@@ -5,25 +5,6 @@ import (
 	"strings"
 )
 
-// Fields a Chat bridge cannot express but that only shape the answer, never what
-// the request means. Dropping them still yields a working answer -- without a
-// reasoning summary, without encrypted reasoning to replay, or with the
-// upstream's own verbosity -- whereas rejecting them makes every chat-only
-// channel unreachable from /v1/responses, because Codex sends all three on every
-// request. This is the same degradation the sampling and length hints already
-// take in validateBridgeRoute. State stays rejected: store, previous_response_id,
-// conversation, hosted tools and replayed reasoning items change what the answer
-// has to be, not just how it is shaped.
-var bridgeDroppablePreferences = map[string]bool{
-	"reasoning.summary":          true,
-	"reasoning.generate_summary": true,
-	"text.verbosity":             true,
-}
-
-func droppableBridgePreference(feature string) bool {
-	return bridgeDroppablePreferences[feature]
-}
-
 // droppableBridgeInclude reports whether one `include` entry only asks for extra
 // output. A bridged answer carries no reasoning at all, so every reasoning
 // artifact a client can ask for is uniformly unavailable rather than silently
@@ -35,42 +16,48 @@ func droppableBridgeInclude(value string) bool {
 // Native requests never enter here. A bridge must not pretend unsupported
 // state, hosted tools or signed/opaque context can be represented as chat text.
 func validateBridgeCapabilities(client string, raw []byte) error {
+	return validateBridgeCapabilitiesFor(client, raw, bridgeOptions{})
+}
+
+// validateBridgeCapabilitiesFor applies the same policy with what the caller has
+// explicitly accepted losing.
+func validateBridgeCapabilitiesFor(client string, raw []byte, opts bridgeOptions) error {
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return err
 	}
 	reject := func(field string) error {
-		return rejectBridgeFeature(field, "requires a native channel")
+		reason, refused := bridgeFieldRefusal(bridgeClientFieldPolicy, client, field)
+		if !refused {
+			// A field with a conditional rule -- a single choice, store=false --
+			// is refused here by its value rather than by its disposition.
+			reason = "requires a native channel"
+		}
+		return rejectBridgeFeature(field, reason)
 	}
-	// Unrecognized fields must not silently disappear through a converter. The
-	// fields listed beyond a protocol's own shape are the ones that only shape the
-	// answer -- sampling penalties, seeds, diagnostics, attribution, cache hints --
-	// so a converter that drops them still returns a usable answer. A
-	// structured-output contract (response_format) and a multi-choice request (n>1)
-	// are deliberately absent: dropping those changes what the client gets, not
-	// just how it is shaped.
-	allowed := "model stream messages tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort stream_options promptCacheKey prompt_cache_key prompt_cache_options prompt_cache_retention client_metadata frequency_penalty presence_penalty seed stop user logprobs top_logprobs metadata service_tier n"
-	switch client {
-	case wireResponses:
-		// The cache hints are dropped by the converter: Chat has no parameter for
-		// how long an upstream retains a prompt cache, and the answer is unaffected.
-		allowed = "model stream input instructions tools tool_choice parallel_tool_calls temperature top_p max_output_tokens reasoning text store prompt_cache_key include prompt_cache_options prompt_cache_retention client_metadata"
-	case wireMessages:
-		// Claude-style requests carry a cache breakpoint on nearly every block
-		// (cache_control), a user id for abuse reporting (metadata), an extended
-		// thinking budget and a top_k cutoff. A bridge can serve the request without
-		// any of them, so they are dropped rather than refusing the client.
-		allowed = "model stream messages system tools tool_choice temperature top_p max_tokens stop_sequences metadata thinking top_k"
-	case wireGemini:
-		allowed = "contents systemInstruction generationConfig tools toolConfig"
-	}
+	// Every field's disposition is declared once, in bridge_field_policy.go. The
+	// fields a protocol may send beyond its own shape are the ones that only shape
+	// the answer -- sampling penalties, seeds, diagnostics, attribution, cache
+	// hints -- so a converter that drops them still returns a usable answer. A
+	// structured-output contract, a second choice and the state fields are refused
+	// instead, because dropping those changes what the client gets. A field with
+	// no rule is refused too, so nothing a new client invents disappears silently.
+	//
+	// A single choice is not a contract, which is why n is declared but its value
+	// is checked here.
 	if n, ok := body["n"]; ok && n != nil && n != float64(1) {
 		return reject("n")
 	}
 	for _, field := range bridgeFieldNames(body) {
-		value := body[field]
-		if value != nil && !containsString(strings.Fields(allowed), field) {
-			return reject(field)
+		if body[field] == nil {
+			continue
+		}
+		if reason, refused := bridgeFieldRefusal(bridgeClientFieldPolicy, client, field); refused {
+			// A loss the caller declared it can survive is taken, not refused.
+			if opts.acceptsLostField(field) {
+				continue
+			}
+			return rejectBridgeFeature(field, reason)
 		}
 	}
 	if body["store"] == true {
@@ -78,14 +65,9 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 	}
 	if reasoning := asMap(body["reasoning"]); reasoning != nil {
 		for _, field := range bridgeFieldNames(reasoning) {
-			if field != "effort" && !droppableBridgePreference("reasoning."+field) {
+			if field != "effort" && !droppableBridgeField("reasoning."+field) {
 				return reject("reasoning." + field)
 			}
-		}
-	}
-	for _, field := range []string{"context_management", "previous_response_id", "conversation", "truncation", "background", "audio", "modalities"} {
-		if value, ok := body[field]; ok && value != nil && value != false && value != "" {
-			return reject(field)
 		}
 	}
 	if client == wireResponses {
@@ -94,7 +76,7 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 				return reject("include")
 			}
 		}
-		if text := asMap(body["text"]); text["verbosity"] != nil && !droppableBridgePreference("text.verbosity") {
+		if text := asMap(body["text"]); text["verbosity"] != nil && !droppableBridgeField("text.verbosity") {
 			return reject("text.verbosity")
 		}
 	}
@@ -188,25 +170,34 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 // channel will serve it: a conversion that loses data is refused for every
 // channel, and one that does not is allowed for every channel.
 func validateBridgeRoute(client, target string, raw []byte, path string) error {
-	chat, _, _, err := bridgeClientToChat(client, raw, path)
+	return validateBridgeRouteFor(client, target, raw, path, bridgeOptions{})
+}
+
+// validateBridgeRouteFor validates both legs, with what the caller has explicitly
+// accepted losing applied to both of them.
+func validateBridgeRouteFor(client, target string, raw []byte, path string, opts bridgeOptions) error {
+	chat, _, _, err := bridgeClientToChatFor(client, raw, path, opts)
 	if err != nil {
 		return err
 	}
-	allowed := "model messages stream stream_options tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort prompt_cache_key prompt_cache_options prompt_cache_retention client_metadata frequency_penalty presence_penalty seed user logprobs top_logprobs metadata service_tier n stop"
-	switch target {
-	case wireChat:
+	if target == wireChat {
 		return nil
-	case wireMessages:
-		// A Messages target has no equivalent for the OpenAI-side hints, and dropping
-		// them still produces a usable answer: Anthropic offers explicit cache
-		// breakpoints instead of a cache key, allows parallel tool use by default,
-		// and takes an explicit thinking budget instead of a reasoning effort. The
-		// structured-output contract (response_format) stays refused.
-		allowed = "model messages stream stream_options tools tool_choice temperature top_p max_tokens max_completion_tokens stop parallel_tool_calls reasoning_effort prompt_cache_key prompt_cache_options prompt_cache_retention client_metadata frequency_penalty presence_penalty seed user logprobs top_logprobs metadata service_tier n"
 	}
+	// A Responses or Messages target has no equivalent for the OpenAI-side hints,
+	// and dropping them still produces a usable answer: Anthropic offers explicit
+	// cache breakpoints instead of a cache key, allows parallel tool use by
+	// default, and takes an explicit thinking budget instead of a reasoning
+	// effort. What must not be dropped -- a structured-output contract, a second
+	// choice -- is refused through the same policy that checks the client request,
+	// so the two legs of a bridge cannot disagree about a field.
 	for _, field := range bridgeFieldNames(chat) {
-		value := chat[field]
-		if value != nil && !containsString(strings.Fields(allowed), field) {
+		if chat[field] == nil {
+			continue
+		}
+		if _, refused := bridgeFieldRefusal(bridgeChatFieldPolicy, target, field); refused {
+			if opts.acceptsLostField(field) {
+				continue
+			}
 			return rejectBridgeFeature(field, "cannot be preserved by "+target)
 		}
 	}
@@ -225,4 +216,48 @@ func validateBridgeRoute(client, target string, raw []byte, path string) error {
 		}
 	}
 	return nil
+}
+
+// capabilityWireProtocol maps the protocol name used in a `protocol:<name>`
+// capability onto the wire protocol it names. OpenCode's model table spells the
+// Anthropic (Messages) protocol "anthropic" while FusionGate's own records and
+// the discovery demotion use "messages", so both spellings have to be read.
+func capabilityWireProtocol(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case wireChat:
+		return wireChat
+	case wireResponses:
+		return wireResponses
+	case wireMessages, "anthropic", "claude":
+		return wireMessages
+	case wireGemini:
+		return wireGemini
+	default:
+		return ""
+	}
+}
+
+// routeServesProtocol reports whether a route's own capability evidence allows a
+// protocol.
+//
+// Only an explicit `protocol:<name>` entry is evidence. The capability list of
+// an ordinary route describes the model (chat, stream, tools, reasoning) and
+// says nothing about protocols, so it must not be read as "this route serves no
+// protocol" -- that would deny every bridge on every route that discovery has
+// not annotated.
+func routeServesProtocol(z resolvedRoute, protocol string) bool {
+	listed := false
+	for capabilities := z.Route.Capabilities; capabilities != ""; {
+		var capability string
+		capability, capabilities = nextListItem(capabilities)
+		name, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(capability)), "protocol:")
+		if !ok {
+			continue
+		}
+		listed = true
+		if capabilityWireProtocol(name) == protocol {
+			return true
+		}
+	}
+	return !listed
 }

@@ -73,6 +73,7 @@ type App struct {
 	oauthSessions         map[string]oauthSession
 	authImports           map[string]credentialImportSession
 	ledgerCleanupMu       sync.Mutex
+	bridgeFields          *bridgeFieldAudit
 	lastLedgerCleanup     time.Time
 	healthChecker         *HealthChecker
 	healthCheckJobs       *healthCheckJobManager
@@ -322,7 +323,8 @@ func New(cfg Config) (*App, error) {
 		adminSessions:      map[string]adminSession{},
 		pricingSyncTrigger: make(chan struct{}, 1), requestSlots: make(chan struct{}, cfg.MaxConcurrentRequests),
 		lastUsedAt: map[int64]time.Time{}, metrics: newGatewayMetrics(),
-		dpopCache: newDPoPSessionCache(),
+		bridgeFields: newBridgeFieldAudit(),
+		dpopCache:    newDPoPSessionCache(),
 	}
 	if err := a.migrate(context.Background()); err != nil {
 		db.Close()
@@ -350,6 +352,13 @@ func New(cfg Config) (*App, error) {
 		return nil, err
 	}
 	a.startLedgerWriter()
+	// Learned protocol facts outlive the process: without this, a restart makes
+	// the first request to every chat-only channel probe a native endpoint that
+	// was already known to be missing.
+	if err := a.seedProtocolCapabilities(context.Background()); err != nil {
+		a.closeDatabases()
+		return nil, err
+	}
 	// Any open ledger row predating this process is abandoned work:
 	// close it once so the console stops reporting ghost in-flight attempts.
 	a.reconcileStartupLedgerRows()
@@ -1203,6 +1212,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/metrics", a.admin(a.runtimeMetrics))
 	mux.HandleFunc("/api/admin/routing", a.admin(a.routing))
 	mux.HandleFunc("/api/admin/recovery", a.admin(a.recoveryState))
+	mux.HandleFunc("/api/admin/capabilities", a.admin(a.capabilityAudit))
 	mux.HandleFunc("/api/admin/requests", a.admin(a.requests))
 	mux.HandleFunc("/api/admin/password", a.admin(a.changePassword))
 	mux.HandleFunc("/api/admin/ledger", a.admin(a.ledger))

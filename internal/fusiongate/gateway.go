@@ -370,7 +370,14 @@ func routeProtocolEnabled(z resolvedRoute, protocol string) bool {
 	}
 	// Auto mode is capability-driven. Preference orders protocols already
 	// known to work; it never invents support that discovery did not prove.
-	return matchesCapability(z.Route.Capabilities, "protocol:"+protocol)
+	if !matchesCapability(z.Route.Capabilities, "protocol:"+protocol) {
+		return false
+	}
+	// A protocol whose last native attempt was refused is not selected again
+	// until the learned fact expires. The declaration itself is kept, so the
+	// endpoint is retried once the lifetime elapses and is cleared early by any
+	// success, rather than being erased permanently by a single failure.
+	return !protocolMemory.unsupported(z, protocol)
 }
 
 func matchesCapability(capabilities, required string) bool {
@@ -1574,9 +1581,15 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 			}
 			result := a.openAIProxyWithRetryStatus(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte, retryStatus)
 			if result.Reason == "upstream_protocol_unsupported" && fixedRouteProtocol(z) == "" {
-				// Discovery is stale: remove only the learned capability. This
-				// prevents future requests from repeatedly probing a dead endpoint.
-				_, _ = a.db.ExecContext(r.Context(), `UPDATE model_routes SET capabilities=TRIM(REPLACE(','||capabilities||',', ',protocol:responses,', ','), ','),updated_at=? WHERE id=?`, now(), z.Route.ID)
+				// The declared Responses endpoint did not answer. Record the
+				// failure as a learned fact instead of deleting the declaration:
+				// removing the entry also dropped the route out of the Responses
+				// candidate list, and nothing ever wrote it back, so an endpoint
+				// that was briefly down -- or that appeared later -- stayed
+				// unreachable for the life of the row. The learned fact stops the
+				// repeated probing for its lifetime and then lets the declaration
+				// be tried again.
+				a.rememberProtocol(z, wireResponses, "declared Responses endpoint did not answer")
 			}
 			return result
 		}

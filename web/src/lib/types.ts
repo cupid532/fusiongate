@@ -314,6 +314,25 @@ export interface TokenUsageResponse {
   has_more: boolean
 }
 
+export interface BridgeFieldEvent {
+  provider_id: number
+  provider_name: string
+  upstream_model: string
+  protocol: string
+  field: string
+  disposition: "dropped" | "refused"
+  reason: string
+  hits: number
+  first_seen_at: string
+  last_seen_at: string
+}
+
+export interface BridgeFieldAuditResponse {
+  events: BridgeFieldEvent[]
+  limit: number
+  scope: string
+}
+
 export interface IPPoolNode {
   id: number
   name: string

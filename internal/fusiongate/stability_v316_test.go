@@ -122,16 +122,29 @@ func TestStrictProtocolCapabilityLearning(t *testing.T) {
 		}
 	}
 	m := &wireMemory{entries: map[string]time.Time{}}
-	z := resolvedRoute{Provider: Provider{ID: 1, BaseURL: "https://example.com"}, Credential: "one"}
+	z := resolvedRoute{Provider: Provider{ID: 1, BaseURL: "https://example.com"}, Credential: "one",
+		AuthCredential: &ProviderCredential{Kind: "oauth", Platform: "codex", AccountID: "acct-1"}}
 	m.remember(z, wireChat)
 	if !m.unsupported(z, wireChat) {
 		t.Fatal("not learned")
 	}
+	// A renewed token of the same account keeps the verdict. The learning is
+	// about the channel and the account, and discarding it on every refresh made
+	// the channel re-probe an endpoint it had already disproved -- on the first
+	// request after each refresh, for the subscription channels that refresh on
+	// a schedule.
 	z.Credential = "two"
-	if m.unsupported(z, wireChat) {
-		t.Fatal("stale credential cache")
+	z.AuthCredential.AccessToken = "two"
+	if !m.unsupported(z, wireChat) {
+		t.Fatal("a renewed token lost the learning")
 	}
-	z.Credential = "one"
+	// A different account must not inherit it: a second subscription can carry
+	// different entitlements.
+	z.AuthCredential = &ProviderCredential{Kind: "oauth", Platform: "codex", AccountID: "acct-2"}
+	if m.unsupported(z, wireChat) {
+		t.Fatal("stale account cache")
+	}
+	z.AuthCredential = &ProviderCredential{Kind: "oauth", Platform: "codex", AccountID: "acct-1"}
 	z.Provider.BaseURL += "/new"
 	if m.unsupported(z, wireChat) {
 		t.Fatal("stale address cache")

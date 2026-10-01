@@ -320,10 +320,15 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			compatible := make([]resolvedRoute, 0, len(keys))
 			for _, candidate := range keys {
 				if client, target, bridge := parseBridgeAdapter(inferenceAdapterID(candidate, run.path)); bridge {
-					if err := validateBridgeRoute(client, target, run.raw, run.path); err != nil {
+					opts := bridgeOptionsForRequest(r)
+					if err := validateBridgeRouteFor(client, target, run.raw, run.path, opts); err != nil {
 						run.lastErr = "capability_not_supported"
 						run.capabilityReason = bridgeRejectionReason(err)
 						run.noteSkip(fmt.Sprintf("provider=%d: %s", candidate.Provider.ID, run.capabilityReason))
+						// The channel was held back by a field, not by an upstream
+						// failure. Record which field, per channel, so the console
+						// can answer "what is blocking this channel".
+						a.auditBridgeRefusal(candidate, client, err)
 						continue
 					}
 				}
@@ -614,7 +619,7 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 			return result, cancel
 		}
 		if result.Response != nil && result.Status >= 400 && protocolUnsupportedSignal(result.Response) {
-			protocolMemory.remember(z, target)
+			a.rememberProtocol(z, target, "the channel refused the protocol a bridge converted into")
 			result.Retryable = true
 			result.Reason = "protocol_fallback"
 		}
@@ -677,7 +682,7 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 	client := clientWireProtocol(run.path)
 	if result.Response == nil || result.Status < 400 {
 		if client != "" && result.Response != nil {
-			protocolMemory.forget(z, client)
+			a.forgetProtocol(z, client)
 		}
 		return result, cancel
 	}
@@ -687,14 +692,14 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 	if run.path == "/v1/messages/count_tokens" {
 		result.Response.Body.Close()
 		cancel()
-		protocolMemory.remember(z, wireMessages)
+		a.rememberProtocol(z, wireMessages, "the channel does not serve the Messages protocol")
 		return run.localCountTokens(w), func() {}
 	}
 	// A probe is a real attempt. Learn only explicit endpoint rejection and
 	// let the normal bounded loop make (and log) any subsequent bridge call.
 	fallback := fallbackInferenceAdapter(z, run.path)
 	if _, _, ok := parseBridgeAdapter(fallback); ok {
-		protocolMemory.remember(z, client)
+		a.rememberProtocol(z, client, "the native endpoint did not answer for the client protocol")
 		result.Retryable = true
 		result.Reason = "protocol_fallback"
 	}

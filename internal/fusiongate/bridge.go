@@ -161,8 +161,11 @@ const wireMemoryTTL = 30 * time.Minute
 
 var protocolMemory = &wireMemory{entries: map[string]time.Time{}}
 
+// The credential contributes a stable identity, never a token value: see
+// wireCredentialIdentity. Keying on the token made every refresh start from an
+// empty learning state.
 func wireMemoryKey(z resolvedRoute, protocol string) string {
-	identity := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s", z.Provider.ID, z.Provider.Type, z.Provider.BaseURL, z.Provider.ProtocolPolicy, z.Provider.ProtocolPreference, z.Credential, z.Route.UpstreamModel)
+	identity := fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s\x00%s\x00%s", z.Provider.ID, z.Provider.Type, z.Provider.BaseURL, z.Provider.ProtocolPolicy, z.Provider.ProtocolPreference, wireCredentialIdentity(z), z.Route.UpstreamModel)
 	return fmt.Sprintf("%x:%s", sha256.Sum256([]byte(identity)), protocol)
 }
 
@@ -179,28 +182,57 @@ func (m *wireMemory) unsupported(z resolvedRoute, protocol string) bool {
 }
 
 func (m *wireMemory) remember(z resolvedRoute, protocol string) {
+	m.rememberUntil(z, protocol, time.Now().Add(wireMemoryTTL))
+}
+
+// rememberUntil installs a fact with an explicit lifetime, so the in-memory index
+// and its persisted copy expire at the same instant. It reports whether the fact
+// was new, which lets a caller that also persists it write once per state change
+// instead of once per request.
+func (m *wireMemory) rememberUntil(z resolvedRoute, protocol string, until time.Time) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	key := wireMemoryKey(z, protocol)
+	if existing, ok := m.entries[key]; ok && time.Now().Before(existing) {
+		return false
+	}
 	if len(m.entries) >= 4096 {
-		for key, until := range m.entries {
-			if time.Now().After(until) {
-				delete(m.entries, key)
+		for entry, expiry := range m.entries {
+			if time.Now().After(expiry) {
+				delete(m.entries, entry)
 			}
 		}
 		if len(m.entries) >= 4096 {
-			for key := range m.entries {
-				delete(m.entries, key)
+			for entry := range m.entries {
+				delete(m.entries, entry)
 				break
 			}
 		}
 	}
-	m.entries[wireMemoryKey(z, protocol)] = time.Now().Add(wireMemoryTTL)
+	m.entries[key] = until
+	return true
 }
 
-func (m *wireMemory) forget(z resolvedRoute, protocol string) {
+// restore installs a fact learned by an earlier process. An entry whose lifetime
+// already elapsed is ignored rather than installed and swept on first read.
+func (m *wireMemory) restore(key string, until time.Time) {
+	if !until.After(time.Now()) {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.entries, wireMemoryKey(z, protocol))
+	m.entries[key] = until
+}
+
+func (m *wireMemory) forget(z resolvedRoute, protocol string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key := wireMemoryKey(z, protocol)
+	if _, ok := m.entries[key]; !ok {
+		return false
+	}
+	delete(m.entries, key)
+	return true
 }
 
 // planInferenceAdapter chooses native passthrough or a bridge for one route.
@@ -227,16 +259,32 @@ func fallbackInferenceAdapter(z resolvedRoute, path string) string {
 	return bridgeTarget(z, client, routeWireProtocols(z))
 }
 
+// bridgeTarget chooses the protocol to convert into, in the channel type's own
+// preference order.
+//
+// A candidate must also be allowed by the route's capability evidence. Bridging
+// into a protocol this very model demonstrably does not serve spends a whole
+// upstream call to rediscover what discovery already recorded, and does it on
+// the request path the client is waiting on. A route whose capabilities name no
+// protocol at all is not evidence: the channel type stays the only guide, which
+// is how every route behaved before capabilities carried protocols.
 func bridgeTarget(z resolvedRoute, client string, natives []string) string {
+	candidates := make([]string, 0, len(natives))
 	for _, target := range natives {
-		if target != client && !protocolMemory.unsupported(z, target) {
+		if target != client && routeServesProtocol(z, target) {
+			candidates = append(candidates, target)
+		}
+	}
+	for _, target := range candidates {
+		if !protocolMemory.unsupported(z, target) {
 			return bridgeAdapter(client, target)
 		}
 	}
-	for _, target := range natives {
-		if target != client {
-			return bridgeAdapter(client, target)
-		}
+	if len(candidates) > 0 {
+		// Every candidate is remembered as unsupported. Retry the first rather
+		// than refusing: the TTL exists so a channel that added an endpoint, or
+		// had one restored, is found again without an operator reset.
+		return bridgeAdapter(client, candidates[0])
 	}
 	return ""
 }
@@ -307,12 +355,18 @@ func containsAny(text string, needles ...string) bool {
 // --- request conversion: client protocol -> chat -> upstream protocol -------
 
 func bridgeClientToChat(client string, raw []byte, path string) (map[string]any, bool, map[string]bool, error) {
+	return bridgeClientToChatFor(client, raw, path, bridgeOptions{})
+}
+
+// bridgeClientToChatFor converts a client request into the intermediate Chat
+// form, under what the caller has explicitly accepted losing.
+func bridgeClientToChatFor(client string, raw []byte, path string, opts bridgeOptions) (map[string]any, bool, map[string]bool, error) {
 	var (
 		encoded []byte
 		stream  bool
 		err     error
 	)
-	if err := validateBridgeCapabilities(client, raw); err != nil {
+	if err := validateBridgeCapabilitiesFor(client, raw, opts); err != nil {
 		return nil, false, nil, err
 	}
 	custom := map[string]bool{}
@@ -1542,12 +1596,17 @@ func (run *inferenceRun) bridgeAttempt(w http.ResponseWriter, r *http.Request, z
 	a := run.app
 	noop := func() {}
 	conversionStart := time.Now()
-	chat, stream, custom, err := bridgeClientToChat(client, run.raw, run.path)
+	opts := bridgeOptionsForRequest(r)
+	chat, stream, custom, err := bridgeClientToChatFor(client, run.raw, run.path, opts)
 	if err == nil {
 		var body []byte
 		var path string
 		body, path, err = bridgeUpstreamBody(target, chat, z)
 		if err == nil {
+			// The request is going upstream through the bridge: record what the
+			// conversion had to leave behind, so an operator can see it in the
+			// console instead of attaching a capture proxy to a live client.
+			a.auditBridgeDrops(z, client, chat, opts)
 			if d := diagnosticFor(r.Context()); d != nil {
 				d.conversion(time.Since(conversionStart))
 			}
@@ -1571,6 +1630,7 @@ func (run *inferenceRun) bridgeAttempt(w http.ResponseWriter, r *http.Request, z
 	}
 	// The client's own request could not be expressed in the channel's protocol.
 	// That is a request problem, reported once in the client's own terms.
+	a.auditBridgeRefusal(z, client, err)
 	failRequest(w, r, http.StatusBadRequest, "invalid_request", "request could not be converted for this channel: "+err.Error())
 	return attemptResult{Status: http.StatusBadRequest, Handled: true, Reason: "bridge_conversion_failed", Err: err}, noop
 }

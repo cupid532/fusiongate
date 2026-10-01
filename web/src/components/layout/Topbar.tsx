@@ -14,6 +14,7 @@ const titles: Record<string, string> = {
   keys: "访问密钥",
   usage: "用量与费用",
   requests: "请求账本",
+  capabilities: "字段兼容",
 }
 
 const GITHUB_URL = "https://github.com/cupid532/fusiongate"
