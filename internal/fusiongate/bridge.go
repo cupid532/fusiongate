@@ -259,32 +259,46 @@ func fallbackInferenceAdapter(z resolvedRoute, path string) string {
 	return bridgeTarget(z, client, routeWireProtocols(z))
 }
 
-// bridgeTarget chooses the protocol to convert into, in the channel type's own
-// preference order.
+// bridgeTarget chooses the protocol to convert into.
 //
-// A candidate must also be allowed by the route's capability evidence. Bridging
-// into a protocol this very model demonstrably does not serve spends a whole
-// upstream call to rediscover what discovery already recorded, and does it on
-// the request path the client is waiting on. A route whose capabilities name no
-// protocol at all is not evidence: the channel type stays the only guide, which
-// is how every route behaved before capabilities carried protocols.
+// Two things decide, in this order: the channel type's own preference order, and
+// what the route's capability evidence names. A declared protocol is tried first,
+// because honouring a declaration is what the operator asked for and it skips a
+// call that would otherwise be spent discovering the same thing.
+//
+// A declaration never *removes* the type's other protocols from consideration.
+// Declaring a native Responses endpoint on an Anthropic-compatible channel is an
+// operator adding an option, not replacing Messages, so treating the declaration
+// as an exhaustive list could take away the one target that actually answers. A
+// protocol that has really been proven missing is excluded anyway, by the learned
+// fact, and that exclusion expires.
 func bridgeTarget(z resolvedRoute, client string, natives []string) string {
-	candidates := make([]string, 0, len(natives))
+	declared := make([]string, 0, len(natives))
+	others := make([]string, 0, len(natives))
 	for _, target := range natives {
-		if target != client && routeServesProtocol(z, target) {
-			candidates = append(candidates, target)
+		if target == client {
+			continue
+		}
+		if routeServesProtocol(z, target) {
+			declared = append(declared, target)
+		} else {
+			others = append(others, target)
 		}
 	}
-	for _, target := range candidates {
-		if !protocolMemory.unsupported(z, target) {
-			return bridgeAdapter(client, target)
+	for _, group := range [][]string{declared, others} {
+		for _, target := range group {
+			if !protocolMemory.unsupported(z, target) {
+				return bridgeAdapter(client, target)
+			}
 		}
 	}
-	if len(candidates) > 0 {
-		// Every candidate is remembered as unsupported. Retry the first rather
-		// than refusing: the TTL exists so a channel that added an endpoint, or
-		// had one restored, is found again without an operator reset.
-		return bridgeAdapter(client, candidates[0])
+	// Every candidate is remembered as unsupported. Retry one rather than
+	// refusing: the TTL exists so a channel that added an endpoint, or had one
+	// restored, is found again without an operator reset.
+	for _, group := range [][]string{declared, others} {
+		if len(group) > 0 {
+			return bridgeAdapter(client, group[0])
+		}
 	}
 	return ""
 }
@@ -348,6 +362,25 @@ func containsAny(text string, needles ...string) bool {
 		if strings.Contains(text, needle) {
 			return true
 		}
+	}
+	return false
+}
+
+// protocolEvidenceStatus reports whether a failed call on a *declared* endpoint
+// proves that endpoint is not there.
+//
+// Only unambiguous answers count. A 404, 405, 415 or 501 says the endpoint does
+// not exist. A 400 or 422 says either that or that the request was wrong, and only
+// the body can tell the two apart, so that decision is left to
+// protocolUnsupportedSignal, which inspects it. A 5xx or a timeout is health
+// evidence, not protocol evidence: the circuit breaker already counts it and opens
+// the channel's circuit, and learning "this protocol is unsupported" from it would
+// suppress an endpoint that is merely unwell while saying nothing true about its
+// protocol support.
+func protocolEvidenceStatus(status int) bool {
+	switch status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented, http.StatusUnsupportedMediaType:
+		return true
 	}
 	return false
 }

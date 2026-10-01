@@ -108,33 +108,36 @@ func TestWireIdentityCarriesNoCredential(t *testing.T) {
 	}
 }
 
-// A route that names its protocol constrains which protocol a bridge may convert
-// into: converting into one the model does not serve costs a whole upstream call
-// to learn what discovery already recorded.
-func TestBridgeTargetHonoursRouteProtocolEvidence(t *testing.T) {
+// A route that names a protocol orders the bridge targets; it never removes one.
+// Declaring a native Responses endpoint on an Anthropic-compatible channel is an
+// operator adding an option, so treating the declaration as an exhaustive list
+// could take away the Messages target that actually answers.
+func TestDeclarationOrdersBridgeTargetsWithoutRemovingAny(t *testing.T) {
 	resetProtocolMemory()
 	z := resolvedRoute{
-		Route:    Route{ID: 1, UpstreamModel: "upstream-model", Capabilities: "protocol:responses,stream"},
-		Provider: Provider{ID: 1, Type: "openai_compatible", ProtocolPolicy: protocolAuto},
+		Route:    Route{ID: 1, UpstreamModel: "claude-x", Capabilities: "chat,stream,protocol:responses"},
+		Provider: Provider{ID: 1, Type: "anthropic_compatible", ProtocolPolicy: protocolAuto},
 	}
-	natives := typeWireProtocols("openai_compatible")
+	natives := typeWireProtocols("anthropic_compatible")
 	if got := bridgeTarget(z, wireChat, natives); got != bridgeAdapter(wireChat, wireResponses) {
-		t.Fatalf("chat client bridge target = %q, want responses", got)
+		t.Fatalf("the declared endpoint must be tried first, got %q", got)
 	}
-	// The route rules Messages out but does not rule Chat in: a Responses client
-	// has no target the route claims to serve, so the honest answer is to fail
-	// over rather than convert into a protocol the model may not speak.
-	if got := bridgeTarget(z, wireResponses, natives); got != "" {
-		t.Fatalf("responses client bridge target = %q, want no bridge", got)
+	// Once the declared endpoint is known not to answer, the type's own Messages
+	// target must still be reachable. Before this, the declaration had removed it.
+	protocolMemory.remember(z, wireResponses)
+	if got := bridgeTarget(z, wireChat, natives); got != bridgeAdapter(wireChat, wireMessages) {
+		t.Fatalf("a declaration must not take away the type's own target, got %q", got)
 	}
-	only := z
-	only.Route.Capabilities = "protocol:responses"
-	if got := bridgeTarget(only, wireResponses, natives); got != "" {
-		t.Fatalf("a route that serves only responses must not bridge away from it: %q", got)
+	// A route that names no protocol keeps the type's preference untouched: for an
+	// Anthropic-compatible channel that is Messages, its native protocol.
+	plain := z
+	plain.Route.Capabilities = "chat,stream"
+	if got := bridgeTarget(plain, wireChat, natives); got != bridgeAdapter(wireChat, wireMessages) {
+		t.Fatalf("an undeclared route keeps the type's order, got %q", got)
 	}
 }
 
-// OpenCode's model table spells the Messages protocol "anthropic". A route
+// OpenCode's model table spells the Messages protocol "anthropic", and a route
 // annotated that way must still be reachable from a Responses client.
 func TestBridgeTargetReadsAnthropicProtocolEvidence(t *testing.T) {
 	resetProtocolMemory()
@@ -150,7 +153,7 @@ func TestBridgeTargetReadsAnthropicProtocolEvidence(t *testing.T) {
 
 // A capability list that names no protocol is not evidence: the channel type
 // stays the only guide, which is how every route behaved before capabilities
-// carried protocols. Reading it as "serves nothing" would deny every bridge.
+// carried protocols.
 func TestRouteWithoutProtocolEvidenceKeepsTypePreference(t *testing.T) {
 	resetProtocolMemory()
 	z := resolvedRoute{
@@ -164,5 +167,34 @@ func TestRouteWithoutProtocolEvidenceKeepsTypePreference(t *testing.T) {
 	}
 	if got := bridgeTarget(z, wireMessages, typeWireProtocols("openai_compatible")); got != bridgeAdapter(wireMessages, wireChat) {
 		t.Fatalf("bridge target = %q, want the type's first preference", got)
+	}
+}
+
+// A declared protocol on a route whose type cannot speak it must not be chosen:
+// the ordering only ever reorders what the type already offers.
+func TestBridgeTargetIgnoresUndeclarableEvidence(t *testing.T) {
+	resetProtocolMemory()
+	z := resolvedRoute{
+		Route:    Route{ID: 1, UpstreamModel: "upstream-model", Capabilities: "protocol:gemini"},
+		Provider: Provider{ID: 1, Type: "openai_compatible", ProtocolPolicy: protocolAuto},
+	}
+	if got := bridgeTarget(z, wireMessages, typeWireProtocols("openai_compatible")); got != bridgeAdapter(wireMessages, wireChat) {
+		t.Fatalf("bridge target = %q", got)
+	}
+}
+
+// A 5xx is health evidence, not protocol evidence: the circuit breaker owns it,
+// and learning "unsupported" from it would suppress a merely unwell endpoint.
+func TestOnlyEndpointLevelAnswersProveAnEndpointMissing(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   bool
+	}{
+		{404, true}, {405, true}, {415, true}, {501, true},
+		{400, false}, {422, false}, {500, false}, {502, false}, {504, false}, {200, false},
+	} {
+		if got := protocolEvidenceStatus(tc.status); got != tc.want {
+			t.Fatalf("status %d learned=%v, want %v", tc.status, got, tc.want)
+		}
 	}
 }

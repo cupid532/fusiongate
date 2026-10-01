@@ -1,5 +1,32 @@
 # Changelog
 
+## V3.36
+
+- Stop a route's protocol declaration from taking away a bridge target. V3.31 treated
+  a declared `protocol:<name>` as an exhaustive list, so a chat client bridged to an
+  Anthropic-compatible route that declares a native Responses endpoint was offered
+  only that endpoint -- and once it had been learned as not answering, the bridge
+  retried it instead of using Messages, the protocol the channel actually speaks.
+  A declaration is additive: an operator opting into a native Responses endpoint is
+  adding an option, not replacing Messages. The declaration is now an ordering
+  signal only -- the named protocols are tried first, every protocol the channel
+  type offers stays reachable -- while the only thing that excludes a target is a
+  learned fact, which expires.
+- Learn "this protocol is unsupported" only from answers that prove it. The
+  declared-endpoint path treated any response in the fallback set as protocol
+  evidence, and that set includes 5xx: a channel that answered one 500 on its
+  declared endpoint lost the endpoint for the whole learned-fact lifetime (and,
+  before V3.32, permanently). A 5xx or a timeout is health evidence, and the
+  existing circuit breaker already counts it and opens the channel's circuit;
+  learning a protocol fact from it suppresses an endpoint that is merely unwell
+  while saying nothing true about its protocol support. Ambiguous statuses (400,
+  422) stay with protocolUnsupportedSignal, which reads the body to tell "no such
+  endpoint" from "wrong request".
+- Regressions: a declaration orders targets without removing any, an undeclared
+  route keeps its type's order, a declared protocol the channel type cannot speak
+  is never chosen, and only 404/405/415/501 count as proof that an endpoint is
+  missing.
+
 ## V3.35
 
 - Let the caller accept a loss the bridge cannot avoid, instead of refusing every
@@ -70,7 +97,7 @@
 ## V3.32
 
 - Keep learned protocol facts across a restart. The index that answers "does this channel serve this protocol" lived only in memory, so every restart reintroduced the exact cost it exists to avoid: the first request to each chat-only channel probed a native endpoint already proven missing, and paid an upstream round trip for it on the request the client was waiting on. The unexpired facts are now written through to `channel_protocol_capabilities` and restored at startup; the lifetime is unchanged and expired rows are pruned on load.
-- Stop erasing a route's declared protocol when its endpoint refuses. A failed native Responses call on a route that declared `protocol:responses` used to strip the capability from the row, which also removed the route from the Responses candidate list -- and nothing ever wrote the entry back, so an endpoint that was briefly down, or that appeared later, stayed unreachable for the life of the row. The failure is now recorded as a learned fact with a lifetime: the declaration stays, selection is suppressed until the fact expires, and any success clears it immediately.
+- Stop erasing a route's declared protocol when its endpoint refuses. A failed native Responses call on a route that declared `protocol:responses` used to strip the capability from the row, which also removed the route from the Responses candidate list -- and nothing ever wrote the entry back, so an endpoint that was briefly down, or that appeared later, stayed unreachable for the life of the row. The failure is now recorded as a learned fact with a lifetime: the declaration stays, selection is suppressed until the fact expires, and any success clears it immediately. See V3.36 for which answers may create such a fact (endpoint-level ones only; a 5xx is health evidence and belongs to the circuit breaker).
 - Unify the two protocol layers so they cannot disagree. `routeProtocolEnabled` now reads the same learned index as the bridge planner, instead of consulting only the declaration, and a bridge target is still constrained by the declaration. A declaration says what a channel may serve; a learned fact says what it just proved. Neither can silently override the other in the other's direction.
 - Store expiry as unix nanoseconds rather than a formatted timestamp: RFC3339Nano trims trailing zeros from the fraction, which makes one instant compare as greater or smaller lexicographically depending on where its digits end.
 - Persist a learned fact only when it actually changes, and clear one only when there was something to clear. Writing on every call put a statement on the hot path of every successful request; the single SQLite writer is shared with the request ledger, which the performance regression test caught as an in-flight stream waiting for a saturated writer. A successful native call now queues nothing.
@@ -78,7 +105,7 @@
 ## V3.31
 
 - Key protocol learning on the account, not on the access token. The bridge memory that records "this channel does not serve this protocol" hashed the credential into its key, so every OAuth refresh produced a key that matched nothing: the entry written a moment earlier became unreachable, the channel paid for the same doomed native attempt again on the first request after each refresh, and the abandoned entries stayed in the map until the TTL swept them. Subscription channels refresh routinely (FusionGate refreshes 15 minutes ahead of expiry), so the 30-minute memory was in practice much shorter for exactly the channels that need it most. The key now uses the provider Key row, else the account id, else the account email, and the credential value never enters it. Accounts stay distinct, because a second subscription can carry different entitlements.
-- Constrain a bridge target to the protocols the route's own capability evidence allows. Candidates still follow the channel type's preference order, but a protocol the route demonstrably does not serve is no longer chosen: converting into it spends an upstream call to rediscover what discovery already recorded, on the request the client is waiting on. OpenCode's `protocol:anthropic` spelling is read as Messages. A capability list that names no protocol stays silent rather than denying every bridge, so an ordinary route keeps exactly its previous behaviour.
+- Constrain a bridge target to the protocols the route's own capability evidence allows. Candidates still follow the channel type's preference order, but a protocol the route demonstrably does not serve is no longer chosen: converting into it spends an upstream call to rediscover what discovery already recorded, on the request the client is waiting on. OpenCode's `protocol:anthropic` spelling is read as Messages. A capability list that names no protocol stays silent rather than denying every bridge, so an ordinary route keeps exactly its previous behaviour. **Corrected in V3.36**: turning that evidence into an exclusion was wrong — a declaration adds a target and must never remove one, and the exclusion itself could take away the protocol a channel actually speaks.
 - Add regressions for the refresh, the two accounts of one channel, two Keys of one provider, the no-credential guarantee, the constrained target, the OpenCode spelling, and the unannotated route that must keep the type's preference.
 - Sharpen the V3.16 memory-key contract rather than drop it. That release required a different credential to inherit nothing from the previous one, which is why the token ended up in the key. The requirement is now stated at the granularity that actually carries entitlements: a different **account** inherits nothing, a renewed token of the same account inherits everything, and a different address still inherits nothing.
 

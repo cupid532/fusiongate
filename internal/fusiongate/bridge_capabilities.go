@@ -237,14 +237,18 @@ func capabilityWireProtocol(name string) string {
 	}
 }
 
-// routeServesProtocol reports whether a route's own capability evidence allows a
+// routeServesProtocol reports whether a route's own capability evidence names a
 // protocol.
 //
-// Only an explicit `protocol:<name>` entry is evidence. The capability list of
-// an ordinary route describes the model (chat, stream, tools, reasoning) and
-// says nothing about protocols, so it must not be read as "this route serves no
-// protocol" -- that would deny every bridge on every route that discovery has
-// not annotated.
+// It is an ordering signal, never a filter: a declaration tells the bridge which
+// target the operator wants tried first, and only a learned fact -- real evidence,
+// with a lifetime -- excludes a target. Treating an absent name as "this route
+// serves nothing else" would let a declaration silently take away a working
+// bridge target, which is the opposite of what a declaration means.
+//
+// Only an explicit `protocol:<name>` entry counts as evidence. The capability list
+// of an ordinary route describes the model (chat, stream, tools, reasoning) and
+// says nothing about protocols.
 func routeServesProtocol(z resolvedRoute, protocol string) bool {
 	listed := false
 	for capabilities := z.Route.Capabilities; capabilities != ""; {

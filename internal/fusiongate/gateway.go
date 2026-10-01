@@ -1580,7 +1580,7 @@ func (a *App) openAIEndpoint(w http.ResponseWriter, r *http.Request, key authKey
 				retryStatus = responsesProtocolFallbackStatus
 			}
 			result := a.openAIProxyWithRetryStatus(w, r, raw, z, rid, endpoint, stream, safeTransportRetry, onFirstByte, retryStatus)
-			if result.Reason == "upstream_protocol_unsupported" && fixedRouteProtocol(z) == "" {
+			if result.Reason == "upstream_protocol_unsupported" && fixedRouteProtocol(z) == "" && protocolEvidenceStatus(result.Status) {
 				// The declared Responses endpoint did not answer. Record the
 				// failure as a learned fact instead of deleting the declaration:
 				// removing the entry also dropped the route out of the Responses
