@@ -180,6 +180,11 @@ type inferenceRun struct {
 	attempts int
 	notes    []string
 	success  bool
+	// skippedAhead records that this request reached a later channel while an
+	// earlier one was never called. Such a pass-over is a property of this
+	// request's payload or of a momentary cooldown, not proof that the earlier
+	// channel is unusable, so it must not be turned into a lasting task binding.
+	skippedAhead bool
 	// committed records that a response has already been written downstream.
 	// Once true, nothing may write again: a later channel cannot repair bytes the
 	// client already received, and a synthetic gateway error appended to a real
@@ -279,6 +284,12 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 		channel := run.plan.Channels[index]
 		keys := preferSessionKey(channel.Routes, run.session.ProviderKeyID)
 		isolated := map[int64]bool{}
+		// attempted records that this channel was really called. Only that is
+		// evidence the task may move past it for good: a channel excluded by a
+		// pre-flight check, or one that was merely in cooldown, was never
+		// disproved, and letting a per-request condition advance the cursor
+		// would demote a healthy higher-priority channel for the whole task.
+		attempted := false
 		// A Retry-After belongs to the channel that sent it: the next channel
 		// must not inherit a pause it never asked for.
 		run.retryPause = 0
@@ -308,7 +319,7 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			compatible := make([]resolvedRoute, 0, len(keys))
 			for _, candidate := range keys {
 				if client, target, bridge := parseBridgeAdapter(inferenceAdapterID(candidate, run.path)); bridge {
-					if err := validateBridgeRoute(client, target, run.raw, run.path, candidate); err != nil {
+					if err := validateBridgeRoute(client, target, run.raw, run.path); err != nil {
 						run.lastErr = "capability_not_supported"
 						run.noteSkip("capability_not_supported")
 						continue
@@ -317,14 +328,22 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 				compatible = append(compatible, candidate)
 			}
 			if len(compatible) == 0 {
+				// Every credential of this channel was excluded by the
+				// pre-flight capability check. The channel was never called, so
+				// this pass-over must not be remembered as a task preference.
+				run.skippedAhead = true
 				break
 			}
 			z, availability, ok := a.acquireInferenceRoute(compatible, isolated, attempt)
 			if !ok {
 				run.noteSkip(availability.Reason)
+				// Not selectable right now (cooldown, concurrency, circuit).
+				// A momentary condition must not become a permanent binding.
+				run.skippedAhead = true
 				break
 			}
 			run.attempts++
+			attempted = true
 			a.metrics.attempts.Add(1)
 			if run.attempts > 1 {
 				a.metrics.failovers.Add(1)
@@ -481,8 +500,17 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 		}
 		// This channel is spent. Persist the forward move before touching the
 		// next one so a concurrent turn of the same task cannot walk back.
-		if next := index + 1; next < len(run.plan.Channels) {
-			run.advance(r, next)
+		//
+		// Only a channel the task actually called may be left behind. A channel
+		// skipped by a pre-flight capability check, or one that was simply not
+		// selectable at this moment, keeps its place: the next turn of the task
+		// starts from the top again and gets another chance at it. Without this
+		// a single request carrying, say, max_tokens would push a task past a
+		// healthy higher-priority channel for the rest of the binding's life.
+		if attempted {
+			if next := index + 1; next < len(run.plan.Channels) {
+				run.advance(r, next)
+			}
 		}
 	}
 	stop := "candidates_exhausted"
@@ -915,8 +943,14 @@ func (run *inferenceRun) advance(r *http.Request, next int) {
 
 // noteSuccess records the channel and credential a task completed on so the next
 // turn of the same task starts there.
+//
+// A success only becomes the task's preference when the task actually walked the
+// order to reach it. If an earlier channel was passed over without being called
+// — excluded by a pre-flight check or momentarily unavailable — the binding is
+// left where it was, so the next turn starts from the top again and the
+// higher-priority channel gets its chance back.
 func (run *inferenceRun) noteSuccess(r *http.Request, z resolvedRoute, index int) {
-	if run.taskHash != "" {
+	if run.taskHash != "" && !run.skippedAhead {
 		session := routingSession{
 			TaskHash:      run.taskHash,
 			TaskScope:     run.taskScope,

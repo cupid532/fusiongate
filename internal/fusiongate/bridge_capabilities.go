@@ -113,7 +113,11 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 
 // Validate both legs: the intermediate Chat shape alone does not establish
 // that the destination can represent all of its fields.
-func validateBridgeRoute(client, target string, raw []byte, path string, z resolvedRoute) error {
+//
+// The answer depends only on the two protocols and the request, never on which
+// channel will serve it: a conversion that loses data is refused for every
+// channel, and one that does not is allowed for every channel.
+func validateBridgeRoute(client, target string, raw []byte, path string) error {
 	chat, _, _, err := bridgeClientToChat(client, raw, path)
 	if err != nil {
 		return err
@@ -130,13 +134,13 @@ func validateBridgeRoute(client, target string, raw []byte, path string, z resol
 			return fmt.Errorf("capability_not_supported: %s cannot be preserved by %s", field, target)
 		}
 	}
-	if z.Provider.Type == "codex_oauth" {
-		for _, field := range []string{"temperature", "top_p", "max_tokens", "max_completion_tokens"} {
-			if chat[field] != nil {
-				return fmt.Errorf("capability_not_supported: %s cannot be preserved by this channel", field)
-			}
-		}
-	}
+	// Sampling and length hints are deliberately dropped for the ChatGPT Codex
+	// backend, which rejects them. Rejecting the whole route here instead would
+	// make a healthy auth-file channel unreachable from the Chat endpoint for
+	// every client that sends ordinary parameters, even though the converter
+	// below already handles their absence. The native Responses path takes the
+	// same decision for the same field (see normalizedCodexResponsesBody), so a
+	// parameter-rich request degrades to a working answer rather than an error.
 	if target == wireMessages {
 		for _, value := range anySlice(chat["tools"]) {
 			if asMap(asMap(value)["function"])["strict"] != nil {

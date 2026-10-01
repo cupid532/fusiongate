@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.22
+
+- Stop a pre-flight exclusion from becoming a permanent task binding. A channel skipped before any upstream call — excluded by the bridge capability check, or momentarily unselectable through cooldown, concurrency or an open circuit — no longer advances the task cursor or becomes its recorded success channel. Previously one parameter-rich turn could demote a healthy higher-priority channel for the whole life of the binding.
+- Align the Chat-to-Responses bridge check with the converter for auth-file channels. `codex_oauth` rejects `temperature`, `top_p`, `max_tokens` and `max_completion_tokens` upstream, and the converter already drops them, but the validator refused the whole route instead, making a healthy auth file unreachable from `/v1/chat/completions` for ordinary clients. The same fields are still dropped, never forwarded, and the native Responses path keeps its existing behaviour.
+- Add regressions proving an auth file is reachable from Chat with ordinary sampling parameters, that unrepresentable tools are still refused before dispatch, and that a pre-flight skip leaves no lasting task binding.
+
 ## V3.21
 
 - Fix single-Key PATCH SQL bindings and make metadata, model selections, exclusions and legacy credentials atomic. Restore editable per-Key egress controls with explicit save/cancel and differential payloads.
