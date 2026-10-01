@@ -669,33 +669,85 @@ func parseDataURL(value string) (string, string, bool) {
 // bridgeUpstreamToChat exposes any upstream answer as a Chat Completions SSE
 // stream. Streams are converted event by event, so the client sees output as
 // soon as the upstream produces it.
+//
+// The transport framing is decided by the body whenever the header is not an
+// explicit SSE declaration. The ChatGPT Codex backend answers a streaming
+// Responses request with a complete SSE stream but sends no Content-Type at
+// all, so trusting the header made every bridged Codex call read an event
+// stream as one JSON document and fail as upstream_invalid_response. Relays
+// that mislabel the stream (for example as text/plain) failed the same way.
+// Sniffing cannot misfire on a JSON answer: it never begins with "data:",
+// "event:" or an SSE comment.
 func bridgeUpstreamToChat(target string, resp *http.Response, publicModel string) io.ReadCloser {
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	isSSE := mediaType == "text/event-stream"
-	if target == wireChat && isSSE {
-		return resp.Body
+	if !isSSE {
+		// Buffer once so the peek cannot consume bytes the converter still needs.
+		buffered := bufio.NewReaderSize(resp.Body, 4096)
+		resp.Body = &bufferedReadCloser{Reader: buffered, Closer: resp.Body}
+		isSSE = looksLikeSSE(buffered)
+	}
+	if isSSE {
+		if target == wireChat {
+			return resp.Body
+		}
+		reader, writer := io.Pipe()
+		go func() {
+			defer resp.Body.Close()
+			emitter := &chatChunkEmitter{w: writer, id: "chatcmpl-" + requestID(), model: publicModel, created: time.Now().Unix()}
+			var err error
+			switch target {
+			case wireResponses:
+				err = emitter.fromResponsesSSE(resp.Body)
+			case wireMessages:
+				err = emitter.fromAnthropicSSE(resp.Body)
+			default:
+				err = fmt.Errorf("protocol %q cannot be bridged from", target)
+			}
+			if err == nil {
+				_, err = io.WriteString(writer, "data: [DONE]\n\n")
+			}
+			writer.CloseWithError(err)
+		}()
+		return reader
 	}
 	reader, writer := io.Pipe()
 	go func() {
 		defer resp.Body.Close()
 		emitter := &chatChunkEmitter{w: writer, id: "chatcmpl-" + requestID(), model: publicModel, created: time.Now().Unix()}
-		var err error
-		switch {
-		case !isSSE:
-			err = emitter.fromCompleted(target, resp.Body)
-		case target == wireResponses:
-			err = emitter.fromResponsesSSE(resp.Body)
-		case target == wireMessages:
-			err = emitter.fromAnthropicSSE(resp.Body)
-		default:
-			err = fmt.Errorf("protocol %q cannot be bridged from", target)
-		}
+		err := emitter.fromCompleted(target, resp.Body)
 		if err == nil {
 			_, err = io.WriteString(writer, "data: [DONE]\n\n")
 		}
 		writer.CloseWithError(err)
 	}()
 	return reader
+}
+
+// looksLikeSSE reports whether a buffered response body begins with an SSE
+// field line. Peek does not advance the reader, so the converter still sees the
+// complete body. A JSON answer never starts with "data:" or "event:".
+func looksLikeSSE(buffered *bufio.Reader) bool {
+	head, err := buffered.Peek(4096)
+	if len(head) == 0 {
+		return false
+	}
+	_ = err
+	line := head
+	if index := bytes.IndexAny(line, "\r\n"); index >= 0 {
+		line = line[:index]
+	}
+	trimmed := strings.TrimSpace(string(line))
+	return strings.HasPrefix(trimmed, "data:") ||
+		strings.HasPrefix(trimmed, "event:") ||
+		strings.HasPrefix(trimmed, ":")
+}
+
+// bufferedReadCloser keeps the peeked bytes reachable by the reader while
+// preserving the original body's Close.
+type bufferedReadCloser struct {
+	*bufio.Reader
+	io.Closer
 }
 
 type chatChunkEmitter struct {

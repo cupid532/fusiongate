@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.23
+
+- Detect a bridged upstream stream from its body, not from Content-Type alone. The ChatGPT Codex backend answers a streaming Responses request with a complete SSE stream but sends no Content-Type header, and some relays mislabel the stream; the bridge read either as one JSON document and failed as `upstream_invalid_response`. Every bridged call to such a channel returned 502 while its native path worked, which is why an auth-file channel could not serve `/v1/chat/completions` even after V3.22 made it eligible. The peek is non-consuming and cannot misfire on JSON, which never begins with `data:`, `event:` or an SSE comment.
+- Add regressions covering a stream with no Content-Type, a mislabelled stream, and a JSON answer that must still take the non-streaming path.
+
 ## V3.22
 
 - Stop a pre-flight exclusion from becoming a permanent task binding. A channel skipped before any upstream call — excluded by the bridge capability check, or momentarily unselectable through cooldown, concurrency or an open circuit — no longer advances the task cursor or becomes its recorded success channel. Previously one parameter-rich turn could demote a healthy higher-priority channel for the whole life of the binding.
