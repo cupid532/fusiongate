@@ -189,13 +189,14 @@ type inferenceRun struct {
 	// Once true, nothing may write again: a later channel cannot repair bytes the
 	// client already received, and a synthetic gateway error appended to a real
 	// upstream answer would corrupt it.
-	committed  bool
-	retryPause time.Duration
-	lastID     string
-	last       *http.Response
-	lastErr    string
-	lastCode   int
-	retryWait  time.Duration
+	committed        bool
+	retryPause       time.Duration
+	lastID           string
+	last             *http.Response
+	lastErr          string
+	capabilityReason string
+	lastCode         int
+	retryWait        time.Duration
 }
 
 // noteSkip keeps the most informative reason a channel was passed over.
@@ -321,7 +322,8 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 				if client, target, bridge := parseBridgeAdapter(inferenceAdapterID(candidate, run.path)); bridge {
 					if err := validateBridgeRoute(client, target, run.raw, run.path); err != nil {
 						run.lastErr = "capability_not_supported"
-						run.noteSkip("capability_not_supported")
+						run.capabilityReason = bridgeRejectionReason(err)
+						run.noteSkip(fmt.Sprintf("provider=%d: %s", candidate.Provider.ID, run.capabilityReason))
 						continue
 					}
 				}
@@ -1030,6 +1032,9 @@ func (run *inferenceRun) noteSuccess(r *http.Request, z resolvedRoute, index int
 
 // finish completes the response.
 func (run *inferenceRun) finish(w http.ResponseWriter, r *http.Request, stop string) {
+	if !run.committed && run.lastErr == "capability_not_supported" {
+		stop = "capability_not_supported"
+	}
 	if run.lastID != "" && !run.committed {
 		run.annotate(run.lastID, stop)
 	}
@@ -1040,7 +1045,21 @@ func (run *inferenceRun) finish(w http.ResponseWriter, r *http.Request, stop str
 		return
 	}
 	if run.lastErr == "capability_not_supported" {
-		failRequest(w, r, http.StatusBadRequest, "capability_not_supported", "no compatible channel can preserve the requested features; use a native protocol channel")
+		if run.attempts == 0 && run.lastID == "" {
+			// Match the no-route ledger pattern: this is one rejected request,
+			// not an upstream attempt or a failure of any provider credential.
+			z := resolvedRoute{Route: Route{PublicName: run.model, UpstreamModel: run.model}}
+			id := run.app.startLedger(run.key, z, run.protocol, run.stream, run.clientIP, run.gatewayID, run.reasoning, 0, "", r.Context())
+			run.lastID = id
+			run.annotate(id, stop)
+			run.app.endLedger(id, 0, run.key.ID, "", run.model, false, http.StatusBadRequest, "capability_not_supported", run.startedAt, Usage{CostType: "unknown"})
+		}
+		hint := "no compatible channel can preserve the requested features; use a native protocol channel"
+		if run.capabilityReason != "" {
+			hint = "no compatible channel can preserve the requested features: " + run.capabilityReason + "; use a native protocol channel"
+		}
+		w.Header().Set("X-FusionGate-Request-ID", run.gatewayID)
+		failRequest(w, r, http.StatusBadRequest, "capability_not_supported", hint)
 		return
 	}
 	if run.last != nil {

@@ -2,7 +2,6 @@ package fusiongate
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 )
 
@@ -14,10 +13,10 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 		return err
 	}
 	reject := func(field string) error {
-		return fmt.Errorf("capability_not_supported: %s requires a native channel", field)
+		return rejectBridgeFeature(field, "requires a native channel")
 	}
 	// Unrecognized fields must not silently disappear through a converter.
-	allowed := "model stream messages tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort stream_options"
+	allowed := "model stream messages tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort stream_options promptCacheKey prompt_cache_key"
 	switch client {
 	case wireResponses:
 		allowed = "model stream input instructions tools tool_choice parallel_tool_calls temperature top_p max_output_tokens reasoning text store prompt_cache_key include"
@@ -26,7 +25,8 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 	case wireGemini:
 		allowed = "contents systemInstruction generationConfig tools toolConfig"
 	}
-	for field, value := range body {
+	for _, field := range bridgeFieldNames(body) {
+		value := body[field]
 		if value != nil && !containsString(strings.Fields(allowed), field) {
 			return reject(field)
 		}
@@ -35,7 +35,7 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 		return reject("store")
 	}
 	if reasoning := asMap(body["reasoning"]); reasoning != nil {
-		for field := range reasoning {
+		for _, field := range bridgeFieldNames(reasoning) {
 			if field != "effort" {
 				return reject("reasoning." + field)
 			}
@@ -63,7 +63,7 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 				return reject("tools." + kind)
 			}
 		case wireGemini:
-			for key := range tool {
+			for _, key := range bridgeFieldNames(tool) {
 				if key != "functionDeclarations" && key != "function_declarations" {
 					return reject("tools." + key)
 				}
@@ -95,8 +95,8 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 			if v["encrypted_content"] != nil || v["signature"] != nil || v["thoughtSignature"] != nil || v["thought"] == true || v["cache_control"] != nil {
 				return reject("opaque context")
 			}
-			for _, item := range v {
-				if err := inspect(item); err != nil {
+			for _, field := range bridgeFieldNames(v) {
+				if err := inspect(v[field]); err != nil {
 					return err
 				}
 			}
@@ -122,16 +122,17 @@ func validateBridgeRoute(client, target string, raw []byte, path string) error {
 	if err != nil {
 		return err
 	}
-	allowed := "model messages stream stream_options tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort"
+	allowed := "model messages stream stream_options tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort prompt_cache_key"
 	switch target {
 	case wireChat:
 		return nil
 	case wireMessages:
 		allowed = "model messages stream stream_options tools tool_choice temperature top_p max_tokens max_completion_tokens stop"
 	}
-	for field, value := range chat {
+	for _, field := range bridgeFieldNames(chat) {
+		value := chat[field]
 		if value != nil && !containsString(strings.Fields(allowed), field) {
-			return fmt.Errorf("capability_not_supported: %s cannot be preserved by %s", field, target)
+			return rejectBridgeFeature(field, "cannot be preserved by "+target)
 		}
 	}
 	// Sampling and length hints are deliberately dropped for the ChatGPT Codex
@@ -144,7 +145,7 @@ func validateBridgeRoute(client, target string, raw []byte, path string) error {
 	if target == wireMessages {
 		for _, value := range anySlice(chat["tools"]) {
 			if asMap(asMap(value)["function"])["strict"] != nil {
-				return fmt.Errorf("capability_not_supported: strict function schemas require a compatible channel")
+				return rejectBridgeFeature("tools.function.strict", "requires a compatible channel")
 			}
 		}
 	}

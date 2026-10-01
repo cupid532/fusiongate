@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.25
+
+- Accept OpenCode's `promptCacheKey` option in bridged Chat requests and preserve its value as Responses `prompt_cache_key`. Both spellings are accepted; conflicting or non-string keys are rejected before dispatch. Native requests remain unchanged.
+- Record capability rejections that occur before any upstream call as completed zero-attempt requests. Return the request ID and a stable, value-free field reason, and retain per-channel exclusions so these failures are visible in the request ledger.
+- Add regressions for the captured OpenCode request structure, streamed and buffered function calls, cache-key validation, native passthrough, rejection accounting, and failover after a preflight skip.
+
 ## V3.24
 
 - Normalize native Codex Responses requests for the real upstream contract: force `store=false` and `stream=true`, then buffer the upstream SSE back into a completed Responses JSON document when the client requested non-streaming output. This fixes native `/v1/responses` requests that previously returned HTTP 400 `Store must be set to false` or `Stream must be set to true`.

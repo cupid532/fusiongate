@@ -313,6 +313,9 @@ func bridgeClientToChat(client string, raw []byte, path string) (map[string]any,
 		if err := json.Unmarshal(raw, &body); err != nil {
 			return nil, false, nil, err
 		}
+		if err := normalizeChatCacheKey(body); err != nil {
+			return nil, false, nil, err
+		}
 		stream, _ = body["stream"].(bool)
 		return body, stream, custom, nil
 	case wireResponses:
@@ -488,6 +491,9 @@ func chatToResponsesBody(chat []byte, z resolvedRoute) ([]byte, error) {
 		return nil, err
 	}
 	body["instructions"] = strings.Join(instructions, "\n\n")
+	if cacheKey := source["prompt_cache_key"]; cacheKey != nil {
+		body["prompt_cache_key"] = cacheKey
+	}
 	if choice := source["tool_choice"]; choice != nil {
 		if named := asMap(asMap(choice)["function"]); named != nil {
 			body["tool_choice"] = map[string]any{"type": "function", "name": named["name"]}
