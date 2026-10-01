@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.28
+
+- Drop the prompt-cache lifetime hints a Chat upstream cannot express. `prompt_cache_options` — the field a current Codex build sends, for example `{"ttl":"30m"}` — and its predecessor `prompt_cache_retention` are now accepted and dropped instead of refusing the request. The answer is unaffected; only the upstream's own cache retention applies. Before this, every Codex request from that build was rejected with `capability_not_supported: unrecognized_field requires a native channel`.
+- Name the field in a capability rejection instead of redacting every unknown one to `unrecognized_field`. A field name is a bounded plain identifier, never a request value, so `unrecognized_field:brand_new_option` now says which field a client added; a key outside the identifier character set still reports the stable placeholder.
+
 ## V3.27
 
 - Accept the response preferences a Chat upstream cannot express instead of refusing the whole request: `reasoning.summary`, `reasoning.generate_summary`, the `reasoning.*` entries of `include`, and `text.verbosity` are dropped by the bridge. Codex sends all of them on every request, so the hard rejection made every chat-only channel unreachable from `/v1/responses` with `capability_not_supported: reasoning.summary requires a native channel`.

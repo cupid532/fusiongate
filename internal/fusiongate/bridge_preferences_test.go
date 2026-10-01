@@ -11,7 +11,37 @@ import (
 // reasoning to replay and low verbosity on every request. None of the three can
 // be expressed in the Chat form, and none of them changes what the answer means,
 // so a chat-only channel must still be able to serve the request.
-const codexPreferencesRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"include":["reasoning.encrypted_content"],"prompt_cache_key":"abc","reasoning":{"effort":"high","summary":"auto"},"text":{"verbosity":"low"},"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},{"type":"custom","name":"apply_patch","description":"patch"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+const codexPreferencesRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"include":["reasoning.encrypted_content"],"prompt_cache_key":"abc","prompt_cache_options":{"ttl":"30m"},"reasoning":{"effort":"high","summary":"auto"},"text":{"verbosity":"low"},"tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{}}},{"type":"custom","name":"apply_patch","description":"patch"}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+
+// A newer Codex build asks how long to retain the prompt cache, using the field
+// that replaced prompt_cache_retention. Chat has no equivalent hint, so both
+// spellings are dropped rather than refusing the request.
+func TestBridgeAcceptsDroppableCacheHints(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"m","input":"hi","prompt_cache_options":{"ttl":"30m"}}`,
+		`{"model":"m","input":"hi","prompt_cache_retention":"24h"}`,
+	} {
+		if err := validateBridgeCapabilities(wireResponses, []byte(body)); err != nil {
+			t.Fatalf("cache hint must be droppable: %s: %v", body, err)
+		}
+	}
+}
+
+// The rejection names the field a bridge cannot express, so the next operator can
+// see what a client started sending instead of a redacted placeholder.
+func TestRejectionNamesUnrecognizedField(t *testing.T) {
+	err := validateBridgeCapabilities(wireResponses, []byte(`{"model":"m","input":"hi","brand_new_option":1}`))
+	if err == nil {
+		t.Fatal("an unknown field must be rejected")
+	}
+	if !strings.Contains(err.Error(), "unrecognized_field:brand_new_option") {
+		t.Fatalf("rejection does not name the field: %v", err)
+	}
+	err = validateBridgeCapabilities(wireResponses, []byte(`{"model":"m","input":"hi","not a field":1}`))
+	if err == nil || !strings.Contains(err.Error(), "unrecognized_field requires") {
+		t.Fatalf("a non-identifier key must fall back to the placeholder: %v", err)
+	}
+}
 
 func TestBridgeAcceptsDroppableCodexPreferences(t *testing.T) {
 	if err := validateBridgeCapabilities(wireResponses, []byte(codexPreferencesRequest)); err != nil {
@@ -63,7 +93,7 @@ func TestCodexPreferencesStillBridgeToChatOnlyChannel(t *testing.T) {
 	if body["model"] != "upstream-model" || body["stream"] != true || body["reasoning_effort"] != "high" {
 		t.Fatalf("bridged body lost effort or model: %v", body)
 	}
-	for _, field := range []string{"reasoning", "include", "text", "store", "input", "instructions"} {
+	for _, field := range []string{"reasoning", "include", "text", "store", "input", "instructions", "prompt_cache_options"} {
 		if _, ok := body[field]; ok {
 			t.Fatalf("droppable field %q leaked into the chat body: %v", field, body)
 		}

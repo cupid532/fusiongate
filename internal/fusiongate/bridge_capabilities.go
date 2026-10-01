@@ -46,7 +46,9 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 	allowed := "model stream messages tools tool_choice parallel_tool_calls temperature top_p max_tokens max_completion_tokens reasoning_effort stream_options promptCacheKey prompt_cache_key"
 	switch client {
 	case wireResponses:
-		allowed = "model stream input instructions tools tool_choice parallel_tool_calls temperature top_p max_output_tokens reasoning text store prompt_cache_key include"
+		// The cache hints are dropped by the converter: Chat has no parameter for
+		// how long an upstream retains a prompt cache, and the answer is unaffected.
+		allowed = "model stream input instructions tools tool_choice parallel_tool_calls temperature top_p max_output_tokens reasoning text store prompt_cache_key include prompt_cache_options prompt_cache_retention"
 	case wireMessages:
 		allowed = "model stream messages system tools tool_choice temperature top_p max_tokens stop_sequences"
 	case wireGemini:
