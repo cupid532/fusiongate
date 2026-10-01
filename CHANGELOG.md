@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.29
+
+- Serve a Codex request that declares shapes a Chat upstream cannot express instead of refusing it. The declarations are dropped and the request is bridged: `namespace` groups (sub-agent, plugin and MCP tools), the deferred `tool_search` declaration, a `web_search` the client already excluded from external access, and the client attribution metadata `client_metadata`. A current Codex build sends all of them on every request, so nothing from that client could reach a chat-only channel at all. Declaring fewer tools is always safe, because the model only calls a tool that was declared.
+- Accept a custom tool whose format is a grammar. The converter has always carried the grammar definition into the tool description; only the validator refused it, which would have made `apply_patch` unusable through a bridge.
+- Keep refusing what a bridge cannot stand in for: a hosted search that can reach the web, an unknown hosted tool, a custom format outside text and grammar, replayed reasoning items, opaque context, and the state fields such as `store` and `previous_response_id`.
+- Add regressions for the accepted declarations, the rejections that must stay, and an end-to-end request shaped like the captured Codex client reaching a chat-only channel with only its representable tools.
+
 ## V3.28
 
 - Drop the prompt-cache lifetime hints a Chat upstream cannot express. `prompt_cache_options` — the field a current Codex build sends, for example `{"ttl":"30m"}` — and its predecessor `prompt_cache_retention` are now accepted and dropped instead of refusing the request. The answer is unaffected; only the upstream's own cache retention applies. Before this, every Codex request from that build was rejected with `capability_not_supported: unrecognized_field requires a native channel`.

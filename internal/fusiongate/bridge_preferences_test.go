@@ -103,3 +103,59 @@ func TestCodexPreferencesStillBridgeToChatOnlyChannel(t *testing.T) {
 		t.Fatalf("instructions must become a system message: %v", messages)
 	}
 }
+
+// A current Codex build also declares grouped, deferred and hosted tool shapes
+// that a Chat upstream cannot express, plus client attribution metadata. The
+// declarations are dropped rather than refusing the request: the model only calls
+// a tool that was declared, so nothing can be mis-routed and the request still
+// works with fewer tools.
+const codexGroupedToolsRequest = `{"model":"public-model","instructions":"be brief","stream":true,"store":false,"include":["reasoning.encrypted_content"],"prompt_cache_key":"abc","reasoning":{"effort":"high"},"text":{"verbosity":"low"},"client_metadata":{"session_id":"s","x-codex-window-id":"s:0"},"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{}}},{"type":"custom","name":"apply_patch","format":{"type":"grammar","syntax":"lark","definition":"start: x"}},{"type":"namespace","name":"collaboration","description":"sub-agents","tools":[{"type":"function","name":"spawn_agent","parameters":{"type":"object","properties":{}}}]},{"type":"namespace","name":"mcp__cua_repl","tools":[{"type":"function","name":"js","parameters":{"type":"object","properties":{}}}]},{"type":"tool_search","execution":"client","parameters":{"type":"object","properties":{"query":{"type":"string"}}}},{"type":"web_search","external_web_access":false,"search_content_types":["text"]}],"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+
+func TestBridgeAcceptsGroupedAndDeferredToolDeclarations(t *testing.T) {
+	if err := validateBridgeCapabilities(wireResponses, []byte(codexGroupedToolsRequest)); err != nil {
+		t.Fatalf("grouped and deferred declarations must be droppable: %v", err)
+	}
+	for _, tc := range []struct{ name, body string }{
+		{"search without the opt-out", `{"model":"m","input":"hi","tools":[{"type":"web_search"}]}`},
+		{"search with external access on", `{"model":"m","input":"hi","tools":[{"type":"web_search","external_web_access":true}]}`},
+		{"hosted tool with no rule", `{"model":"m","input":"hi","tools":[{"type":"computer_use_preview"}]}`},
+		{"custom format the converter drops", `{"model":"m","input":"hi","tools":[{"type":"custom","name":"apply_patch","format":{"type":"regex","pattern":"x"}}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateBridgeCapabilities(wireResponses, []byte(tc.body)); err == nil {
+				t.Fatalf("must stay rejected: %s", tc.body)
+			}
+		})
+	}
+}
+
+func TestGroupedToolDeclarationsStillBridgeToChatOnlyChannel(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []map[string]any
+	chat := chatOnlyUpstream(t, &bodies, &mu, false)
+	a, key, done := bridgeFixture(t, "openai_compatible", chat)
+	defer done()
+	if _, err := a.db.Exec(`UPDATE providers SET protocol_policy='fixed',protocol_preference='chat' WHERE name='bridge'`); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := bridgeRequest(t, a, key, "/v1/responses", codexGroupedToolsRequest)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "event: response.completed") {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 {
+		t.Fatalf("bridged chat calls = %d", len(bodies))
+	}
+	names := []string{}
+	for _, value := range anySlice(bodies[0]["tools"]) {
+		names = append(names, asString(asMap(asMap(value)["function"])["name"]))
+	}
+	if strings.Join(names, ",") != "exec_command,apply_patch" {
+		t.Fatalf("only representable tools may reach the upstream: %v", names)
+	}
+	if _, ok := bodies[0]["client_metadata"]; ok {
+		t.Fatalf("client metadata leaked into the chat body: %v", bodies[0]["client_metadata"])
+	}
+}

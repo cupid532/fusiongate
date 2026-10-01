@@ -48,7 +48,7 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 	case wireResponses:
 		// The cache hints are dropped by the converter: Chat has no parameter for
 		// how long an upstream retains a prompt cache, and the answer is unaffected.
-		allowed = "model stream input instructions tools tool_choice parallel_tool_calls temperature top_p max_output_tokens reasoning text store prompt_cache_key include prompt_cache_options prompt_cache_retention"
+		allowed = "model stream input instructions tools tool_choice parallel_tool_calls temperature top_p max_output_tokens reasoning text store prompt_cache_key include prompt_cache_options prompt_cache_retention client_metadata"
 	case wireMessages:
 		allowed = "model stream messages system tools tool_choice temperature top_p max_tokens stop_sequences"
 	case wireGemini:
@@ -100,11 +100,34 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 				}
 			}
 		default:
-			if kind != "function" && kind != "custom" {
+			switch kind {
+			case "function":
+			case "custom":
+				// A custom tool becomes a function taking one string argument. A
+				// grammar cannot be enforced by a Chat upstream, so its definition is
+				// carried into the description and the model is asked to follow it;
+				// any other format would be dropped without a trace.
+				switch asString(asMap(tool["format"])["type"]) {
+				case "", "text", "grammar":
+				default:
+					return reject("custom tool grammar")
+				}
+			case "namespace", "tool_search":
+				// A grouped or deferred declaration belongs to the client that made
+				// it: the bridge cannot know the name the client registered a member
+				// tool under, and inventing one could route a call to the wrong tool.
+				// Dropping the declaration is always safe, because the model only
+				// calls a tool that was declared, so the request still works with
+				// fewer tools instead of being refused.
+			case "web_search":
+				// A search the client already excluded from external access has no
+				// capability left to lose; one that can reach the web does, and a
+				// bridge cannot provide it.
+				if !searchDeclinedExternalAccess(tool) {
+					return reject("tools." + kind)
+				}
+			default:
 				return reject("tools." + kind)
-			}
-			if kind == "custom" && asString(asMap(tool["format"])["type"]) != "text" && tool["format"] != nil {
-				return reject("custom tool grammar")
 			}
 		}
 	}
