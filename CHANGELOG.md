@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.27
+
+- Accept the response preferences a Chat upstream cannot express instead of refusing the whole request: `reasoning.summary`, `reasoning.generate_summary`, the `reasoning.*` entries of `include`, and `text.verbosity` are dropped by the bridge. Codex sends all of them on every request, so the hard rejection made every chat-only channel unreachable from `/v1/responses` with `capability_not_supported: reasoning.summary requires a native channel`.
+- Nothing stateful was relaxed: `store`, `previous_response_id`, `conversation`, hosted tools, replayed reasoning items, opaque context, non-reasoning `include` values and unknown fields are still refused before dispatch.
+- Add regressions for the accepted preferences, for a Codex request bridged to a chat-only channel pinned to Chat Completions, and for the rejections that must stay.
+
 ## V3.26
 
 - Treat a 404 whose body is a structured JSON error as endpoint-level evidence again, so a channel that answers a client protocol it does not serve with a bare `{"error":"Not Found"}` is bridged to a protocol it does speak instead of handing the 404 to the client. Cline's API replies that way to `/v1/responses`, and V3.16's wording whitelist stopped Codex from bridging to such channels at all.

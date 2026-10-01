@@ -5,6 +5,33 @@ import (
 	"strings"
 )
 
+// Fields a Chat bridge cannot express but that only shape the answer, never what
+// the request means. Dropping them still yields a working answer -- without a
+// reasoning summary, without encrypted reasoning to replay, or with the
+// upstream's own verbosity -- whereas rejecting them makes every chat-only
+// channel unreachable from /v1/responses, because Codex sends all three on every
+// request. This is the same degradation the sampling and length hints already
+// take in validateBridgeRoute. State stays rejected: store, previous_response_id,
+// conversation, hosted tools and replayed reasoning items change what the answer
+// has to be, not just how it is shaped.
+var bridgeDroppablePreferences = map[string]bool{
+	"reasoning.summary":          true,
+	"reasoning.generate_summary": true,
+	"text.verbosity":             true,
+}
+
+func droppableBridgePreference(feature string) bool {
+	return bridgeDroppablePreferences[feature]
+}
+
+// droppableBridgeInclude reports whether one `include` entry only asks for extra
+// output. A bridged answer carries no reasoning at all, so every reasoning
+// artifact a client can ask for is uniformly unavailable rather than silently
+// wrong, while anything outside that family stays a hard rejection.
+func droppableBridgeInclude(value string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "reasoning.")
+}
+
 // Native requests never enter here. A bridge must not pretend unsupported
 // state, hosted tools or signed/opaque context can be represented as chat text.
 func validateBridgeCapabilities(client string, raw []byte) error {
@@ -36,7 +63,7 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 	}
 	if reasoning := asMap(body["reasoning"]); reasoning != nil {
 		for _, field := range bridgeFieldNames(reasoning) {
-			if field != "effort" {
+			if field != "effort" && !droppableBridgePreference("reasoning."+field) {
 				return reject("reasoning." + field)
 			}
 		}
@@ -47,10 +74,12 @@ func validateBridgeCapabilities(client string, raw []byte) error {
 		}
 	}
 	if client == wireResponses {
-		if len(anySlice(body["include"])) > 0 {
-			return reject("include")
+		for _, value := range anySlice(body["include"]) {
+			if !droppableBridgeInclude(asString(value)) {
+				return reject("include")
+			}
 		}
-		if text := asMap(body["text"]); text["verbosity"] != nil {
+		if text := asMap(body["text"]); text["verbosity"] != nil && !droppableBridgePreference("text.verbosity") {
 			return reject("text.verbosity")
 		}
 	}
