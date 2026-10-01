@@ -282,8 +282,17 @@ func protocolUnsupportedSignal(resp *http.Response) bool {
 	if containsAny(text, "parameter", "field", "argument", "model", "api key", "rate limit") {
 		return false
 	}
-	return containsAny(text, "unknown endpoint", "unsupported endpoint", "endpoint not supported", "endpoint not found", "invalid url", "cannot post /", "404 page not found", "unsupported protocol", "protocol not supported")
-
+	if containsAny(text, "unknown endpoint", "unsupported endpoint", "endpoint not supported", "endpoint not found", "invalid url", "cannot post /", "404 page not found", "unsupported protocol", "protocol not supported") {
+		return true
+	}
+	// A 404 that carries a structured JSON error is the channel's own API
+	// answering, so the route is what is missing: Cline replies to /v1/responses
+	// with a bare {"error":"Not Found","success":false} and relays answer the
+	// same way. Requiring one of the phrases above instead made those channels
+	// hand the 404 to the client and stop bridging. Anything that is not a JSON
+	// error object stays inconclusive, so an opaque page or a plain "error A"
+	// still fails over rather than re-probing the same channel.
+	return resp.StatusCode == http.StatusNotFound && json.Valid(body) && bytes.HasPrefix(bytes.TrimSpace(body), []byte("{"))
 }
 
 func containsAny(text string, needles ...string) bool {

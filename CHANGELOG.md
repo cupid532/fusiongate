@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.26
+
+- Treat a 404 whose body is a structured JSON error as endpoint-level evidence again, so a channel that answers a client protocol it does not serve with a bare `{"error":"Not Found"}` is bridged to a protocol it does speak instead of handing the 404 to the client. Cline's API replies that way to `/v1/responses`, and V3.16's wording whitelist stopped Codex from bridging to such channels at all.
+- Keep the strictness that matters: 5xx answers, anything naming a model, parameter, field, argument, credential or rate limit, and any body that is not a JSON error object still never change routing capabilities, so an opaque 404 keeps failing over instead of re-probing the channel.
+- Add regressions for the 404 wording table, an end-to-end bridge to a chat-only channel, and a model-level 404 that must not be bridged.
+
 ## V3.25
 
 - Accept OpenCode's `promptCacheKey` option in bridged Chat requests and preserve its value as Responses `prompt_cache_key`. Both spellings are accepted; conflicting or non-string keys are rejected before dispatch. Native requests remain unchanged.
