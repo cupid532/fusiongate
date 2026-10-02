@@ -516,6 +516,7 @@ func extractProbeContent(providerType, model, capabilities string, body []byte) 
 	if err := json.Unmarshal(body, &data); err != nil {
 		return "", errors.New("generation response was not valid JSON")
 	}
+	data = unwrapProbeEnvelope(data)
 	if isAnthropicProvider(providerType) || providerType == "claude_oauth" || protocol == opencodeProtocolAnthropic {
 		var content string
 		for _, item := range anySlice(data["content"]) {
@@ -576,6 +577,36 @@ func extractProbeContent(providerType, model, capabilities string, body []byte) 
 func anySlice(value any) []any {
 	items, _ := value.([]any)
 	return items
+}
+
+// unwrapProbeEnvelope descends through a top-level "data" object when an upstream
+// wraps its payload in one. Cline's api.cline.bot answers chat completions with
+// {"data":{"choices":[...]}}, while the probe parsers below only read the top
+// level, so without this a perfectly healthy Cline channel reported
+// "generation response contained no assistant text". The descent stops as soon
+// as the object already carries a key a parser understands, so a genuine
+// top-level payload is never disturbed.
+func unwrapProbeEnvelope(payload map[string]any) map[string]any {
+	for payload != nil {
+		if probeEnvelopeIsTerminal(payload) {
+			return payload
+		}
+		nested, ok := payload["data"].(map[string]any)
+		if !ok {
+			return payload
+		}
+		payload = nested
+	}
+	return payload
+}
+
+func probeEnvelopeIsTerminal(payload map[string]any) bool {
+	for _, key := range []string{"choices", "content", "candidates", "output", "error"} {
+		if _, ok := payload[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeProbeAnswer(value string) string {
@@ -819,6 +850,7 @@ func parseErrorMessage(body []byte, fallback string) string {
 	}
 	var data map[string]interface{}
 	if err := json.Unmarshal(body, &data); err == nil {
+		data = unwrapProbeEnvelope(data)
 		if errObj, ok := data["error"].(map[string]interface{}); ok {
 			if msg, ok := errObj["message"].(string); ok && msg != "" {
 				return truncate(msg, 200)

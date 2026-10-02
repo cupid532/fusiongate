@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -193,4 +195,95 @@ func TestConnectivityHealthProbeDoesNotRecoverCircuit(t *testing.T) {
 	if status != "circuit_open" || circuitOpenUntil != openUntil {
 		t.Fatalf("connectivity probe changed business circuit: status=%q circuit_open_until=%q", status, circuitOpenUntil)
 	}
+}
+
+var probePromptPattern = regexp.MustCompile(`(\d+) \+ (\d+)`)
+
+// TestExtractProbeContentUnwrapsDataEnvelope pins the Cline fix: api.cline.bot
+// returns {"data":{"choices":[...]}} and the probe parser must look through the
+// envelope instead of reporting "generation response contained no assistant text".
+func TestExtractProbeContentUnwrapsDataEnvelope(t *testing.T) {
+	wrapped := []byte(`{"data":{"choices":[{"message":{"role":"assistant","content":"183"}}]}}`)
+	content, err := extractProbeContent("openai_compatible", "deepseek/deepseek-v4.1-flash", "chat,stream", wrapped)
+	if err != nil || content != "183" {
+		t.Fatalf("wrapped content=%q err=%v", content, err)
+	}
+	plain := []byte(`{"choices":[{"message":{"role":"assistant","content":"183"}}]}`)
+	content, err = extractProbeContent("openai_compatible", "deepseek/deepseek-v4.1-flash", "chat,stream", plain)
+	if err != nil || content != "183" {
+		t.Fatalf("plain content=%q err=%v", content, err)
+	}
+}
+
+// TestParseErrorMessageUnwrapsDataEnvelope covers the error path: a Cline error
+// wrapped in "data" must still surface its message instead of the fallback.
+func TestParseErrorMessageUnwrapsDataEnvelope(t *testing.T) {
+	wrapped := []byte(`{"data":{"error":{"message":"upstream rejected the model"}}}`)
+	if got := parseErrorMessage(wrapped, "fallback"); got != "upstream rejected the model" {
+		t.Fatalf("wrapped message=%q", got)
+	}
+}
+
+// TestGenerationHealthProbeUnwrapsClineDataEnvelope runs the full probe against a
+// stand-in Cline upstream to prove a wrapped 200 now reports healthy.
+func TestGenerationHealthProbeUnwrapsClineDataEnvelope(t *testing.T) {
+	var generationCalls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		generationCalls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"data": map[string]any{
+				"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": probeAnswerFromPrompt(t, body)}}},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "cline-probe", "openai_compatible", upstream.URL, "probe-secret", 1, 1, "normalized", "any", 0, 3, 30)
+	routeID := insertTestRoute(t, a, providerID, "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-flash", "chat,stream", 1)
+	h := NewHealthChecker(a, time.Minute, 1)
+
+	result := h.probeRoute(context.Background(), healthCheckTarget{
+		ProviderID:    providerID,
+		ProviderName:  "cline-probe",
+		RouteID:       routeID,
+		PublicName:    "deepseek/deepseek-v4.1-flash",
+		UpstreamModel: "deepseek/deepseek-v4.1-flash",
+		Capabilities:  "chat,stream",
+	})
+	if result.Status != "healthy" || result.Error != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	if generationCalls != 1 {
+		t.Fatalf("generation calls=%d", generationCalls)
+	}
+}
+
+func probeAnswerFromPrompt(t *testing.T, body map[string]any) string {
+	t.Helper()
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		t.Fatalf("probe request carried no messages: %#v", body)
+	}
+	message, _ := messages[0].(map[string]any)
+	content, _ := message["content"].(string)
+	matches := probePromptPattern.FindStringSubmatch(content)
+	if len(matches) != 3 {
+		t.Fatalf("probe prompt %q did not match", content)
+	}
+	a, _ := strconv.Atoi(matches[1])
+	b, _ := strconv.Atoi(matches[2])
+	return strconv.Itoa(a + b)
 }

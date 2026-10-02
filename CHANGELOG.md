@@ -1,5 +1,27 @@
 # Changelog
 
+## V3.37
+
+- Read a Cline upstream's answer through the envelope it arrives in. `api.cline.bot`
+  returns chat completions wrapped in a top-level `data` object --
+  `{"data":{"choices":[{"message":{"content":"…"}}]}}` -- while every other
+  OpenAI-compatible channel answers with the completion at the top level. The
+  generation health probe only ever read the top level, so a perfectly reachable
+  Cline channel failed every manual check with
+  `invalid_response: generation response contained no assistant text` even though
+  real traffic through the same channel and key succeeded. The channel looked
+  unverified in the console and the failure read like a broken upstream, which sent
+  the diagnosis toward credentials and networking that were never at fault. The
+  probe now descends through a top-level `data` object before parsing, and stops the
+  moment the object already carries a key a parser understands, so a genuine
+  top-level payload is untouched.
+- Read the error the same way. A Cline failure wrapped in that envelope now surfaces
+  its own message in `health_check_error` instead of the generic fallback, so a
+  channel that is genuinely down names the reason it failed.
+- Regressions: a `data`-wrapped completion parses to healthy, a top-level completion
+  still parses, a `data`-wrapped error keeps its message, and the full route probe
+  reports healthy against a stand-in Cline upstream.
+
 ## V3.36
 
 - Stop a route's protocol declaration from taking away a bridge target. V3.31 treated
