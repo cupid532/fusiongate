@@ -165,6 +165,13 @@ export function Keys() {
   const set = <K extends keyof KeyForm>(k: K, v: KeyForm[K]) => setForm((f) => ({ ...f, [k]: v }))
   const setEdit = <K extends keyof KeyForm>(k: K, v: KeyForm[K]) => setEditForm((f) => ({ ...f, [k]: v }))
 
+  // "永不过期" off with no date picked used to submit nothing at all: the create
+  // body omitted `expires_at` and the edit patch skipped it, so the operator got
+  // whichever default the gateway applied — plausibly a key that never expires
+  // while the form said otherwise. Both paths now require an explicit answer.
+  const createExpiryMissing = !form.never_expires && !form.expires_at
+  const editExpiryMissing = !editForm.never_expires && !editForm.expires_at
+
   function openEdit(k: APIKey) {
     setEditing(k)
     setEditForm({
@@ -182,7 +189,7 @@ export function Keys() {
   }
 
   function submitEdit() {
-    if (!editing) return
+    if (!editing || editExpiryMissing) return
     const patch: Record<string, unknown> = {
       name: editForm.name,
       allow_all: editForm.allow_all,
@@ -257,6 +264,9 @@ export function Keys() {
                   永不过期
                 </label>
               </div>
+              {createExpiryMissing && (
+                <p className="text-xs text-destructive">请选择过期时间，或勾选“永不过期”。</p>
+              )}
             </div>
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={form.allow_all} onChange={(e) => set("allow_all", e.target.checked)} />
@@ -272,7 +282,7 @@ export function Keys() {
             </label>
             <div className="flex justify-end gap-2 sm:col-span-2">
               <Button variant="ghost" onClick={() => setCreating(false)}>取消</Button>
-              <Button onClick={() => create.mutate(form)} disabled={!form.name.trim() || create.isPending}>
+              <Button onClick={() => { if (!createExpiryMissing) create.mutate(form) }} disabled={!form.name.trim() || create.isPending || createExpiryMissing}>
                 {create.isPending ? "创建中…" : "创建"}
               </Button>
             </div>
@@ -456,6 +466,9 @@ export function Keys() {
                   永不过期
                 </label>
               </div>
+              {editExpiryMissing && (
+                <p className="text-xs text-destructive">请选择过期时间，或勾选“永不过期”——否则提交不会包含有效期。</p>
+              )}
             </div>
             <label className="flex items-center gap-2 text-sm sm:col-span-2">
               <input type="checkbox" checked={editForm.allow_all} onChange={(e) => setEdit("allow_all", e.target.checked)} />
@@ -472,7 +485,7 @@ export function Keys() {
           </div>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setEditing(null)}>取消</Button>
-            <Button onClick={submitEdit} disabled={!editForm.name.trim() || update.isPending}>
+            <Button onClick={submitEdit} disabled={!editForm.name.trim() || update.isPending || editExpiryMissing}>
               {update.isPending ? "保存中…" : "保存"}
             </Button>
           </DialogFooter>

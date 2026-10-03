@@ -69,3 +69,35 @@ describe("Usage heatmap", () => {
     })
   })
 })
+
+describe("Usage ranking share", () => {
+  it("reports each row's share of the period total, not of the largest row", async () => {
+    // 100 + 50 tokens out of 150 is 67% / 33%. Dividing by the biggest row
+    // instead reported 100% / 50%, which is what the panel used to show.
+    const data = usageResponse()
+    data.totals = { ...emptyMetrics, requests: 2, total_tokens: 150 }
+    data.by_models = [
+      { name: "big", upstream_model: "big", ...emptyMetrics, requests: 1, total_tokens: 100 },
+      { name: "small", upstream_model: "small", ...emptyMetrics, requests: 1, total_tokens: 50 },
+    ]
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      const payload = path.includes("token-usage") ? data : []
+      return new Response(JSON.stringify(payload), { headers: { "Content-Type": "application/json" } })
+    }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <Usage />
+      </QueryClientProvider>,
+    )
+
+    const modelTab = screen.getAllByRole("tab").find((element) => element.textContent?.startsWith("模型"))
+    expect(modelTab).toBeDefined()
+    fireEvent.click(modelTab as HTMLElement)
+
+    expect(await screen.findByText("67%")).toBeDefined()
+    expect(screen.getByText("33%")).toBeDefined()
+    expect(screen.queryByText("100%")).toBeNull()
+  })
+})

@@ -1,5 +1,81 @@
 # Changelog
 
+## V3.39
+
+- Start the batch health check again. Selecting two or more channels on 上游渠道
+  and pressing 检活 opened the dialog with `autoStart` left at its `false`
+  default, and batch mode has no manual start button, so the panel sat on
+  「正在启动检活…」 and never issued the request. Single-channel checks were
+  unaffected because that layout does have one.
+- Keep watching a running health check after a failed progress read. A single
+  dropped poll set an error and then never scheduled another, and the effect's
+  dependencies never changed, so the dialog stayed on 「检测中」 while the job
+  finished on the server and the provider, route and key health columns went
+  stale. Polling now backs off to at most one attempt every 15s, says it is
+  retrying, and clears the message once an answer arrives.
+- Block a second IP-pool batch while one is running. 停用 was the only batch
+  button without the `batchBusy || uncertainBatch` guard, so a slow 启用
+  followed by 停用 ran two sequential passes over the same nodes whose
+  enable/disable PATCHes interleaved, and an `unknown` result could be
+  re-submitted without the refresh-and-verify step. The buttons now share one
+  guard, and the mutation itself refuses to start while another batch holds a
+  lock rather than relying on button state alone.
+- Report a ranking row's true share. 模型 / 密钥 / 渠道 divided each row by the
+  largest row instead of the period total, so two models at 100 and 50 tokens
+  read as 100% and 50% rather than 67% and 33%. The panels also now say the list
+  is the top 10 and what the share is measured against.
+- Cap ZIP credential imports with fixed limits. The only ceiling on decompressed
+  output was derived from the archive's own central-directory
+  `uncompressedSize`, which the archive controls — a ~2 KB file declaring
+  `0xffffffff` bounded nothing and let a single entry expand to gigabytes in the
+  tab. Entry count, compressed size, per-entry output and total output are now
+  constants (200 entries, 8 MiB per entry, 32 MiB total), enforced on bytes
+  actually produced, and the central directory and local headers are bounds
+  checked so a truncated archive fails cleanly instead of reading past the
+  buffer.
+- Ask before exporting OAuth credentials. 批量导出 sent
+  `acknowledge_sensitive_export: true` straight from the click, so the console
+  asserted the operator knew the payload was sensitive without ever showing
+  them. The acknowledgement now follows a confirmation that names the risk, and
+  the export goes through the shared download helper.
+- Verify what a download actually contains. `apiDownload` checked `res.ok` but
+  not the response type, so an expired session or a reverse proxy answering
+  `200` with an HTML login page was saved to disk under the backup's own
+  filename — an export that looked successful and could not be restored. Each
+  caller now declares the content type it expects (JSON backup, CSV ledger, ZIP
+  or JSON credentials), a JSON backup is parsed before it is offered, and the
+  server's `Content-Disposition` filename is carried through.
+- Stop pretending a failed logout succeeded. The logout request ran in a
+  `finally` that cleared the local session whatever happened, so a request that
+  never reached the gateway dropped to the login screen while the server-side
+  cookie stayed valid and a reload walked straight back in. Only a confirmed
+  logout (or an already-expired session) now leaves the console; anything else
+  reports that the gateway did not confirm it. Leaving the authenticated state
+  also clears the query cache, so a revealed API key or decrypted credential
+  cannot outlive the session it was fetched in.
+- Survive a malformed address-bar hash. `#%` and `#%E0%A4%A` are valid things to
+  paste but not valid URI components, and `decodeURIComponent` threw inside the
+  router's `useState` initialiser, leaving a blank page with no way back. A hash
+  that does not decode is now simply not a page name and falls back to 概览.
+- Keep the settings tab and the URL in step. Clicking a tab only changed
+  component state, so refreshing or sharing the page lost the tab, and a hash
+  change while settings was already mounted was ignored. The tab is now read
+  from `#settings?tab=…` on mount and on `hashchange`, and clicking a tab writes
+  the parameter back with `replaceState` (no history entry per click).
+- Refuse a key whose expiry contradicts the form. Clearing 永不过期 without
+  picking a date submitted a body with no `expires_at` at all, leaving the real
+  lifetime to the gateway default, which could be a key that never expires while
+  the form said otherwise. Both the create form and the edit dialog require an
+  explicit answer and explain what is missing.
+- Housekeeping: memoise the tag input's parsed value, read the version meta tag
+  once instead of in an effect, and seed the refresh timestamp lazily. Lint
+  warnings drop from 25 to 20; the remainder are the deliberate
+  `set-state-in-effect` dialog resets.
+- Regressions added for each fix: batch auto-start, poll recovery, the IP-pool
+  batch guard, ranking share, ZIP limits (including a forged size field),
+  download validation, sensitive-export confirmation, logout failure, malformed
+  hashes, settings tab URLs and key expiry validation.
+
 ## V3.38
 
 - Move the field compatibility audit out of the main sidebar and into System

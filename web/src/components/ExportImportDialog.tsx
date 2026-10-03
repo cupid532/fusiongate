@@ -40,7 +40,11 @@ export function ExportImportDialog({ open, onOpenChange }: { open: boolean; onOp
     setExporting(true)
     setError("")
     try {
-      const blob = await apiDownload("/api/admin/providers/export", { method: "POST" })
+      const { blob } = await apiDownload(
+        "/api/admin/providers/export",
+        { method: "POST" },
+        { what: "渠道备份", mime: ["application/json"], json: true },
+      )
       saveBlob(blob, "fusiongate-providers.json")
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "导出失败")

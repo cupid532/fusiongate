@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useMemo, useRef, useState } from "react"
 import { X } from "lucide-react"
 import { cn } from "@/lib/utils"
 
@@ -23,12 +23,18 @@ export function TagInput({
   const [input, setInput] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const tags = value
-    ? value
-        .split(",")
-        .map((t) => t.trim())
-        .filter(Boolean)
-    : []
+  // Memoised so the callbacks below are not rebuilt (and cannot go stale)
+  // on every keystroke of the surrounding form.
+  const tags = useMemo(
+    () =>
+      value
+        ? value
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean)
+        : [],
+    [value],
+  )
 
   const addTag = useCallback(
     (raw: string) => {

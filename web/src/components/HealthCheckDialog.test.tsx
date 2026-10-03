@@ -187,8 +187,30 @@ describe("HealthCheckDialog", () => {
     expect(screen.getByText("重试")).toBeTruthy()
   })
 
-  it("embeds the health panel without a dialog and waits until active to fetch", async () => {
-    const calls = mockFetch((url) => {
+  it("keeps watching a running job after a failed progress read", async () => {
+    // One dropped poll used to end the watch for good: the dialog stayed on
+    // 「检测中」 while the server job finished and the health columns went stale.
+    const running = job({ status: "running", total: 3, completed: 1, healthy: 1, can_cancel: true })
+    const finished = job({ status: "completed", total: 3, completed: 3, healthy: 3 })
+    let progressReads = 0
+    mockFetch((url, init) => {
+      if (url === "/api/admin/health-checks" && init?.method === "POST") return json(running, 202)
+      if (url === "/api/admin/health-checks/job-1") {
+        progressReads += 1
+        if (progressReads === 1) return json({ error: { message: "网关暂时不可用" } }, 500)
+        return json(progressReads >= 2 ? finished : running)
+      }
+      if (url === "/api/admin/health-checks") return json({ active: false })
+      return undefined
+    })
+    renderDialog({ providerIds: [7, 8], title: "批量检活 · 2 个渠道", autoStart: true })
+
+    await screen.findByText(/正在自动重试/, {}, { timeout: 5000 })
+    await screen.findByText("全部健康", {}, { timeout: 8000 })
+    expect(progressReads).toBeGreaterThanOrEqual(2)
+  })
+
+  it("embeds the health panel without a dialog and waits until active to fetch", async () => {    const calls = mockFetch((url) => {
       if (url.endsWith("/health-check-targets")) return json(preview())
       if (url === "/api/admin/health-checks") return json({ active: false })
       return undefined

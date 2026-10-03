@@ -24,8 +24,10 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
   const { logout } = useAuth()
   const queryClient = useQueryClient()
   const [refreshing, setRefreshing] = useState(false)
-  const [version, setVersion] = useState("")
-  const [lastRefresh, setLastRefresh] = useState(Date.now())
+  // The version is a static meta tag: read it once when the component is
+  // created rather than painting an empty value and patching it in an effect.
+  const [version] = useState(() => document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
+  const [lastRefresh, setLastRefresh] = useState(() => Date.now())
   const [ago, setAgo] = useState("")
 
   useEffect(() => {
@@ -37,10 +39,6 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
     const id = setInterval(tick, 5000)
     return () => clearInterval(id)
   }, [lastRefresh])
-
-  useEffect(() => {
-    setVersion(document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
-  }, [])
 
   async function refreshAll() {
     setRefreshing(true)

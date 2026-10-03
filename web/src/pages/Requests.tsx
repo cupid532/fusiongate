@@ -241,7 +241,11 @@ export function Requests() {
   const exportLedger = useMutation({
     mutationFn: async () => {
       if (exactValueInvalid) return false
-      const blob = await apiDownload(`/api/admin/ledger/export${filterParams ? `?${filterParams}` : ""}`)
+      const { blob } = await apiDownload(
+        `/api/admin/ledger/export${filterParams ? `?${filterParams}` : ""}`,
+        {},
+        { what: "请求账本 CSV", mime: ["text/csv"] },
+      )
       saveBlob(blob, `fusiongate-requests-${new Date().toISOString().slice(0, 10)}.csv`)
       return true
     },

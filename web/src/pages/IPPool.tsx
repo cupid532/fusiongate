@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { Plus, Trash2, Plug, Settings2, Server, Wifi, WifiOff, Link2, Search, ListChecks } from "lucide-react"
@@ -42,6 +42,10 @@ export function IPPool() {
   const [multiSelect, setMultiSelect] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [batchResults, setBatchResults] = useState<BatchItemResult[]>([])
+  // A ref, not just `isPending`: two clicks in the same tick both see the old
+  // render's `isPending === false`, and the second batch would interleave its
+  // enable/disable PATCHes with the first while both write the same result list.
+  const batchLock = useRef(false)
 
   const { data: nodes = [], isLoading, isError, error, refetch } = useQuery({
     queryKey: ["ippool"],
@@ -100,8 +104,14 @@ export function IPPool() {
 
   const batchToggle = useMutation({
     mutationFn: async ({ ids, enabled }: { ids: number[]; enabled: boolean }) => {
-      setBatchResults([])
-      return applySequential(nodes.filter((node) => ids.includes(node.id)), (id) => api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }), setBatchResults)
+      if (batchLock.current) throw new Error("另一批操作正在进行，请等待完成后再试")
+      batchLock.current = true
+      try {
+        setBatchResults([])
+        return await applySequential(nodes.filter((node) => ids.includes(node.id)), (id) => api(`/api/admin/ip-pool/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }), setBatchResults)
+      } finally {
+        batchLock.current = false
+      }
     },
     onSuccess: async (results) => {
       await refreshProviderViews(qc)
@@ -112,8 +122,14 @@ export function IPPool() {
 
   const batchDelete = useMutation({
     mutationFn: async (ids: number[]) => {
-      setBatchResults([])
-      return applySequential(nodes.filter((node) => ids.includes(node.id)), (id) => api(`/api/admin/ip-pool/${id}`, { method: "DELETE" }), setBatchResults)
+      if (batchLock.current) throw new Error("另一批操作正在进行，请等待完成后再试")
+      batchLock.current = true
+      try {
+        setBatchResults([])
+        return await applySequential(nodes.filter((node) => ids.includes(node.id)), (id) => api(`/api/admin/ip-pool/${id}`, { method: "DELETE" }), setBatchResults)
+      } finally {
+        batchLock.current = false
+      }
     },
     onSuccess: async (results) => {
       await refreshProviderViews(qc)
@@ -178,7 +194,7 @@ export function IPPool() {
                 <Button size="sm" variant="outline" disabled={batchBusy || uncertainBatch} onClick={() => batchToggle.mutate({ ids: [...selected], enabled: true })}>
                   启用
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => batchToggle.mutate({ ids: [...selected], enabled: false })}>
+                <Button size="sm" variant="outline" disabled={batchBusy || uncertainBatch} onClick={() => batchToggle.mutate({ ids: [...selected], enabled: false })}>
                   停用
                 </Button>
                 <Button

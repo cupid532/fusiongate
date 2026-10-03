@@ -1,5 +1,5 @@
 import { motion } from "motion/react"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import {
   LayoutDashboard,
   FileKey,
@@ -55,12 +55,8 @@ export function Sidebar({
   open: boolean
   onClose: () => void
 }) {
-  const [version, setVersion] = useState("")
+  const [version] = useState(() => document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
   const { theme, toggle } = useTheme()
-
-  useEffect(() => {
-    setVersion(document.querySelector('meta[name="fusiongate-version"]')?.getAttribute("content") ?? "")
-  }, [])
 
   return (
     <>

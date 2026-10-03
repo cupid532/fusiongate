@@ -516,15 +516,21 @@ function RankPanel({ tab, data, onSelectModel }: { tab: "models" | "keys" | "pro
   type RankItem = (typeof data.by_models)[number] | (typeof data.by_keys)[number] | (typeof data.by_providers)[number]
   const config: Record<string, { title: string; desc: string; icon: React.ReactNode; list: RankItem[]; onSelect?: (item: RankItem) => void }> = {
     models: {
-      title: "模型分析", desc: "按公开模型聚合的用量与费用。", icon: <Boxes className="h-4 w-4" />,
+      title: "模型分析", desc: "按公开模型聚合的用量与费用，最多列出前 10 项；占比为该时段总用量的份额。", icon: <Boxes className="h-4 w-4" />,
       list: data.by_models, onSelect: (it) => onSelectModel(it.name),
     },
-    keys: { title: "客户端 Key 分析", desc: "按下游 API Key 聚合。", icon: <KeyRound className="h-4 w-4" />, list: data.by_keys },
-    providers: { title: "渠道分析", desc: "按上游 Provider 聚合。", icon: <Server className="h-4 w-4" />, list: data.by_providers },
+    keys: { title: "客户端 Key 分析", desc: "按下游 API Key 聚合，最多列出前 10 项；占比为该时段总用量的份额。", icon: <KeyRound className="h-4 w-4" />, list: data.by_keys },
+    providers: { title: "渠道分析", desc: "按上游 Provider 聚合，最多列出前 10 项；占比为该时段总用量的份额。", icon: <Server className="h-4 w-4" />, list: data.by_providers },
   }
   const c = config[tab]
   const list = c.list
-  const maxTokens = Math.max(1, ...list.map((it) => it.total_tokens))
+  // "占比" is the share of the whole period, not of the biggest row. Each list is
+  // a top-10 slice, so dividing by the largest entry reported 100% for the top
+  // model and whatever fraction of *that* for everything else — two models at
+  // 100 and 50 tokens read as 100%/50% instead of 67%/33% of the traffic. The
+  // period total keeps the number meaningful even though the list is truncated.
+  const periodTokens = data.totals.total_tokens
+  const share = (tokens: number) => (periodTokens > 0 ? (tokens / periodTokens) * 100 : 0)
 
   return (
     <Card>
@@ -538,7 +544,7 @@ function RankPanel({ tab, data, onSelectModel }: { tab: "models" | "keys" | "pro
         ) : (
           <div className="space-y-2">
             {list.map((it, i) => {
-              const pct = (it.total_tokens / maxTokens) * 100
+              const pct = share(it.total_tokens)
               const name = it.name || (tab === "keys" ? "已删除 Key" : "已删除主体") || "—"
               return (
                 <button

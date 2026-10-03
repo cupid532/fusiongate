@@ -13,7 +13,7 @@ vi.mock("@/components/ui/confirm", () => ({ useConfirm: () => vi.fn() }))
 vi.mock("@/lib/notify", () => ({ notifySuccess: vi.fn(), reportUnauthorized: vi.fn() }))
 vi.mock("@/lib/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/api")>(),
-  apiDownload: vi.fn(async () => new Blob(["csv"])),
+  apiDownload: vi.fn(async () => ({ blob: new Blob(["csv"]), filename: "fusiongate-requests.csv" })),
   saveBlob: vi.fn(),
 }))
 

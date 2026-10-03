@@ -50,6 +50,40 @@ describe("channel management workflow", () => {
     expect(table.classList.contains("min-w-[48rem]")).toBe(true)
     expect(table.classList.contains("whitespace-nowrap")).toBe(true)
   })
+
+  it("starts a batch health check for several selected channels", async () => {
+    // Batch mode has no manual start button, so the dialog must auto-start.
+    // Without that it sat on 「正在启动检活…」 and never issued the request.
+    const providers = [
+      { id: 1, name: "First", base_url: "https://first.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 1, sort_order: 0, model_count: 2, failure_threshold: 5, health_check_enabled: true, health_check_status: "pending" },
+      { id: 2, name: "Second", base_url: "https://second.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 3, sort_order: 1, model_count: 3, failure_threshold: 5, health_check_enabled: true, health_check_status: "healthy" },
+    ] as Provider[]
+    const started = {
+      id: "job-1", mode: "generation", status: "completed", total: 2, completed: 2,
+      healthy: 2, failed: 0, skipped: 0, created_at: "2026-10-03T00:00:00Z", can_cancel: false, results: [],
+    }
+    const calls: Array<{ url: string; method: string; body?: unknown }> = []
+    const json = (value: unknown, status = 200) =>
+      new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } })
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = (init?.method ?? "GET").toUpperCase()
+      calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      if (url === "/api/admin/providers") return json(providers)
+      if (url === "/api/admin/health-checks" && method === "POST") return json(started, 202)
+      return json([])
+    }))
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ConfirmProvider><Providers /></ConfirmProvider></QueryClientProvider>)
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择 First" }))
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择 Second" }))
+    fireEvent.click(screen.getByRole("button", { name: "检活（2）" }))
+
+    await waitFor(() => {
+      const start = calls.find((call) => call.url === "/api/admin/health-checks" && call.method === "POST")
+      expect(start?.body).toEqual({ provider_ids: [1, 2], model_scope: "all" })
+    })
+  })
 })
 
 describe("reorderProviderIDs", () => {

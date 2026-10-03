@@ -58,6 +58,34 @@ describe("field compatibility settings", () => {
     await screen.findByText("还没有字段决策记录")
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/admin/routing")).toBe(false)
   })
+
+  it("writes the chosen tab back to the address bar", async () => {
+    history.replaceState(null, "", "#settings")
+    vi.stubGlobal("fetch", fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+      json(String(input) === "/api/admin/capabilities" ? { events: [], limit: 512 } : settings)))
+    mount()
+    await screen.findByLabelText("单渠道重试次数")
+
+    fireEvent.click(screen.getByRole("button", { name: "字段兼容" }))
+
+    // Reloading or sharing the URL must land on the same tab, which it cannot
+    // if clicking only changes component state.
+    expect(location.hash).toBe("#settings?tab=capabilities")
+  })
+
+  it("follows the address bar to a tab other than the audit", async () => {
+    history.replaceState(null, "", "#settings")
+    vi.stubGlobal("fetch", fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+      json(String(input) === "/api/admin/capabilities" ? { events: [], limit: 512 } : settings)))
+    mount()
+    await screen.findByLabelText("单渠道重试次数")
+
+    history.replaceState(null, "", "#settings?tab=security")
+    fireEvent(window, new HashChangeEvent("hashchange"))
+
+    expect(await screen.findByText("修改管理员密码")).toBeTruthy()
+    expect(screen.queryByLabelText("单渠道重试次数")).toBeNull()
+  })
 })
 
 describe("routing settings", () => {

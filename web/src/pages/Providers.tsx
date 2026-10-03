@@ -162,7 +162,9 @@ export function Providers() {
     <ProviderDialog open={dialogOpen} onOpenChange={setDialogOpen} provider={editing} initialSection={initialSection} />
     <ProviderEgressDialog open={egressIds.length > 0} onOpenChange={(open) => { if (!open) setEgressIds([]) }} providerIds={egressIds} onApplied={clearApplied} />
     {batchEdit && <ProviderBatchDialog open providers={batchEdit.providers} action={batchEdit.action} onOpenChange={(open) => { if (!open) setBatchEdit(null) }} onApplied={clearApplied} />}
-    {healthIds.length > 0 && <HealthCheckDialog open onOpenChange={(open) => { if (!open) setHealthIds([]) }} providerIds={healthIds} title={"批量检活 · " + healthIds.length + " 个渠道"} />}
+    {/* Batch mode has no manual start control: with more than one channel the
+        dialog would otherwise sit on 「正在启动检活…」 and never issue a request. */}
+    {healthIds.length > 0 && <HealthCheckDialog open autoStart={healthIds.length > 1} onOpenChange={(open) => { if (!open) setHealthIds([]) }} providerIds={healthIds} title={"批量检活 · " + healthIds.length + " 个渠道"} />}
     <ExportImportDialog open={backupOpen} onOpenChange={setBackupOpen} /><GroupManager open={groupOpen} onOpenChange={setGroupOpen} />
   </motion.div>
 }

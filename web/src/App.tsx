@@ -59,8 +59,22 @@ function PageSkeleton() {
 // falls back to the dashboard. Previously the raw hash was cast straight to
 // Page, so `#settings` produced an unhandled switch case and rendered an
 // entirely blank content area under a topbar that still said 概览.
+//
+// `decodeURIComponent` throws on a malformed escape, and `#%` or `#%E0%A4%A` is
+// something anyone can paste into an address bar. That throw happened during the
+// first render, so the console died before it drew anything at all. A hash that
+// does not decode is simply not a page name.
+function decodeHashPath(): string {
+  const value = location.hash.replace(/^#/, "").split("?")[0]
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
 function pageFromHash(): Page {
-  const raw = decodeURIComponent(location.hash.replace(/^#/, "").split("?")[0])
+  const raw = decodeHashPath()
   if (raw === "capabilities") {
     history.replaceState(null, "", "#settings?tab=capabilities")
     return "settings"
@@ -123,7 +137,7 @@ export default function App() {
   // Normalise a bad hash in the address bar so a reload doesn't land on it
   // again and the URL matches what is actually on screen.
   useEffect(() => {
-    const raw = decodeURIComponent(location.hash.replace(/^#/, "").split("?")[0])
+    const raw = decodeHashPath()
     if (raw && !isPage(raw)) location.replace(`#${page}`)
   }, [page])
 

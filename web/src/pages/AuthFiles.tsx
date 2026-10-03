@@ -7,7 +7,7 @@ import {
   ListChecks, CloudUpload, FileText, Power, PowerOff, Search,
   RefreshCw, KeyRound,
 } from "lucide-react"
-import { api, getCsrfToken } from "@/lib/api"
+import { api, apiDownload, saveBlob } from "@/lib/api"
 import type { CredentialImportPreviewItem, Provider } from "@/lib/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -205,24 +205,21 @@ export function AuthFiles() {
 
   const batchExport = useMutation({
     mutationFn: async (ids: number[]) => {
-      const res = await fetch("/api/admin/auth/export", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
-        body: JSON.stringify({ provider_ids: ids, acknowledge_sensitive_export: true }),
-      })
-      if (!res.ok) throw new Error("导出失败")
-      const blob = await res.blob()
-      const ct = res.headers.get("content-type") ?? ""
-      const isZip = ct.includes("zip") || ct.includes("octet-stream")
-      const cd = res.headers.get("content-disposition") ?? ""
-      const fnMatch = cd.match(/filename="?([^";\s]+)"?/)
-      const filename = fnMatch?.[1] ?? (isZip ? `fusiongate-auth-export-${new Date().toISOString().slice(0, 10)}.zip` : "fusiongate-auth-export.json")
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement("a")
-      a.href = url
-      a.download = filename
-      a.click()
-      URL.revokeObjectURL(url)
+      const { blob, filename } = await apiDownload(
+        "/api/admin/auth/export",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider_ids: ids, acknowledge_sensitive_export: true }),
+        },
+        { what: "认证文件导出", mime: ["application/zip", "application/json", "application/octet-stream"] },
+      )
+      // The server names a single-account export after its platform and account;
+      // only a multi-account archive needs the generic name.
+      const fallback = ids.length === 1
+        ? "fusiongate-auth-export.json"
+        : `fusiongate-auth-export-${new Date().toISOString().slice(0, 10)}.zip`
+      saveBlob(blob, filename ?? fallback)
       setSelected(new Set())
     },
   })
@@ -276,7 +273,26 @@ export function AuthFiles() {
                 <HeartPulse className="h-4 w-4" />
                 批量测活（{selected.size}）
               </Button>
-              <Button variant="outline" onClick={() => batchExport.mutate([...selected])}>
+              <Button
+                variant="outline"
+                disabled={batchExport.isPending}
+                onClick={async () => {
+                  // The gateway refuses the export unless the client states it
+                  // knows the payload is sensitive. Sending that statement
+                  // without asking the operator is the client answering for
+                  // them, so the acknowledgement follows a real confirmation.
+                  if (
+                    await confirm({
+                      title: `导出选中的 ${selected.size} 个认证文件？`,
+                      description: "导出内容包含可直接使用的 OAuth 凭据。文件会以明文保存在下载目录，请只在可信设备上操作，并在用完后及时删除。",
+                      destructive: true,
+                      confirmLabel: "仍要导出",
+                    })
+                  ) {
+                    batchExport.mutate([...selected])
+                  }
+                }}
+              >
                 批量导出
               </Button>
               <Button

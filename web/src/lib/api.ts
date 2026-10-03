@@ -64,13 +64,54 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
 }
 
 /**
+ * What a download endpoint is expected to answer with.
+ *
+ * A reverse proxy or an expired session can turn a download into `200 OK` and an
+ * HTML login page, and the old helper wrote that straight to disk under the
+ * backup's own filename — a "successful" export that could not be restored. Each
+ * caller therefore declares the shape it expects, and a mismatch throws instead
+ * of silently producing an unusable file.
+ */
+export type DownloadExpectation = {
+  /** Human label used in the error message, e.g. 「渠道备份」. */
+  what: string
+  /** Acceptable `Content-Type` fragments, lower-case. Empty means "any". */
+  mime: string[]
+  /** When true the body must also parse as JSON before it is handed back. */
+  json?: boolean
+}
+
+/** A validated download: the payload plus the server's suggested file name. */
+export type DownloadedFile = {
+  blob: Blob
+  /** `Content-Disposition` file name, when the server sent a usable one. */
+  filename: string | null
+}
+
+/** Read a `Content-Disposition` attachment name, preferring the RFC 5987 form. */
+function filenameFromDisposition(header: string | null): string | null {
+  if (!header) return null
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header)
+  if (encoded) {
+    try {
+      const decoded = decodeURIComponent(encoded[1].trim())
+      if (decoded) return decoded
+    } catch {
+      // Malformed percent-encoding; fall through to the plain form.
+    }
+  }
+  const plain = /filename="?([^";]+)"?/i.exec(header)
+  return plain ? plain[1].trim() || null : null
+}
+
+/**
  * Fetch a file download and hand back the blob.
  *
  * The naive version of this checked neither `res.ok` nor the content type, so a
  * 401 or 500 was cheerfully written to the user's disk as a `.json` file full of
  * error text. Anything that isn't a real success now throws instead.
  */
-export async function apiDownload(path: string, options: RequestInit = {}): Promise<Blob> {
+export async function apiDownload(path: string, options: RequestInit, expected: DownloadExpectation): Promise<DownloadedFile> {
   const headers = new Headers(options.headers)
   const method = (options.method || "GET").toUpperCase()
   if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
@@ -94,7 +135,25 @@ export async function apiDownload(path: string, options: RequestInit = {}): Prom
     if (apiError.status === 401 || apiError.status === 403) reportUnauthorized()
     throw apiError
   }
-  return res.blob()
+  const contentType = (res.headers.get("content-type") ?? "").toLowerCase()
+  if (expected.mime.length > 0 && !expected.mime.some((fragment) => contentType.includes(fragment))) {
+    throw new ApiError(
+      502,
+      "unexpected_content_type",
+      `网关没有返回${expected.what}（收到 ${contentType || "未知类型"}）。可能被登录页或反向代理拦截，请刷新后重试。`
+    )
+  }
+  const filename = filenameFromDisposition(res.headers.get("content-disposition"))
+  if (expected.json) {
+    const text = await res.text()
+    try {
+      JSON.parse(text)
+    } catch {
+      throw new ApiError(502, "invalid_response", `网关返回的${expected.what}无法解析，请刷新核对后再试。`)
+    }
+    return { blob: new Blob([text], { type: contentType || "application/json" }), filename }
+  }
+  return { blob: await res.blob(), filename }
 }
 
 /**

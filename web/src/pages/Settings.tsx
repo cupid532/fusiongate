@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import {
@@ -70,16 +70,38 @@ const routingFields = [
   { key: "session_capacity", label: "会话容量", hint: "1–1000000；保留的任务绑定数量上限" },
 ] as const satisfies ReadonlyArray<{ key: keyof Omit<RoutingSettings, "strategy">; label: string; hint: string }>
 
+const TAB_VALUES = new Set<string>(tabs.map((t) => t.value))
+
+/**
+ * The settings tab named by the address bar.
+ *
+ * Legacy `#capabilities` bookmarks still resolve here, so the redirect App
+ * performs and a direct link both land on the same tab.
+ */
+function tabFromLocation(): SettingsTab {
+  const page = location.hash.replace(/^#/, "").split("?")[0]
+  if (page === "capabilities") return "capabilities"
+  const requested = new URLSearchParams(location.hash.split("?")[1] ?? "").get("tab")
+  return requested && TAB_VALUES.has(requested) ? (requested as SettingsTab) : "routing"
+}
+
 export function Settings() {
-  const [tab, setTab] = useState<SettingsTab>(() => new URLSearchParams(location.hash.split("?")[1] ?? "").get("tab") === "capabilities" ? "capabilities" : "routing")
+  const [tab, setTabState] = useState<SettingsTab>(tabFromLocation)
+
+  // Keep the address bar and the visible tab in step in both directions: a
+  // bookmarked `#settings?tab=pricing` opens on 模型定价, and clicking a tab
+  // updates the URL so the page can be refreshed, shared or reloaded on the
+  // same tab. `history.replaceState` rather than a hash assignment, so opening
+  // the page does not push one history entry per tab click.
+  const selectTab = useCallback((next: SettingsTab) => {
+    setTabState(next)
+    const params = new URLSearchParams(location.hash.split("?")[1] ?? "")
+    params.set("tab", next)
+    history.replaceState(null, "", `#settings?${params.toString()}`)
+  }, [])
 
   useEffect(() => {
-    const syncTab = () => {
-      const page = location.hash.replace(/^#/, "").split("?")[0]
-      if (page === "capabilities" || (page === "settings" && new URLSearchParams(location.hash.split("?")[1] ?? "").get("tab") === "capabilities")) {
-        setTab("capabilities")
-      }
-    }
+    const syncTab = () => setTabState(tabFromLocation())
     window.addEventListener("hashchange", syncTab)
     return () => window.removeEventListener("hashchange", syncTab)
   }, [])
@@ -97,7 +119,7 @@ export function Settings() {
         {tabs.map((t) => (
           <button
             key={t.value}
-            onClick={() => setTab(t.value)}
+            onClick={() => selectTab(t.value)}
             className={cn(
               "inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition-colors",
               tab === t.value

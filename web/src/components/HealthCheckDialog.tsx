@@ -109,20 +109,34 @@ export function ProviderHealthPanel({ open, providerId, providerIds: batchIds, o
   }, [open, job])
 
   // Poll our job until it settles, then refresh the pages that show health.
+  //
+  // A single dropped poll used to end the watch for good: the catch only set an
+  // error, and the effect's dependencies never changed, so the dialog sat on
+  // 「检测中」 while the server job finished and the health columns stayed stale.
+  // Failures now back off and keep asking; a success clears the message.
   useEffect(() => {
     const id = job?.id
     if (!open || !id || !isActive(job)) return
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    let failures = 0
     const poll = async () => {
       try {
         const cur = await healthChecksApi.get(id)
         if (cancelled) return
+        failures = 0
+        setError("")
         setJob(cur)
         if (isActive(cur)) timer = setTimeout(poll, 1500)
         else invalidate()
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "读取检活进度失败")
+        if (cancelled) return
+        failures += 1
+        const reason = e instanceof Error ? e.message : "读取检活进度失败"
+        setError(`${reason}；正在自动重试…`)
+        // Back off to at most one attempt every 15s: a gateway restart or a
+        // flaky link must not turn into a request storm while the job runs.
+        timer = setTimeout(poll, Math.min(1500 * 2 ** (failures - 1), 15_000))
       }
     }
     timer = setTimeout(poll, 1200)
