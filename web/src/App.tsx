@@ -9,7 +9,6 @@ const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default:
 const Providers = lazy(() => import("./pages/Providers").then((m) => ({ default: m.Providers })))
 const Keys = lazy(() => import("./pages/Keys").then((m) => ({ default: m.Keys })))
 const Requests = lazy(() => import("./pages/Requests").then((m) => ({ default: m.Requests })))
-const Capabilities = lazy(() => import("./pages/Capabilities").then((m) => ({ default: m.Capabilities })))
 const IPPool = lazy(() => import("./pages/IPPool").then((m) => ({ default: m.IPPool })))
 const Routes = lazy(() => import("./pages/Routes").then((m) => ({ default: m.Routes })))
 const Usage = lazy(() => import("./pages/Usage").then((m) => ({ default: m.Usage })))
@@ -62,6 +61,10 @@ function PageSkeleton() {
 // entirely blank content area under a topbar that still said 概览.
 function pageFromHash(): Page {
   const raw = decodeURIComponent(location.hash.replace(/^#/, "").split("?")[0])
+  if (raw === "capabilities") {
+    history.replaceState(null, "", "#settings?tab=capabilities")
+    return "settings"
+  }
   return isPage(raw) ? raw : "dashboard"
 }
 
@@ -83,8 +86,6 @@ function pageContent(page: Page) {
       return <Usage />
     case "requests":
       return <Requests />
-    case "capabilities":
-      return <Capabilities />
     case "settings":
       return <Settings />
   }

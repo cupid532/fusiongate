@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import {
@@ -16,7 +16,9 @@ import {
   Eye,
   EyeOff,
   Lock,
+  Ban,
 } from "lucide-react"
+import { Capabilities } from "./Capabilities"
 import { api } from "@/lib/api"
 import type { RoutingSettings } from "@/lib/types"
 import { ROUTING_STRATEGY_HELP, ROUTING_STRATEGY_LABELS } from "@/lib/types"
@@ -26,12 +28,13 @@ import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
 import { notifySuccess, notifyError } from "@/lib/notify"
 
-type SettingsTab = "routing" | "pricing" | "security" | "info"
+type SettingsTab = "routing" | "pricing" | "security" | "info" | "capabilities"
 
 const tabs: { value: SettingsTab; label: string; icon: typeof Route }[] = [
   { value: "routing", label: "路由策略", icon: Route },
   { value: "pricing", label: "模型定价", icon: DollarSign },
   { value: "security", label: "安全", icon: Shield },
+  { value: "capabilities", label: "字段兼容", icon: Ban },
   { value: "info", label: "网关信息", icon: Info },
 ]
 
@@ -68,18 +71,29 @@ const routingFields = [
 ] as const satisfies ReadonlyArray<{ key: keyof Omit<RoutingSettings, "strategy">; label: string; hint: string }>
 
 export function Settings() {
-  const [tab, setTab] = useState<SettingsTab>("routing")
+  const [tab, setTab] = useState<SettingsTab>(() => new URLSearchParams(location.hash.split("?")[1] ?? "").get("tab") === "capabilities" ? "capabilities" : "routing")
+
+  useEffect(() => {
+    const syncTab = () => {
+      const page = location.hash.replace(/^#/, "").split("?")[0]
+      if (page === "capabilities" || (page === "settings" && new URLSearchParams(location.hash.split("?")[1] ?? "").get("tab") === "capabilities")) {
+        setTab("capabilities")
+      }
+    }
+    window.addEventListener("hashchange", syncTab)
+    return () => window.removeEventListener("hashchange", syncTab)
+  }, [])
 
   return (
     <div>
       <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">系统设置</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          管理路由策略、模型定价、安全与网关运行状态。
+          管理路由策略、模型定价、安全、字段兼容与网关运行状态。
         </p>
       </div>
 
-      <div className="mb-6 flex items-center gap-1 rounded-lg bg-muted/60 p-1">
+      <div className="mb-6 flex flex-wrap items-center gap-1 rounded-lg bg-muted/60 p-1">
         {tabs.map((t) => (
           <button
             key={t.value}
@@ -107,6 +121,7 @@ export function Settings() {
         {tab === "pricing" && <PricingTab />}
         {tab === "security" && <SecurityTab />}
         {tab === "info" && <InfoTab />}
+        {tab === "capabilities" && <Capabilities />}
       </motion.div>
     </div>
   )

@@ -1,5 +1,16 @@
 # Changelog
 
+## V3.38
+
+- Move the field compatibility audit out of the main sidebar and into System
+  Settings as a dedicated tab. Routing remains the default settings tab, and
+  field audit requests are made only while its tab is mounted.
+- Keep existing `#capabilities` bookmarks working by redirecting them to
+  `#settings?tab=capabilities`; label the settings page correctly in the topbar.
+- Allow settings tabs to wrap on narrow screens. Bridge field policies, audit
+  aggregation, and inference routing are unchanged.
+- Add regressions for on-demand audit loading and the settings deep link.
+
 ## V3.37
 
 - Read a Cline upstream's answer through the envelope it arrives in. `api.cline.bot`

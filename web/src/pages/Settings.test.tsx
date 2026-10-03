@@ -8,7 +8,7 @@ function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   render(<QueryClientProvider client={client}><Settings /></QueryClientProvider>)
 }
-afterEach(() => { cleanup(); vi.resetAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); history.replaceState(null, "", "#settings"); vi.resetAllMocks(); vi.unstubAllGlobals() })
 
 const settings = {
   strategy: "priority_failover",
@@ -24,6 +24,41 @@ const settings = {
 function json(value: unknown) {
   return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } })
 }
+
+describe("field compatibility settings", () => {
+  it("loads the audit only after its settings tab is opened", async () => {
+    history.replaceState(null, "", "#settings")
+    vi.stubGlobal("fetch", fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+      json(String(input) === "/api/admin/capabilities" ? { events: [], limit: 512 } : settings)))
+    mount()
+    await screen.findByLabelText("单渠道重试次数")
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/admin/capabilities")).toBe(false)
+    fireEvent.click(screen.getByRole("button", { name: "字段兼容" }))
+    await screen.findByText("还没有字段决策记录")
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/admin/capabilities")).toBe(true)
+    expect(screen.queryByLabelText("单渠道重试次数")).toBeNull()
+  })
+
+  it.each(["#capabilities", "#settings?tab=capabilities"])("opens %s while settings is already mounted", async (hash) => {
+    history.replaceState(null, "", "#settings")
+    vi.stubGlobal("fetch", fetchMock.mockImplementation(async (input: RequestInfo | URL) =>
+      json(String(input) === "/api/admin/capabilities" ? { events: [], limit: 512 } : settings)))
+    mount()
+    await screen.findByLabelText("单渠道重试次数")
+    history.replaceState(null, "", hash)
+    fireEvent(window, new HashChangeEvent("hashchange"))
+    await screen.findByText("还没有字段决策记录")
+    expect(screen.queryByLabelText("单渠道重试次数")).toBeNull()
+  })
+
+  it("opens the audit from a settings deep link", async () => {
+    history.replaceState(null, "", "#settings?tab=capabilities")
+    vi.stubGlobal("fetch", fetchMock.mockResolvedValue(json({ events: [], limit: 512 })))
+    mount()
+    await screen.findByText("还没有字段决策记录")
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/admin/routing")).toBe(false)
+  })
+})
 
 describe("routing settings", () => {
   it("does not show fabricated parameters when routing cannot load", async () => {
