@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.41
+
+- Let Chat Completions requests with `store:false` participate in protocol
+  adaptation. Responses bridges preserve the non-persistent setting, while
+  Messages bridges omit the unsupported field; `store:true` and non-boolean
+  values still require a native channel.
+
 ## V3.40
 
 - Publish the release version in the image's `org.opencontainers.image.version`

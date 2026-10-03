@@ -42,7 +42,7 @@ func TestInferencePreflightRejectionRecordsSafeZeroAttempt(t *testing.T) {
 	const session = "preflight-private-session"
 	const prompt = "preflight-private-prompt"
 	const arguments = "preflight-private-tool-arguments"
-	body := `{"model":"public-model","stream":true,"store":false,"messages":[{"role":"user","content":"` + prompt + `"},{"role":"assistant","tool_calls":[{"id":"private-call-id","type":"function","function":{"name":"lookup","arguments":"` + arguments + `"}}]}],"tools":[{"type":"function","function":{"name":"lookup","description":"preflight-private-description","parameters":{"type":"object"}}}]}`
+	body := `{"model":"public-model","stream":true,"store":true,"messages":[{"role":"user","content":"` + prompt + `"},{"role":"assistant","tool_calls":[{"id":"private-call-id","type":"function","function":{"name":"lookup","arguments":"` + arguments + `"}}]}],"tools":[{"type":"function","function":{"name":"lookup","description":"preflight-private-description","parameters":{"type":"object"}}}]}`
 	rec := inferencePreflightRequest(t, a, key, session, body)
 	if rec.Code != http.StatusBadRequest || calls.Load() != 0 {
 		t.Fatalf("status=%d upstream_calls=%d", rec.Code, calls.Load())
@@ -150,7 +150,7 @@ func TestInferencePreflightFallbackKeepsRealAttemptOnly(t *testing.T) {
 	relayID := insertTestProvider(t, a, "preflight-relay", "openai_compatible", relay.URL, "relay-secret", 0, 1, "normalized", "any", 0, 5, 30)
 	insertTestRoute(t, a, relayID, "public-model", "public-model", "chat,stream", 0)
 
-	rec := inferencePreflightRequest(t, a, key, "fallback-task", `{"model":"public-model","store":false,"messages":[{"role":"user","content":"hi"}]}`)
+	rec := inferencePreflightRequest(t, a, key, "fallback-task", `{"model":"public-model","store":true,"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusOK || codexCalls.Load() != 0 || relayCalls.Load() != 1 {
 		t.Fatalf("fallback status=%d codex=%d relay=%d", rec.Code, codexCalls.Load(), relayCalls.Load())
 	}
@@ -184,7 +184,7 @@ func TestInferencePreflightAfterAttemptDoesNotAddLedgerRow(t *testing.T) {
 		_, _ = io.WriteString(w, `{"error":{"message":"unknown endpoint"}}`)
 	})
 	defer done()
-	rec := inferencePreflightRequest(t, a, key, "after-attempt", `{"model":"public-model","store":false,"messages":[{"role":"user","content":"hi"}]}`)
+	rec := inferencePreflightRequest(t, a, key, "after-attempt", `{"model":"public-model","store":true,"messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != http.StatusBadRequest || calls.Load() != 1 {
 		t.Fatalf("status=%d upstream_calls=%d", rec.Code, calls.Load())
 	}

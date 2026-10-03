@@ -233,15 +233,65 @@ func TestChatBridgesToCodexOAuthResponses(t *testing.T) {
 	if _, err := a.db.Exec(`UPDATE providers SET base_url=base_url||'/backend-api/codex'`); err != nil {
 		t.Fatal(err)
 	}
-	rec := bridgeRequest(t, a, key, "/v1/chat/completions", `{"model":"public-model","messages":[{"role":"system","content":"sys"},{"role":"user","content":"ping"}]}`)
+	rec := bridgeRequest(t, a, key, "/v1/chat/completions", `{"model":"public-model","messages":[{"role":"system","content":"sys"},{"role":"user","content":"ping"}],"store":false}`)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"content":"pong"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if path != "/backend-api/codex/responses" || received["instructions"] != "sys" || received["model"] != "upstream-model" {
+	if path != "/backend-api/codex/responses" || received["instructions"] != "sys" || received["model"] != "upstream-model" || received["store"] != false {
 		t.Fatalf("path=%s body=%v", path, received)
 	}
 	if input, _, output, _, _ := ledgerUsage(t, a); input != 9 || output != 2 {
 		t.Fatalf("usage %d/%d", input, output)
+	}
+}
+
+func TestChatStoreFalseRemainsBridgeable(t *testing.T) {
+	raw := []byte(`{"model":"public-model","messages":[{"role":"user","content":"ping"}],"store":false}`)
+	if err := validateBridgeCapabilities(wireChat, raw); err != nil {
+		t.Fatalf("store=false must be accepted for adaptive routing: %v", err)
+	}
+
+	for _, target := range []string{wireResponses, wireMessages} {
+		t.Run(target, func(t *testing.T) {
+			if err := validateBridgeRoute(wireChat, target, raw, "/v1/chat/completions"); err != nil {
+				t.Fatalf("store=false must remain bridgeable to %s: %v", target, err)
+			}
+			chat, _, _, err := bridgeClientToChat(wireChat, raw, "/v1/chat/completions")
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, _, err := bridgeUpstreamBody(target, chat, resolvedRoute{
+				Provider: Provider{Type: "codex_oauth"},
+				Route:    Route{UpstreamModel: "upstream-model"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var upstream map[string]any
+			if err := json.Unmarshal(encoded, &upstream); err != nil {
+				t.Fatal(err)
+			}
+			if target == wireResponses && upstream["store"] != false {
+				t.Fatalf("Responses target must preserve store=false: %v", upstream)
+			}
+			if target == wireMessages {
+				if _, ok := upstream["store"]; ok {
+					t.Fatalf("Messages target must not receive unsupported store field: %v", upstream)
+				}
+			}
+		})
+	}
+}
+
+func TestChatStoreBridgeRejectsTrueAndNonBooleanValues(t *testing.T) {
+	for _, value := range []string{"true", `"false"`, "0"} {
+		t.Run(value, func(t *testing.T) {
+			raw := []byte(`{"model":"public-model","messages":[{"role":"user","content":"ping"}],"store":` + value + `}`)
+			err := validateBridgeCapabilities(wireChat, raw)
+			if err == nil || !strings.Contains(err.Error(), "store") {
+				t.Fatalf("store=%s must be rejected by a bridge, got %v", value, err)
+			}
+		})
 	}
 }
 

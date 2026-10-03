@@ -112,7 +112,7 @@ var bridgeClientFieldPolicy = []bridgeFieldRule{
 	// contract (several are), and store=false is expressible while store=true is
 	// state a bridge cannot carry. Their own checks below enforce the value.
 	keep("n", wireChat),
-	keep("store", wireResponses),
+	keep("store", wireChat, wireResponses),
 
 	// The fields whose whole content only shapes the answer, inspected one level
 	// down, which is why they carry a dotted path.
@@ -157,6 +157,8 @@ var bridgeChatFieldPolicy = []bridgeFieldRule{
 	// them; the Messages converter leaves them behind, and a disposition states
 	// the best case rather than the worst.
 	keep("prompt_cache_key"), keep("parallel_tool_calls"),
+	keep("store", wireResponses),
+	drop("store", wireMessages),
 	drop("reasoning_effort"), drop("prompt_cache_options"), drop("prompt_cache_retention"),
 	drop("client_metadata"), drop("frequency_penalty"), drop("presence_penalty"), drop("seed"),
 	drop("user"), drop("logprobs"), drop("top_logprobs"), drop("metadata"), drop("service_tier"),

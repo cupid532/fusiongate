@@ -60,8 +60,11 @@ func validateBridgeCapabilitiesFor(client string, raw []byte, opts bridgeOptions
 			return rejectBridgeFeature(field, reason)
 		}
 	}
-	if body["store"] == true {
-		return reject("store")
+	if value, exists := body["store"]; exists {
+		store, ok := value.(bool)
+		if !ok || store {
+			return reject("store")
+		}
 	}
 	if reasoning := asMap(body["reasoning"]); reasoning != nil {
 		for _, field := range bridgeFieldNames(reasoning) {
