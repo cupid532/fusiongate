@@ -14,7 +14,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     outputs:
-      oci-version: ${{ steps.version.outputs.oci_version }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - name: Validate release version
@@ -29,7 +29,7 @@ jobs:
             expected_tag="v${source_version#V}"
             test "$GITHUB_REF_NAME" = "$expected_tag" || { echo "tag $GITHUB_REF_NAME does not match $expected_tag" >&2; exit 1; }
           fi
-          echo "oci_version=${source_version#V}" >> "$GITHUB_OUTPUT"
+          echo "version=${source_version}" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -85,6 +85,27 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
             type=sha
+          # The generated version label is the highest-priority tag — `latest`
+          # on a branch push, the git tag on a tag push — so published images
+          # all carried the label `latest` and no image could be told apart
+          # from another release. A custom label overrides the generated one
+          # (the action merges both into a Map, so the custom value wins), and
+          # the same string is passed to the Dockerfile as its build arg, which
+          # is what the local deploy path writes too.
+          labels: |
+            org.opencontainers.image.version=${{ needs.validate.outputs.version }}
+      - name: The image version label must be the release version
+        env:
+          META_JSON: ${{ steps.meta.outputs.json }}
+          EXPECTED_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual="$(printf '%s' "$META_JSON" | jq -r '.labels["org.opencontainers.image.version"]')"
+          if [[ "$actual" != "$EXPECTED_VERSION" ]]; then
+            echo "::error::org.opencontainers.image.version would be '$actual', expected '$EXPECTED_VERSION'"
+            exit 1
+          fi
+          echo "org.opencontainers.image.version=$actual"
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -94,7 +115,7 @@ jobs:
           build-args: |
             FUSIONGATE_BUILD_REVISION=${{ github.sha }}
             FUSIONGATE_BUILD_SOURCE=${{ github.server_url }}/${{ github.repository }}
-            FUSIONGATE_BUILD_VERSION=${{ needs.validate.outputs.oci-version }}
+            FUSIONGATE_BUILD_VERSION=${{ needs.validate.outputs.version }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max

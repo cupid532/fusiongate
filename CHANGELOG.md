@@ -1,5 +1,29 @@
 # Changelog
 
+## V3.40
+
+- Publish the release version in the image's `org.opencontainers.image.version`
+  label. `docker/metadata-action` derives that label from the highest-priority
+  tag, which on a branch push is the `latest` tag and on a tag push is the git
+  tag, and `build-push-action` then applies it over the Dockerfile's own
+  `FUSIONGATE_BUILD_VERSION` label — so every image in the registry was labelled
+  `latest` and none of them could be told apart. The metadata step now sets the
+  label explicitly (custom labels win: the action merges generated and custom
+  labels into a Map, later writes overwriting earlier ones), which puts the
+  source version from `internal/fusiongate/version.go` on the image — the same
+  string the local `deploy/deploy-from-origin.sh` path writes, and the same one
+  `/healthz` and the console sidebar report.
+- Gate that label in the publish job. A step reads the metadata action's `json`
+  output, which is built from the same merged label list, and fails the build if
+  `org.opencontainers.image.version` is not the version the validate job read
+  out of `version.go`. Removing the `labels:` block, or a future change in how
+  the action derives that label, now breaks the release instead of silently
+  publishing another mislabelled image.
+- `FUSIONGATE_BUILD_VERSION` now carries `V3.40` rather than `3.40` (the validate
+  job's `oci-version` output is replaced by `version`), so the CI image, the
+  Dockerfile label and the locally built deploy image all name the release
+  identically.
+
 ## V3.39
 
 - Start the batch health check again. Selecting two or more channels on 上游渠道
