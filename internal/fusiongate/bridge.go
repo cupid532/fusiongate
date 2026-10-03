@@ -483,7 +483,7 @@ func normalizeResponsesForChat(raw []byte, custom map[string]bool) ([]byte, erro
 			item := asMap(value)
 			switch asString(item["type"]) {
 			case "custom_tool_call":
-				arguments, _ := json.Marshal(map[string]any{"input": asString(item["input"])})
+				arguments, _ := json.Marshal(map[string]any{"input": asStringValue(item["input"])})
 				items[index] = map[string]any{"type": "function_call", "call_id": firstNonEmpty(asString(item["call_id"]), asString(item["id"])), "name": item["name"], "arguments": string(arguments)}
 			case "custom_tool_call_output":
 				items[index] = map[string]any{"type": "function_call_output", "call_id": item["call_id"], "output": item["output"]}
@@ -566,7 +566,7 @@ func chatToResponsesBody(chat []byte, z resolvedRoute) ([]byte, error) {
 	for _, value := range anySlice(source["messages"]) {
 		message := asMap(value)
 		if role := asString(message["role"]); role == "system" || role == "developer" {
-			if text := strings.TrimSpace(textContent(message["content"])); text != "" {
+			if text := textContent(message["content"]); text != "" {
 				instructions = append(instructions, text)
 			}
 			continue
@@ -642,7 +642,7 @@ func chatToAnthropicBody(chat map[string]any) ([]byte, error) {
 		message := asMap(value)
 		switch role := asString(message["role"]); role {
 		case "system", "developer":
-			if text := strings.TrimSpace(textContent(message["content"])); text != "" {
+			if text := textContent(message["content"]); text != "" {
 				system = append(system, text)
 			}
 		case "tool":
@@ -656,7 +656,7 @@ func chatToAnthropicBody(chat map[string]any) ([]byte, error) {
 				call := asMap(rawCall)
 				function := asMap(call["function"])
 				var input any = map[string]any{}
-				if arguments := strings.TrimSpace(asString(function["arguments"])); arguments != "" {
+				if arguments := asStringValue(function["arguments"]); arguments != "" {
 					if json.Unmarshal([]byte(arguments), &input) != nil {
 						input = map[string]any{"input": arguments}
 					}
@@ -736,7 +736,7 @@ func chatContentToAnthropic(content any) []any {
 		part := asMap(value)
 		switch asString(part["type"]) {
 		case "text", "input_text":
-			if text := asString(part["text"]); text != "" {
+			if text := asStringValue(part["text"]); text != "" {
 				blocks = append(blocks, map[string]any{"type": "text", "text": text})
 			}
 		case "image_url", "input_image":
@@ -951,12 +951,12 @@ func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
 		kind := firstNonEmpty(asString(data["type"]), event)
 		switch kind {
 		case "response.output_text.delta":
-			if delta := asString(data["delta"]); delta != "" {
+			if delta := asStringValue(data["delta"]); delta != "" {
 				sawText = true
 				return false, e.chunk(map[string]any{"content": delta}, nil, nil)
 			}
 		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-			if delta := asString(data["delta"]); delta != "" {
+			if delta := asStringValue(data["delta"]); delta != "" {
 				return false, e.chunk(map[string]any{"reasoning_content": delta}, nil, nil)
 			}
 		case "response.output_item.added", "response.output_item.done":
@@ -964,7 +964,7 @@ func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
 			if itemType := asString(item["type"]); itemType != "function_call" && itemType != "custom_tool_call" {
 				if kind == "response.output_item.done" && asString(item["type"]) == "message" && !sawText {
 					for _, part := range anySlice(item["content"]) {
-						if text := asString(asMap(part)["text"]); text != "" {
+						if text := asStringValue(asMap(part)["text"]); text != "" {
 							sawText = true
 							if err := e.chunk(map[string]any{"content": text}, nil, nil); err != nil {
 								return false, err
@@ -986,7 +986,7 @@ func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
 				}
 			}
 			if kind == "response.output_item.done" && !entry.streamed {
-				arguments := asString(item["arguments"])
+				arguments := asStringValue(item["arguments"])
 				if asString(item["type"]) == "custom_tool_call" {
 					encoded, _ := json.Marshal(map[string]any{"input": item["input"]})
 					arguments = string(encoded)
@@ -1001,7 +1001,7 @@ func (e *chatChunkEmitter) fromResponsesSSE(r io.Reader) error {
 			if entry == nil {
 				return false, nil
 			}
-			if delta := asString(data["delta"]); delta != "" {
+			if delta := asStringValue(data["delta"]); delta != "" {
 				entry.streamed = true
 				return false, e.chunk(map[string]any{"tool_calls": []any{map[string]any{"index": entry.index, "function": map[string]any{"arguments": delta}}}}, nil, nil)
 			}
@@ -1055,20 +1055,20 @@ func (e *chatChunkEmitter) fromAnthropicSSE(r io.Reader) error {
 				start := map[string]any{"index": index, "id": block["id"], "type": "function", "function": map[string]any{"name": block["name"], "arguments": ""}}
 				return false, e.chunk(map[string]any{"tool_calls": []any{start}}, nil, nil)
 			}
-			if text := asString(block["text"]); text != "" {
+			if text := asStringValue(block["text"]); text != "" {
 				return false, e.chunk(map[string]any{"content": text}, nil, nil)
 			}
 		case "content_block_delta":
 			delta := asMap(data["delta"])
 			switch asString(delta["type"]) {
 			case "text_delta":
-				return false, e.chunk(map[string]any{"content": asString(delta["text"])}, nil, nil)
+				return false, e.chunk(map[string]any{"content": asStringValue(delta["text"])}, nil, nil)
 			case "thinking_delta":
-				return false, e.chunk(map[string]any{"reasoning_content": asString(delta["thinking"])}, nil, nil)
+				return false, e.chunk(map[string]any{"reasoning_content": asStringValue(delta["thinking"])}, nil, nil)
 			case "input_json_delta":
 				index, ok := tools[int(num(data["index"]))]
-				if ok && asString(delta["partial_json"]) != "" {
-					return false, e.chunk(map[string]any{"tool_calls": []any{map[string]any{"index": index, "function": map[string]any{"arguments": asString(delta["partial_json"])}}}}, nil, nil)
+				if ok && asStringValue(delta["partial_json"]) != "" {
+					return false, e.chunk(map[string]any{"tool_calls": []any{map[string]any{"index": index, "function": map[string]any{"arguments": asStringValue(delta["partial_json"])}}}}, nil, nil)
 				}
 			}
 		case "message_delta":
@@ -1153,7 +1153,7 @@ func (e *chatChunkEmitter) fromCompleted(target string, r io.Reader) error {
 	message := asMap(choice["message"])
 	delta := map[string]any{"role": "assistant"}
 	for _, key := range []string{"content", "reasoning_content"} {
-		if text := asString(message[key]); text != "" {
+		if text := asStringValue(message[key]); text != "" {
 			delta[key] = text
 		}
 	}
@@ -1186,9 +1186,9 @@ func anthropicMessageToChat(source map[string]any) map[string]any {
 		block := asMap(value)
 		switch asString(block["type"]) {
 		case "text":
-			text.WriteString(asString(block["text"]))
+			text.WriteString(asStringValue(block["text"]))
 		case "thinking":
-			thinking.WriteString(asString(block["thinking"]))
+			thinking.WriteString(asStringValue(block["thinking"]))
 		case "tool_use":
 			arguments, _ := json.Marshal(block["input"])
 			calls = append(calls, map[string]any{"id": block["id"], "type": "function", "function": map[string]any{"name": block["name"], "arguments": string(arguments)}})
@@ -1462,8 +1462,8 @@ func (s *responsesStream) consume(chunk map[string]any) error {
 		s.finish = reason
 	}
 	delta := asMap(choice["delta"])
-	reasoning := firstNonEmpty(asString(delta["reasoning_content"]), asString(delta["reasoning"]))
-	content := asString(delta["content"])
+	reasoning := firstNonEmptyStringValue(asStringValue(delta["reasoning_content"]), asStringValue(delta["reasoning"]))
+	content := asStringValue(delta["content"])
 	calls := anySlice(delta["tool_calls"])
 	if reasoning == "" && content == "" && len(calls) == 0 {
 		return nil
@@ -1540,7 +1540,7 @@ func (s *responsesStream) consume(chunk map[string]any) error {
 				return err
 			}
 		}
-		arguments := asString(function["arguments"])
+		arguments := asStringValue(function["arguments"])
 		if arguments == "" {
 			continue
 		}
@@ -1610,7 +1610,7 @@ func completedResponsesFromChat(chat []byte, model string, custom map[string]boo
 			continue
 		}
 		var decoded map[string]any
-		input := asString(item["arguments"])
+		input := asStringValue(item["arguments"])
 		if json.Unmarshal([]byte(input), &decoded) == nil {
 			if value, ok := decoded["input"].(string); ok {
 				input = value
@@ -1757,4 +1757,14 @@ func protocolErrorPayload(resp *http.Response) []byte {
 	default:
 		return nil
 	}
+}
+
+// firstNonEmptyStringValue selects payload text without trimming valid whitespace.
+func firstNonEmptyStringValue(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

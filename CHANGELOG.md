@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.42
+
+- Preserve spaces, newlines, and tabs in protocol-bridged text, reasoning,
+  and tool argument fragments; do not trim streaming payloads.
+- Add byte-exact whitespace regression tests for Responses, Messages,
+  and Gemini conversion paths, including fragmented shell commands.
+
 ## V3.41
 
 - Let Chat Completions requests with `store:false` participate in protocol

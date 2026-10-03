@@ -109,7 +109,7 @@ func (a *App) anthropicMessagesOpenAI(w http.ResponseWriter, incoming *http.Requ
 
 func anthropicMessagesRequestToOpenAI(body map[string]any, upstreamModel string, stream, includeStreamUsage bool) ([]byte, error) {
 	messages := make([]any, 0, 1)
-	if system := strings.TrimSpace(textContent(body["system"])); system != "" {
+	if system := textContent(body["system"]); system != "" {
 		messages = append(messages, map[string]any{"role": "system", "content": system})
 	}
 	incomingMessages, ok := body["messages"].([]any)
@@ -124,7 +124,7 @@ func anthropicMessagesRequestToOpenAI(body map[string]any, upstreamModel string,
 		role, _ := message["role"].(string)
 		switch role {
 		case "system":
-			content := strings.TrimSpace(textContent(message["content"]))
+			content := textContent(message["content"])
 			if content == "" {
 				return nil, errors.New("system message content must contain text")
 			}

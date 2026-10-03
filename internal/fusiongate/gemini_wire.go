@@ -39,7 +39,7 @@ func geminiRequestToChat(raw []byte) ([]byte, error) {
 				if thought, _ := part["thought"].(bool); thought {
 					continue
 				}
-				text.WriteString(asString(part["text"]))
+				text.WriteString(asStringValue(part["text"]))
 				if call := asMap(part["functionCall"]); call != nil {
 					name := asString(call["name"])
 					id := asString(call["id"])
@@ -80,7 +80,7 @@ func geminiRequestToChat(raw []byte) ([]byte, error) {
 				messages = append(messages, map[string]any{"role": "tool", "tool_call_id": id, "content": string(output)})
 				continue
 			}
-			if text := asString(part["text"]); text != "" {
+			if text := asStringValue(part["text"]); text != "" {
 				userParts = append(userParts, map[string]any{"type": "text", "text": text})
 			}
 			if inline := asMap(firstPresent(part, "inlineData", "inline_data")); inline != nil {
@@ -149,7 +149,7 @@ func geminiRequestToChat(raw []byte) ([]byte, error) {
 func geminiPartsText(parts any) string {
 	texts := make([]string, 0)
 	for _, value := range anySlice(parts) {
-		if text := asString(asMap(value)["text"]); text != "" {
+		if text := asStringValue(asMap(value)["text"]); text != "" {
 			texts = append(texts, text)
 		}
 	}
@@ -230,7 +230,7 @@ func geminiResponseFromChat(chat []byte, model string) ([]byte, error) {
 	choice := asMap(choices[0])
 	message := asMap(choice["message"])
 	parts := make([]any, 0)
-	if reasoning := firstNonEmpty(asString(message["reasoning_content"]), asString(message["reasoning"])); reasoning != "" {
+	if reasoning := firstNonEmptyStringValue(asStringValue(message["reasoning_content"]), asStringValue(message["reasoning"])); reasoning != "" {
 		parts = append(parts, map[string]any{"text": reasoning, "thought": true})
 	}
 	if text := textContent(message["content"]); text != "" {
@@ -238,7 +238,7 @@ func geminiResponseFromChat(chat []byte, model string) ([]byte, error) {
 	}
 	for _, value := range anySlice(message["tool_calls"]) {
 		function := asMap(asMap(value)["function"])
-		parts = append(parts, geminiCallPart(asString(function["name"]), asString(function["arguments"])))
+		parts = append(parts, geminiCallPart(asString(function["name"]), asStringValue(function["arguments"])))
 	}
 	if len(parts) == 0 {
 		parts = append(parts, map[string]any{"text": ""})
@@ -323,13 +323,13 @@ func writeGeminiStream(w http.ResponseWriter, r io.Reader, model, rid string, ss
 			if name := asString(function["name"]); name != "" {
 				item.name = name
 			}
-			item.arguments.WriteString(asString(function["arguments"]))
+			item.arguments.WriteString(asStringValue(function["arguments"]))
 		}
 		parts := make([]any, 0, 2)
-		if reasoning := firstNonEmpty(asString(delta["reasoning_content"]), asString(delta["reasoning"])); reasoning != "" {
+		if reasoning := firstNonEmptyStringValue(asStringValue(delta["reasoning_content"]), asStringValue(delta["reasoning"])); reasoning != "" {
 			parts = append(parts, map[string]any{"text": reasoning, "thought": true})
 		}
-		if text := asString(delta["content"]); text != "" {
+		if text := asStringValue(delta["content"]); text != "" {
 			parts = append(parts, map[string]any{"text": text})
 		}
 		if len(parts) == 0 {
