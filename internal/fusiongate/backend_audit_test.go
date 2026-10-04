@@ -123,7 +123,7 @@ func TestAuditModelManagementKeepsFallbackRoute(t *testing.T) {
 	}
 }
 
-func TestAuditModelManagementEnablesExistingRoute(t *testing.T) {
+func TestAuditModelManagementPreservesDisabledRoute(t *testing.T) {
 	a, p, k := auditApp(t)
 	id := insertTestRoute(t, a, p, "gpt-a", "gpt-a", "chat", 0)
 	auditExec(t, a, `UPDATE model_routes SET enabled=0 WHERE id=?`, id)
@@ -134,8 +134,8 @@ func TestAuditModelManagementEnablesExistingRoute(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT enabled FROM model_routes WHERE id=?`, id).Scan(&enabled); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 1 {
-		t.Fatal("selecting model left its existing route disabled")
+	if enabled != 0 {
+		t.Fatal("selecting Key model unexpectedly re-enabled its disabled route")
 	}
 }
 

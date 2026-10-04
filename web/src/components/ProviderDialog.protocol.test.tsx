@@ -164,7 +164,7 @@ describe("ProviderDialog passthrough", () => {
     await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7")?.body).toMatchObject({ website_url: "https://shop.example.com/topup" }))
   })
 
-  it("creates with the first Key and continues in the Key card", async () => {
+  it("creates with the first Key and continues in model configuration", async () => {
     setup()
     show(null)
     fireEvent.change(screen.getByRole("textbox", { name: "名称" }), { target: { value: "新渠道" } })
@@ -175,6 +175,7 @@ describe("ProviderDialog passthrough", () => {
     fireEvent.click(screen.getByRole("button", { name: "创建渠道" }))
     await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers")?.body).toMatchObject({ credential: "sk-first", name: "新渠道", website_url: "https://merchant.example/credit" }))
     await waitFor(() => expect(screen.getByRole("heading", { name: "管理渠道 · 新渠道" })).toBeTruthy())
-    expect(screen.getByRole("button", { name: "添加 Key" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "手动添加 / 批量添加模型" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "模型管理" }).getAttribute("aria-current")).toBe("page")
   })
 })

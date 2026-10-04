@@ -851,6 +851,10 @@ func (a *App) providerByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		a.providerBalanceHandler(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "manual-models" {
+		a.providerManualModels(w, r, id)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "model-management" {
 		if r.Method != http.MethodPatch {
 			fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH required")
@@ -1471,7 +1475,7 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			return
 		}
 		in.PublicName = strings.ToLower(strings.TrimSpace(in.PublicName))
-		in.UpstreamModel = strings.ToLower(strings.TrimSpace(in.UpstreamModel))
+		in.UpstreamModel = strings.TrimSpace(in.UpstreamModel)
 		if in.ProviderID < 1 || in.PublicName == "" || in.UpstreamModel == "" {
 			fail(w, http.StatusBadRequest, "invalid_request", "provider_id, public_name, and upstream_model are required")
 			return
@@ -1506,6 +1510,15 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 			return
 		}
 		defer tx.Rollback()
+		var duplicate int
+		if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(public_name)=? AND LOWER(upstream_model)=LOWER(?))`, in.ProviderID, in.PublicName, in.UpstreamModel).Scan(&duplicate); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		if duplicate != 0 {
+			fail(w, http.StatusConflict, "route_conflict", "this channel and upstream model are already in the target failover group")
+			return
+		}
 		var sortOrder int
 		if err := tx.QueryRow(`SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?`, in.PublicName).Scan(&sortOrder); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -1543,16 +1556,18 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodPatch:
 		var in struct {
-			Enabled    *bool   `json:"enabled"`
-			Priority   *int    `json:"priority"`
-			PublicName *string `json:"public_name"`
+			Enabled       *bool   `json:"enabled"`
+			Priority      *int    `json:"priority"`
+			PublicName    *string `json:"public_name"`
+			UpstreamModel *string `json:"upstream_model"`
+			Capabilities  *string `json:"capabilities"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
-		if in.Enabled == nil && in.Priority == nil && in.PublicName == nil {
-			fail(w, http.StatusBadRequest, "invalid_request", "enabled, priority, or public_name is required")
+		if in.Enabled == nil && in.Priority == nil && in.PublicName == nil && in.UpstreamModel == nil && in.Capabilities == nil {
+			fail(w, http.StatusBadRequest, "invalid_request", "enabled, priority, public_name, upstream_model, or capabilities is required")
 			return
 		}
 		if in.Priority != nil && *in.Priority < 0 {
@@ -1585,12 +1600,26 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		oldPublicName = strings.ToLower(strings.TrimSpace(oldPublicName))
+		if in.UpstreamModel != nil {
+			upstreamModel = strings.TrimSpace(*in.UpstreamModel)
+			if upstreamModel == "" {
+				fail(w, http.StatusBadRequest, "invalid_upstream_model", "upstream_model is required")
+				return
+			}
+		}
+		if in.Capabilities != nil {
+			*in.Capabilities = normalizeModelList(*in.Capabilities)
+			if *in.Capabilities == "" {
+				fail(w, http.StatusBadRequest, "invalid_capabilities", "capabilities is required")
+				return
+			}
+		}
 		if in.PublicName == nil {
 			newPublicName = oldPublicName
 		}
-		if newPublicName != oldPublicName {
+		if newPublicName != oldPublicName || in.UpstreamModel != nil {
 			var duplicate int
-			if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM model_routes WHERE id<>? AND public_name=? AND provider_id=? AND upstream_model=?)`, id, newPublicName, providerID, upstreamModel).Scan(&duplicate); err != nil {
+			if err := tx.QueryRowContext(r.Context(), `SELECT EXISTS(SELECT 1 FROM model_routes WHERE id<>? AND LOWER(public_name)=? AND provider_id=? AND LOWER(upstream_model)=LOWER(?))`, id, newPublicName, providerID, upstreamModel).Scan(&duplicate); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -1609,13 +1638,13 @@ func (a *App) routeByID(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			}
 		}
 		sortOrderExpr := `sort_order`
-		args := []any{maybeBool(in.Enabled), in.Priority, newPublicName}
+		args := []any{maybeBool(in.Enabled), in.Priority, newPublicName, upstreamModel, in.Capabilities}
 		if newPublicName != oldPublicName {
 			sortOrderExpr = `(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?)`
 			args = append(args, newPublicName)
 		}
 		args = append(args, now(), id)
-		query := `UPDATE model_routes SET enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),public_name=?,sort_order=` + sortOrderExpr + `,updated_at=? WHERE id=?`
+		query := `UPDATE model_routes SET enabled=COALESCE(?,enabled),priority=COALESCE(?,priority),public_name=?,upstream_model=?,capabilities=COALESCE(?,capabilities),sort_order=` + sortOrderExpr + `,updated_at=? WHERE id=?`
 		res, err := tx.ExecContext(r.Context(), query, args...)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())

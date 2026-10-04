@@ -87,10 +87,13 @@ type providerBackupKey struct {
 }
 
 type providerBackupKeyModel struct {
-	Model        string `json:"model"`
-	DisplayName  string `json:"display_name,omitempty"`
-	Capabilities string `json:"capabilities,omitempty"`
-	Enabled      *bool  `json:"enabled,omitempty"`
+	Model              string `json:"model"`
+	DisplayName        string `json:"display_name,omitempty"`
+	Capabilities       string `json:"capabilities,omitempty"`
+	Enabled            *bool  `json:"enabled,omitempty"`
+	ModelSource        string `json:"model_source,omitempty"`
+	ManualDisplayName  string `json:"manual_display_name,omitempty"`
+	ManualCapabilities string `json:"manual_capabilities,omitempty"`
 }
 
 type providerBackupRoute struct {
@@ -254,7 +257,7 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 				fail(w, http.StatusInternalServerError, "credential_error", "could not decrypt a provider API key")
 				return
 			}
-			modelRows, queryErr := tx.QueryContext(r.Context(), `SELECT model,display_name,capabilities,enabled FROM provider_api_key_models WHERE provider_key_id=? ORDER BY model`, pendingKey.ID)
+			modelRows, queryErr := tx.QueryContext(r.Context(), `SELECT model,display_name,capabilities,enabled,model_source,manual_display_name,manual_capabilities FROM provider_api_key_models WHERE provider_key_id=? ORDER BY model`, pendingKey.ID)
 			if queryErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", queryErr.Error())
 				return
@@ -262,7 +265,7 @@ WHERE k.provider_id=? ORDER BY k.sort_order,k.id`, item.ID)
 			for modelRows.Next() {
 				var model providerBackupKeyModel
 				var enabled int
-				if err := modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities, &enabled); err != nil {
+				if err := modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities, &enabled, &model.ModelSource, &model.ManualDisplayName, &model.ManualCapabilities); err != nil {
 					modelRows.Close()
 					fail(w, http.StatusInternalServerError, "database_error", err.Error())
 					return
@@ -530,13 +533,22 @@ func validateProviderBackup(backup *providerBackupFile, cfg Config) error {
 			seenModels := map[string]bool{}
 			for modelIndex := range key.Models {
 				model := &key.Models[modelIndex]
-				model.Model = normalizeProviderKeyModel(model.Model)
+				model.Model = strings.TrimSpace(model.Model)
+				model.ModelSource = strings.TrimSpace(model.ModelSource)
+				if model.ModelSource == "" {
+					model.ModelSource = "discovered"
+				}
+				if model.ModelSource != "manual" && model.ModelSource != "discovered" && model.ModelSource != "both" {
+					return fmt.Errorf("provider %q contains invalid model_source", provider.Name)
+				}
+				model.ManualDisplayName = strings.TrimSpace(model.ManualDisplayName)
+				model.ManualCapabilities = strings.TrimSpace(model.ManualCapabilities)
 				model.DisplayName = strings.TrimSpace(model.DisplayName)
 				model.Capabilities = strings.TrimSpace(model.Capabilities)
-				if model.Model == "" || seenModels[model.Model] {
+				if model.Model == "" || seenModels[normalizeProviderKeyModel(model.Model)] {
 					return fmt.Errorf("provider %q contains an empty or duplicate discovered model", provider.Name)
 				}
-				seenModels[model.Model] = true
+				seenModels[normalizeProviderKeyModel(model.Model)] = true
 				if model.Capabilities == "" {
 					model.Capabilities = "chat,stream"
 				}
@@ -748,7 +760,7 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 					if model.Enabled != nil {
 						modelEnabled = *model.Enabled
 					}
-					if _, insertErr := tx.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,?)`, keyID, model.Model, model.DisplayName, model.Capabilities, now(), boolInt(modelEnabled)); insertErr != nil {
+					if _, insertErr := tx.Exec(`INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled,model_source,manual_display_name,manual_capabilities) VALUES(?,?,?,?,?,?,?,?,?)`, keyID, model.Model, model.DisplayName, model.Capabilities, now(), boolInt(modelEnabled), model.ModelSource, model.ManualDisplayName, model.ManualCapabilities); insertErr != nil {
 						fail(w, http.StatusInternalServerError, "database_error", insertErr.Error())
 						return
 					}

@@ -419,7 +419,7 @@ func TestImportModelsEndpointOnlyAddsCheckedModels(t *testing.T) {
 	}
 }
 
-func TestManualRouteLowercasesPublicAndUpstreamModel(t *testing.T) {
+func TestManualRouteNormalizesPublicAndPreservesUpstreamModel(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
@@ -438,7 +438,7 @@ func TestManualRouteLowercasesPublicAndUpstreamModel(t *testing.T) {
 	if err := a.db.QueryRow(`SELECT public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID).Scan(&publicName, &upstreamModel); err != nil {
 		t.Fatal(err)
 	}
-	if publicName != "gpt-custom" || upstreamModel != "gpt-custom" {
+	if publicName != "gpt-custom" || upstreamModel != "GPT-Custom" {
 		t.Fatalf("public=%q upstream=%q", publicName, upstreamModel)
 	}
 }

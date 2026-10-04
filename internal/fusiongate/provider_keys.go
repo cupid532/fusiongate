@@ -77,6 +77,7 @@ type ProviderKeyModel struct {
 	LastCheckedAt string   `json:"last_checked_at,omitempty"`
 	PublicNames   []string `json:"public_names,omitempty"`
 	RouteStatus   string   `json:"route_status,omitempty"`
+	ModelSource   string   `json:"model_source"`
 }
 
 type selectedProviderKey struct {
@@ -638,7 +639,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			return
 		}
 		for i := range out {
-			modelRows, modelErr := a.db.Query(`SELECT m.model,m.display_name,m.capabilities,m.enabled,COALESCE(h.status,''),COALESCE(h.error,''),COALESCE(h.latency_ms,0),COALESCE(h.first_byte_ms,0),COALESCE(h.last_checked_at,'') FROM (SELECT model,display_name,capabilities,enabled FROM provider_api_key_models WHERE provider_key_id=? UNION ALL SELECT h.model,'','chat,stream',1 FROM provider_api_key_model_health h WHERE h.provider_key_id=? AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=h.provider_key_id AND km.model=h.model)) m LEFT JOIN provider_api_key_model_health h ON h.provider_key_id=? AND h.model=m.model ORDER BY m.model`, out[i].ID, out[i].ID, out[i].ID)
+			modelRows, modelErr := a.db.Query(`SELECT m.model,m.display_name,m.capabilities,m.enabled,m.model_source,COALESCE(h.status,''),COALESCE(h.error,''),COALESCE(h.latency_ms,0),COALESCE(h.first_byte_ms,0),COALESCE(h.last_checked_at,'') FROM (SELECT model,display_name,capabilities,enabled,model_source FROM provider_api_key_models WHERE provider_key_id=? UNION ALL SELECT h.model,'','chat,stream',1,'discovered' FROM provider_api_key_model_health h WHERE h.provider_key_id=? AND NOT EXISTS(SELECT 1 FROM provider_api_key_models km WHERE km.provider_key_id=h.provider_key_id AND lower(km.model)=lower(h.model))) m LEFT JOIN provider_api_key_model_health h ON h.provider_key_id=? AND h.model=m.model ORDER BY m.model`, out[i].ID, out[i].ID, out[i].ID)
 			if modelErr != nil {
 				fail(w, http.StatusInternalServerError, "database_error", modelErr.Error())
 				return
@@ -647,7 +648,7 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			for modelRows.Next() {
 				var model ProviderKeyModel
 				var modelEnabled int
-				if modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities, &modelEnabled, &model.HealthStatus, &model.HealthError, &model.LatencyMS, &model.FirstByteMS, &model.LastCheckedAt) == nil {
+				if modelRows.Scan(&model.Model, &model.DisplayName, &model.Capabilities, &modelEnabled, &model.ModelSource, &model.HealthStatus, &model.HealthError, &model.LatencyMS, &model.FirstByteMS, &model.LastCheckedAt) == nil {
 					model.Enabled = strBool(modelEnabled)
 					if model.Enabled {
 						out[i].EnabledModels++
@@ -918,7 +919,17 @@ func (a *App) saveProviderModelManagementTx(ctx context.Context, tx *sql.Tx, pro
 		}
 		var e error
 		for m := range selected {
-			if _, e = tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,enabled,discovered_at) VALUES(?,?,?,'chat,stream',1,?) ON CONFLICT(provider_key_id,model) DO UPDATE SET enabled=1`, item.KeyID, m, m, now()); e != nil {
+			// Preserve the original spelling and manual metadata of existing rows.
+			var inventoryName string
+			err := tx.QueryRowContext(ctx, `SELECT model FROM provider_api_key_models WHERE provider_key_id=? AND lower(model)=?`, item.KeyID, m).Scan(&inventoryName)
+			if errors.Is(err, sql.ErrNoRows) {
+				_, e = tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,enabled,discovered_at,model_source,manual_display_name,manual_capabilities) VALUES(?,?,?,'chat,stream',1,?,'manual',?,'chat,stream')`, item.KeyID, m, m, now(), m)
+			} else if err != nil {
+				return statuses, err
+			} else {
+				_, e = tx.ExecContext(ctx, `UPDATE provider_api_key_models SET enabled=1 WHERE provider_key_id=? AND model=?`, item.KeyID, inventoryName)
+			}
+			if e != nil {
 				return statuses, e
 			}
 			if _, e = tx.ExecContext(ctx, `DELETE FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=?`, item.KeyID, m); e != nil {
@@ -962,6 +973,7 @@ func (a *App) syncProviderModelRoutes(ctx context.Context, tx *sql.Tx, providerI
 		return 0, err
 	}
 	capabilities := map[string]string{}
+	wireNames := map[string]string{}
 	rows, err = tx.QueryContext(ctx, `SELECT m.provider_key_id,m.model,m.enabled,m.capabilities FROM provider_api_key_models m JOIN provider_api_keys k ON k.id=m.provider_key_id WHERE k.provider_id=?`, providerID)
 	if err != nil {
 		return 0, err
@@ -974,7 +986,11 @@ func (a *App) syncProviderModelRoutes(ctx context.Context, tx *sql.Tx, providerI
 			rows.Close()
 			return 0, err
 		}
+		wireName := model
 		model = normalizeProviderKeyModel(model)
+		if wireNames[model] == "" {
+			wireNames[model] = wireName
+		}
 		keys[id].inventory[model] = strBool(enabled)
 		if enabled != 0 {
 			capabilities[model] = mergeCapabilities(capabilities[model], caps)
@@ -1038,14 +1054,14 @@ func (a *App) syncProviderModelRoutes(ctx context.Context, tx *sql.Tx, providerI
 			if _, err := tx.ExecContext(ctx, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?)`, providerID, model, model); err != nil {
 				return 0, err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE model_routes SET enabled=1,capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, capabilities[model], stamp, providerID, model); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, capabilities[model], stamp, providerID, model); err != nil {
 				return 0, err
 			}
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
 SELECT ?,?,?,?,1,0,(SELECT COALESCE(MAX(sort_order),-1)+1 FROM model_routes WHERE public_name=?),0,0,?,?
 WHERE NOT EXISTS(SELECT 1 FROM model_routes WHERE provider_id=? AND LOWER(upstream_model)=?)
-AND NOT EXISTS(SELECT 1 FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?))`, model, providerID, model, capabilities[model], model, stamp, stamp, providerID, model, providerID, model, model)
+AND NOT EXISTS(SELECT 1 FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?))`, model, providerID, wireNames[model], capabilities[model], model, stamp, stamp, providerID, model, providerID, model, model)
 		if err != nil {
 			return 0, err
 		}
@@ -1055,45 +1071,9 @@ AND NOT EXISTS(SELECT 1 FROM model_route_exclusions WHERE provider_id=? AND (LOW
 		}
 		added += int(n)
 	}
-	type routeModel struct {
-		id                   int64
-		publicName, upstream string
-	}
-	rows, err = tx.QueryContext(ctx, `SELECT id,public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID)
-	if err != nil {
-		return 0, err
-	}
-	var existing []routeModel
-	for rows.Next() {
-		var route routeModel
-		if err := rows.Scan(&route.id, &route.publicName, &route.upstream); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		existing = append(existing, route)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return 0, err
-	}
-	if err := rows.Close(); err != nil {
-		return 0, err
-	}
-	for _, route := range existing {
-		if supports(route.upstream) {
-			continue
-		}
-		model := normalizeProviderKeyModel(route.upstream)
-		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, route.publicName, model, stamp); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM model_routes WHERE id=?`, route.id); err != nil {
-			return 0, err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM model_aliases WHERE target_model=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, route.publicName, route.publicName); err != nil {
-			return 0, err
-		}
-	}
+	// Key permission changes must not destroy mapping configuration or aliases.
+	// Unsupported routes remain configured but resolveProviderKeysBatch naturally
+	// gives them no eligible Key until an administrator restores permission.
 	return added, nil
 }
 

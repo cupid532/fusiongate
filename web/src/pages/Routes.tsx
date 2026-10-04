@@ -13,6 +13,7 @@ import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
 import { ModelAliasManager } from "@/components/ModelAliasManager"
 import { PricingDialog } from "@/components/PricingDialog"
 import { RouteDialog } from "@/components/RouteDialog"
+import { ModelGroupRenameDialog } from "@/components/ModelGroupRenameDialog"
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
 import { StatCard } from "@/components/ui/stat-card"
 
@@ -65,7 +66,7 @@ function InlineModelEditor({ value, disabled, onSave }: { value: string; disable
     if (!next) { setDraft(value); return }
     if (next === value) { setEditing(false); return }
     setSaving(true)
-    try { await onSave(next); setEditing(false) } finally { setSaving(false) }
+    try { await onSave(next); setEditing(false) } catch { /* The mutation error is displayed by the parent; keep the draft. */ } finally { setSaving(false) }
   }
 
   if (!editing) {
@@ -94,6 +95,10 @@ export function Routes() {
   const [pricingOpen, setPricingOpen] = useState(false)
   const [pricingModel, setPricingModel] = useState("")
   const [routeOpen, setRouteOpen] = useState(false)
+  const [editingRoute, setEditingRoute] = useState<Route | null>(null)
+  const [initialModel, setInitialModel] = useState("")
+  const [newGroup, setNewGroup] = useState(false)
+  const [renameModel, setRenameModel] = useState("")
   const { data: routes = [], isLoading } = useQuery({ queryKey: ["routes"], queryFn: () => api<Route[]>("/api/admin/routes") })
   const { data: aliases = [] } = useQuery({ queryKey: ["model-aliases"], queryFn: () => api<ModelAlias[]>("/api/admin/model-aliases") })
   // Read-only: the single strategy cannot be changed from the console, but the
@@ -137,7 +142,7 @@ export function Routes() {
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
       <div className="mb-6 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div><h1 className="text-2xl font-bold tracking-tight">模型路由</h1><p className="mt-1 text-sm text-muted-foreground">按规范模型组管理调用名称、渠道成员与健康感知的请求内故障转移。</p></div>
-        <div className="flex flex-wrap items-center gap-2"><div className="relative"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input aria-label="搜索模型路由" value={q} onChange={(event) => setQ(event.target.value)} placeholder="搜索模型、别名、渠道" className="h-9 w-60 pl-8 text-xs" /></div><Button onClick={() => setRouteOpen(true)}><Plus />添加渠道成员</Button></div>
+        <div className="flex flex-wrap items-center gap-2"><div className="relative"><Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" /><Input aria-label="搜索模型路由" value={q} onChange={(event) => setQ(event.target.value)} placeholder="搜索模型、别名、渠道" className="h-9 w-60 pl-8 text-xs" /></div><Button variant="outline" onClick={() => { setEditingRoute(null); setInitialModel(""); setNewGroup(false); setRouteOpen(true) }}><Plus />添加渠道成员</Button><Button onClick={() => { setEditingRoute(null); setInitialModel(""); setNewGroup(true); setRouteOpen(true) }}><Plus />新建请求模型</Button></div>
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -189,7 +194,7 @@ export function Routes() {
                   {route.routing_warning ? <span className="text-xs text-amber-700 dark:text-amber-400">{route.routing_warning}</span> : eligible === 1 ? <span className="text-xs text-amber-700 dark:text-amber-400">单候选：无备用渠道，无法故障转移</span> : eligible === 0 ? <span className="text-xs text-amber-700 dark:text-amber-400">当前没有可用候选渠道</span> : null}
                   {route.input_price_micros || route.output_price_micros ? <Badge variant={route.pricing_source === "manual" ? "warning" : "success"}>输入 {price(route.input_price_micros)} · 输出 {price(route.output_price_micros)} · {pricingSource(route.pricing_source)}</Badge> : <Badge variant="neutral">未定价</Badge>}
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => { setPricingModel(name); setPricingOpen(true) }}><Coins />定价</Button>
+                <div className="flex flex-wrap gap-1"><Button variant="outline" size="sm" onClick={() => { setEditingRoute(null); setInitialModel(name); setNewGroup(false); setRouteOpen(true) }}><Plus />添加成员</Button><Button variant="outline" size="sm" onClick={() => setRenameModel(name)}><Pencil />重命名</Button><Button variant="ghost" size="sm" onClick={() => { setPricingModel(name); setPricingOpen(true) }}><Coins />定价</Button></div>
               </div>
             </div>
             <div className="divide-y">{list.map((item, index) => {
@@ -220,6 +225,7 @@ export function Routes() {
                     <option value="">移入其他组…</option>
                     {modelNames.filter((model) => model !== name).map((model) => <option key={model} value={model}>{model}</option>)}
                   </select>
+                  <Button variant="outline" size="sm" onClick={() => { setEditingRoute(item); setInitialModel(""); setNewGroup(false); setRouteOpen(true) }} aria-label={`编辑路由 ${name} / ${item.upstream_model}`}><Pencil />编辑</Button>
                   <Button variant={item.enabled ? "outline" : "ghost"} size="sm" onClick={() => updateRoute.mutate({ id: item.id, patch: { enabled: !item.enabled } })}>{item.enabled ? "路由已启用" : "路由已停用"}</Button>
                   <Button variant="ghost" size="icon" onClick={async () => { if (await confirmDelete(`路由「${name} / ${item.upstream_model}」`)) remove.mutate(item.id) }} aria-label="删除路由"><Trash2 className="text-destructive" /></Button>
                 </div>
@@ -229,7 +235,8 @@ export function Routes() {
           </CardContent></Card>
         })}</div>
       )}
-      <RouteDialog open={routeOpen} onOpenChange={setRouteOpen} />
+      <RouteDialog open={routeOpen} onOpenChange={setRouteOpen} route={editingRoute} initialModel={initialModel} newGroup={newGroup} />
+      {renameModel && <ModelGroupRenameDialog model={renameModel} onClose={() => setRenameModel("")} />}
       <PricingDialog open={pricingOpen} onOpenChange={setPricingOpen} model={pricingModel} routes={selectedRoutes} />
       {updateRoute.error && <div role="alert" className="fixed bottom-4 right-4 max-w-md rounded-lg border border-destructive/30 bg-background px-4 py-3 text-sm text-destructive shadow-lg">{updateRoute.error.message}</div>}
     </motion.div>

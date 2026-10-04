@@ -806,6 +806,9 @@ func (a *App) migrate(ctx context.Context) error {
 		{"provider_api_keys", "model_policy", "TEXT NOT NULL DEFAULT 'fallback'"},
 		{"provider_api_keys", "model_allowlist", "TEXT NOT NULL DEFAULT ''"},
 		{"provider_api_key_models", "enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"provider_api_key_models", "model_source", "TEXT NOT NULL DEFAULT 'discovered'"},
+		{"provider_api_key_models", "manual_display_name", "TEXT NOT NULL DEFAULT ''"},
+		{"provider_api_key_models", "manual_capabilities", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "gateway_request_id", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "attempt", "INTEGER NOT NULL DEFAULT 1"},
 		{"request_ledger", "retry_reason", "TEXT NOT NULL DEFAULT ''"},
@@ -1199,6 +1202,8 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/health-checks/", a.admin(a.healthCheckByID))
 	mux.HandleFunc("/api/admin/provider-groups", a.admin(a.providerGroups))
 	mux.HandleFunc("/api/admin/provider-groups/", a.admin(a.providerGroupByID))
+	mux.HandleFunc("/api/admin/model-groups/rename", a.admin(a.renameModelGroup))
+	mux.HandleFunc("/api/admin/routes/preview", a.admin(a.routeModelPreview))
 	mux.HandleFunc("/api/admin/routes", a.admin(a.routes))
 	mux.HandleFunc("/api/admin/routes/reorder", a.admin(a.reorderRoutes))
 	mux.HandleFunc("/api/admin/routes/", a.admin(a.routeByID))

@@ -484,6 +484,7 @@ export interface RoutingSettings {
 export interface ProviderKeyModel {
   model: string
   display_name: string
+  model_source?: "manual" | "discovered" | "both"
   capabilities: string
   enabled: boolean
   health_status?: string

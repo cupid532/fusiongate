@@ -1,5 +1,19 @@
 # Changelog
 
+## V3.44
+
+- Add manual upstream model inventory editing, batch input and explicit per-Key
+  assignment without requiring an upstream model-list endpoint. Preserve manual
+  metadata and model enablement during subsequent discovery and backup restore.
+- Complete request-model route editing, including upstream model names and
+  capabilities, and preview supported versus currently available credentials.
+- Rename an entire request-model group atomically with optional old-name alias
+  retention and access-key permission safeguards.
+- Retain route configuration when Key model permissions are removed; explain
+  unavailable members instead of silently deleting hand-maintained mappings.
+- Add console workflows for creating models, copying inventory between Keys,
+  inspecting rename impact, and distinguishing manual versus discovered models.
+
 ## V3.43
 
 - Keep authentication-rejected credentials isolated for the entire inference

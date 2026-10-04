@@ -186,7 +186,18 @@ export const providerKeysApi = {
   discover: (providerId: number, keyId: number) => api(`/api/admin/providers/${providerId}/keys/${keyId}/discover-models`, { method: "POST" }),
 }
 
+export type ManualModelRequest = {
+  entries: Array<{ model: string; display_name?: string; capabilities?: string }>
+  key_ids: number[]
+  original_model?: string
+  sync_routes?: boolean
+  create_routes?: boolean
+  public_name?: string
+  enabled?: boolean
+}
+
 export const providerModelsApi = {
+  manual: (providerId: number, body: ManualModelRequest) => api(`/api/admin/providers/${providerId}/manual-models`, { method: "POST", body: JSON.stringify(body) }),
   listKeys: providerKeysApi.list,
   patchKey: providerKeysApi.patch,
   discover: providerKeysApi.discover,

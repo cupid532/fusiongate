@@ -282,7 +282,7 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 	}
 	defer tx.Rollback()
 	previous := map[string]int{}
-	previousModels := map[string]struct{}{}
+	previousNames := map[string]string{}
 	rows, err := tx.QueryContext(ctx, `SELECT model,enabled FROM provider_api_key_models WHERE provider_key_id=?`, keyID)
 	if err != nil {
 		return err
@@ -292,13 +292,10 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 		var enabled int
 		if rows.Scan(&model, &enabled) == nil {
 			previous[strings.ToLower(model)] = enabled
-			previousModels[strings.ToLower(model)] = struct{}{}
+			previousNames[strings.ToLower(model)] = model
 		}
 	}
 	_ = rows.Close()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM provider_api_key_models WHERE provider_key_id=?`, keyID); err != nil {
-		return err
-	}
 	seen := map[string]bool{}
 	for _, model := range models {
 		id := providerInventoryModel(model)
@@ -306,7 +303,7 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 			continue
 		}
 		var excluded int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, id).Scan(&excluded); err == nil && excluded > 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_api_key_model_exclusions WHERE provider_key_id=? AND lower(model)=lower(?)`, keyID, id).Scan(&excluded); err == nil && excluded > 0 && previousNames[strings.ToLower(id)] == "" {
 			continue
 		}
 		seen[id] = true
@@ -316,21 +313,15 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 			// must explicitly enable models for this Key.
 			enabled = 0
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,?,?,?)`, keyID, id, model.DisplayName, model.Capabilities, stamp, enabled); err != nil {
+		if original := previousNames[strings.ToLower(id)]; original != "" {
+			id = original
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled,model_source) VALUES(?,?,?,?,?,?,'discovered') ON CONFLICT(provider_key_id,model) DO UPDATE SET display_name=CASE WHEN manual_display_name<>'' THEN manual_display_name ELSE excluded.display_name END,capabilities=CASE WHEN manual_capabilities<>'' THEN manual_capabilities ELSE excluded.capabilities END,discovered_at=excluded.discovered_at,model_source=CASE WHEN model_source IN ('manual','both') THEN 'both' ELSE 'discovered' END`, keyID, id, model.DisplayName, model.Capabilities, stamp, enabled); err != nil {
 			return err
 		}
 	}
-	// Keep manually added and previously discovered models that the upstream omits;
-	// users can remove them explicitly from the per-Key inventory.
-	for model := range previousModels {
-		if seen[model] {
-			continue
-		}
-		enabled := previous[model]
-		if _, err := tx.ExecContext(ctx, `INSERT INTO provider_api_key_models(provider_key_id,model,display_name,capabilities,discovered_at,enabled) VALUES(?,?,?,'chat,stream',?,?)`, keyID, model, model, stamp, enabled); err != nil {
-			return err
-		}
-	}
+	// Upserts retain omitted models, original spelling, manual metadata and all
+	// enable/disable choices. Discovery is not permission granting or generation.
 	if _, err := tx.ExecContext(ctx, `UPDATE provider_api_keys SET status='healthy',last_error='',last_tested_at=?,last_test_latency_ms=?,updated_at=? WHERE id=?`, stamp, latency, stamp, keyID); err != nil {
 		return err
 	}

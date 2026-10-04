@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { Check, RefreshCw, Save, Search, Trash2 } from "lucide-react"
+import { Check, Copy, Pencil, Plus, RefreshCw, Save, Search, Trash2 } from "lucide-react"
+import { ManualModelDialog } from "@/components/ManualModelDialog"
 import { providerModelsApi } from "@/lib/api"
 import { refreshProviderViews } from "@/lib/provider-management"
 import type { ProviderKey, ProviderKeyModel } from "@/lib/types"
@@ -57,6 +58,10 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange, 
   const [error, setError] = useState("")
   const [drafts, setDrafts] = useState<Record<number, Draft>>({})
   const [notice, setNotice] = useState("")
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualBusy, setManualBusy] = useState(false)
+  const [editingModel, setEditingModel] = useState<ProviderKeyModel | null>(null)
+  const [copyModels, setCopyModels] = useState("")
   const previousKeys = useRef<ProviderKey[]>([])
 
   const { data: keys = EMPTY_KEYS, isLoading, isError, error: loadError } = useQuery({ queryKey: ["provider-keys", providerId], queryFn: ({ signal }) => providerModelsApi.listKeys(providerId, signal), enabled: open })
@@ -69,6 +74,9 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange, 
     setDrafts({})
     previousKeys.current = []
     setNotice("")
+    setManualOpen(false)
+    setEditingModel(null)
+    setCopyModels("")
   }, [providerId])
 
   useEffect(() => {
@@ -120,7 +128,8 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange, 
     onError: (reason) => setError(reason instanceof Error ? reason.message : "保存模型设置失败"),
   })
   const discover = useMutation({ mutationFn: (keyId: number) => providerModelsApi.discover(providerId, keyId), onSuccess: refresh, onError: (reason) => setError(reason instanceof Error ? reason.message : "识别模型失败") })
-  const busy = save.isPending || discover.isPending
+  const busy = save.isPending || discover.isPending || manualBusy
+  const openManual = (model: ProviderKeyModel | null = null, copied = "") => { setEditingModel(model); setCopyModels(copied); setManualOpen(true) }
   useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
 
   const setModels = (key: ProviderKey, selected: string[]) => updateDraft(key, (value) => ({ ...value, models: new Set(selected), removed: new Set([...value.removed].filter((model) => !selected.includes(model))) }))
@@ -137,7 +146,8 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange, 
   const selectedInInventory = draft ? allModels.filter((model) => draft.models.has(model.model)).length : 0
 
   return <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <p className="text-xs text-muted-foreground">库存是上游发现的模型；启用模型是此 Key 允许使用的清单；公共路由是客户端可访问的模型名。修改清单后点击“保存模型配置”，识别模型不等于检活。</p>
+      <p className="text-xs text-muted-foreground">手动添加或上游识别均可建立模型清单；启用模型是此 Key 的权限；请求模型名是客户端调用入口。识别不等于检活，移除权限保留路由配置。</p>
+      <div className="flex flex-wrap gap-2"><Button size="sm" onClick={() => openManual()} disabled={!selectedKey || dirty || busy}><Plus />手动添加 / 批量添加模型</Button><Button size="sm" variant="outline" onClick={() => openManual(null, [...(draft?.models ?? [])].join("\n"))} disabled={!selectedKey || dirty || busy || !draft?.models.size}><Copy />复制已选模型到其他 Key</Button>{dirty && <span className="self-center text-xs text-amber-600">请先保存模型开关草稿，再添加或编辑模型。</span>}</div>
       {notice && <p role="status" className="text-xs text-emerald-600">{notice}</p>}
       {error && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
       {isLoading ? <div className="py-8 text-center text-sm text-muted-foreground">加载中…</div> : isError ? <div role="alert" className="py-8 text-center text-sm text-destructive">{loadError instanceof Error ? loadError.message : "读取模型失败"}</div> : keys.length === 0 ? <div className="py-8 text-center text-sm text-muted-foreground">还没有 API Key，请先在 Key 管理中添加。</div> : <div className="grid min-h-0 flex-1 gap-4 md:grid-cols-[13rem_minmax(0,1fr)]">
@@ -161,7 +171,7 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange, 
           </div>
           {models.length === 0 ? <div className="p-8 text-center text-sm text-muted-foreground">
             {allModels.length === 0
-              ? "尚无模型，请先识别该 Key 的模型。"
+              ? "尚无模型，可手动添加，也可识别该 Key 的模型。"
               : modelFilter === "selected" && selectedInInventory === 0
                 // Distinguish "you have selected nothing" from "your search
                 // matched nothing" — otherwise an empty selection reads as a
@@ -170,10 +180,11 @@ export function ProviderModelsPanel({ open, providerId, onClose, onDirtyChange, 
                 : modelFilter === "selected"
                   ? <>已选模型中没有匹配「{search.trim()}」的结果。</>
                   : "没有匹配的模型。"}
-          </div> : <div className="divide-y">{models.map((model) => <div key={model.model} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30"><Switch checked={draft.models.has(model.model)} disabled={busy} onCheckedChange={(enabled) => toggleModel(selectedKey, model, enabled)} aria-label={`${keyLabel(selectedKey)} 模型 ${model.model}`} /><div className="min-w-0 flex-1"><div className="truncate font-mono text-sm" title={model.model}>{model.display_name || model.model}</div>{model.display_name && model.display_name !== model.model && <div className="truncate font-mono text-[11px] text-muted-foreground">{model.model}</div>}{model.health_error && <div className="break-words text-xs text-destructive">{model.health_error}</div>}{model.route_status === "routed" ? <div className="truncate text-xs text-emerald-600">公共路由：{model.public_names?.join(", ")}</div> : <div className="text-xs text-muted-foreground">尚未接入公共路由</div>}</div><div className="hidden shrink-0 text-right text-xs text-muted-foreground sm:block">{model.last_checked_at ? `${model.latency_ms} ms` : "尚未检活"}</div>{statusBadge(model.health_status)}<Button variant="ghost" size="icon" className="h-8 w-8" title="删除此模型" aria-label={`删除模型 ${model.model}`} disabled={busy} onClick={() => updateDraft(selectedKey, (value) => { const models = new Set(value.models); models.delete(model.model); const removed = new Set(value.removed); removed.add(model.model); return { ...value, models, removed } })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></div>)}</div>}
+          </div> : <div className="divide-y">{models.map((model) => <div key={model.model} className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/30"><Switch checked={draft.models.has(model.model)} disabled={busy} onCheckedChange={(enabled) => toggleModel(selectedKey, model, enabled)} aria-label={`${keyLabel(selectedKey)} 模型 ${model.model}`} /><div className="min-w-0 flex-1"><div className="truncate font-mono text-sm" title={model.model}>{model.display_name || model.model}</div>{model.display_name && model.display_name !== model.model && <div className="truncate font-mono text-[11px] text-muted-foreground">{model.model}</div>}{model.health_error && <div className="break-words text-xs text-destructive">{model.health_error}</div>}{model.route_status === "routed" ? <div className="truncate text-xs text-emerald-600">公共路由：{model.public_names?.join(", ")}</div> : <div className="text-xs text-muted-foreground">尚未接入公共路由</div>}</div><div className="hidden shrink-0 text-right text-xs text-muted-foreground sm:block">{model.last_checked_at ? `${model.latency_ms} ms` : "尚未检活"}</div><Badge variant="outline">{model.model_source === "manual" ? "手动添加" : model.model_source === "both" ? "手动 + 发现" : "上游发现"}</Badge>{statusBadge(model.health_status)}<Button variant="ghost" size="icon" className="h-8 w-8" title="编辑上游模型" aria-label={`编辑模型 ${model.model}`} disabled={busy || dirty} onClick={() => openManual(model)}><Pencil className="h-3.5 w-3.5" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" title="删除此模型" aria-label={`删除模型 ${model.model}`} disabled={busy} onClick={() => updateDraft(selectedKey, (value) => { const models = new Set(value.models); models.delete(model.model); const removed = new Set(value.removed); removed.add(model.model); return { ...value, models, removed } })}><Trash2 className="h-3.5 w-3.5 text-destructive" /></Button></div>)}</div>}
         </>}</section>
       </div>}
-      {onClose && <div className="flex justify-end"><Button variant="outline" onClick={onClose}>关闭</Button></div>}
+      <ManualModelDialog open={manualOpen} onOpenChange={setManualOpen} providerId={providerId} keys={keys} selectedKeyId={selectedKeyId} editing={editingModel} initialModels={copyModels} onBusyChange={setManualBusy} />
+      {onClose && <div className="flex justify-end"><Button variant="outline" disabled={busy} onClick={onClose}>关闭</Button></div>}
   </div>
 }
 

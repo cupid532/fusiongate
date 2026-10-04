@@ -126,7 +126,7 @@ export function ProviderDialog({
       else if (created) setActive({ id, name: submitted.name, type: submitted.type, base_url: submitted.baseURL, website_url: submitted.websiteURL, priority: submitted.priority, model_count: 0 } as Provider)
       if (created) {
         onCreated?.({ id, name: submitted.name })
-        setSection("keys")
+        setSection("models")
         setInitialKey("")
       }
       const baseline = latest ? providerForm(latest) : { ...submitted, name: submitted.name.trim(), baseURL: submitted.baseURL.trim(), websiteURL: submitted.websiteURL.trim() }

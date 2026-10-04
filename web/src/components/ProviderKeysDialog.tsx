@@ -63,7 +63,7 @@ export function ProviderKeysPanel({ open, providerId, onManageModels, onClose, o
   const reportError = (reason: unknown) => setError(reason instanceof Error ? reason.message : "Key 操作失败")
   const add = useMutation({
     mutationFn: () => providerKeysApi.create(providerId, { api_key: newKey.trim(), name: newName.trim() || undefined, health_check_enabled: true }),
-    onSuccess: async () => { setNewKey(""); setNewName(""); setNotice("Key 已添加，默认继承渠道出口。"); await refreshProviderViews(client) }, onError: reportError,
+    onSuccess: async () => { setNewKey(""); setNewName(""); setNotice("Key 已添加，默认继承渠道出口。可点击“管理此渠道的模型”继续手动添加模型或配置模型权限。"); await refreshProviderViews(client) }, onError: reportError,
   })
   const patch = useMutation({
     mutationFn: ({ key, draft }: { key: ProviderKey; draft: KeyDraft }) => providerKeysApi.patch(providerId, key.id, keyPatch(key, draft)),
