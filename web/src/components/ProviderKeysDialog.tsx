@@ -85,7 +85,7 @@ export function ProviderKeysPanel({ open, providerId, onManageModels, onClose, o
     {error && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
     {notice && <p role="status" className="text-xs text-emerald-600">{notice}</p>}
     <fieldset disabled={busy} className="grid gap-2 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
-      <div className="space-y-1.5"><Label htmlFor="new-api-key">新 API Key</Label><Input id="new-api-key" type="password" autoComplete="new-password" value={newKey} onChange={(event) => setNewKey(event.target.value)} placeholder="sk-…" className="font-mono text-xs" /></div>
+      <div className="space-y-1.5"><Label htmlFor="new-api-key">新 API Key</Label><Input id="new-api-key" type="password" autoComplete="off" data-1p-ignore="true" data-lpignore="true" value={newKey} onChange={(event) => setNewKey(event.target.value)} placeholder="sk-…" className="font-mono text-xs" /></div>
       <div className="space-y-1.5"><Label htmlFor="new-key-name">Key 名称</Label><Input id="new-key-name" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：备用 Key" /></div>
       <Button disabled={!newKey.trim() || busy} onClick={() => add.mutate()}><Plus className="h-4 w-4" />{add.isPending ? "添加中…" : "添加 Key"}</Button>
     </fieldset>

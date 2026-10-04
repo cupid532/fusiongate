@@ -36,10 +36,11 @@ export type ButtonProps = Omit<HTMLMotionProps<"button">, "size"> &
   VariantProps<typeof buttonVariants> & { size?: "default" | "sm" | "lg" | "icon" }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, disabled, ...props }, ref) => {
+  ({ className, variant, size, disabled, type = "button", ...props }, ref) => {
     const skip = disabled || noMotionVariants.has(variant ?? "")
     return (
       <motion.button
+        type={type}
         className={cn(buttonVariants({ variant, size, className }))}
         ref={ref}
         disabled={disabled}

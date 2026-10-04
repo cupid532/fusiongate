@@ -224,6 +224,8 @@ export function Login() {
       {/* ── Right panel: login form (untouched) ── */}
       <div className="flex items-center border-t bg-card/60 px-6 py-12 backdrop-blur-xl lg:border-l lg:border-t-0 lg:px-16">
         <motion.form
+          id="fusiongate-admin-login"
+          autoComplete="on"
           onSubmit={handleSubmit}
           className="mx-auto w-full max-w-[390px]"
           initial={{ opacity: 0, x: 24 }}

@@ -25,6 +25,27 @@ function json(value: unknown) {
   return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } })
 }
 
+describe("administrator password change credential semantics", () => {
+  it("only marks the actual administrator password form as a password update", () => {
+    history.replaceState(null, "", "#settings?tab=security")
+    mount()
+    for (const [label, name, autocomplete] of [
+      ["当前密码", "current_password", "current-password"],
+      ["新密码", "new_password", "new-password"],
+      ["确认新密码", "confirm_password", "new-password"],
+    ]) {
+      const input = screen.getByLabelText(label) as HTMLInputElement
+      expect(input.name).toBe(name)
+      expect(input.autocomplete).toBe(autocomplete)
+      expect(input.getAttribute("data-1p-ignore")).not.toBe("true")
+      expect(input.getAttribute("data-lpignore")).not.toBe("true")
+      expect(input.closest("form")?.id).toBe("fusiongate-admin-password-change")
+    }
+    expect((screen.getByRole("button", { name: "修改密码" }) as HTMLButtonElement).type).toBe("submit")
+    expect((screen.getByRole("button", { name: "模型定价" }) as HTMLButtonElement).closest("form")).toBeNull()
+  })
+})
+
 describe("field compatibility settings", () => {
   it("loads the audit only after its settings tab is opened", async () => {
     history.replaceState(null, "", "#settings")

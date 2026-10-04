@@ -178,4 +178,28 @@ describe("ProviderDialog passthrough", () => {
     expect(screen.getByRole("button", { name: "手动添加 / 批量添加模型" })).toBeTruthy()
     expect(screen.getByRole("button", { name: "模型管理" }).getAttribute("aria-current")).toBe("page")
   })
+
+  it("keeps the first channel API Key masked and out of password managers", () => {
+    setup()
+    show(null)
+    fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
+    const initial = screen.getByLabelText("首张 API Key") as HTMLInputElement
+    // Masked for shoulder-surfing, but an upstream credential rather than a
+    // website password, so no password manager should offer to save or fill it.
+    expect(initial.type).toBe("password")
+    expect(initial.autocomplete).toBe("off")
+    expect(initial.getAttribute("data-1p-ignore")).toBe("true")
+    expect(initial.getAttribute("data-lpignore")).toBe("true")
+  })
+
+  it("excludes an existing channel's new Key field from password managers", async () => {
+    setup()
+    show(provider())
+    fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
+    const newKey = (await screen.findByLabelText("新 API Key")) as HTMLInputElement
+    expect(newKey.type).toBe("password")
+    expect(newKey.autocomplete).toBe("off")
+    expect(newKey.getAttribute("data-1p-ignore")).toBe("true")
+    expect(newKey.getAttribute("data-lpignore")).toBe("true")
+  })
 })

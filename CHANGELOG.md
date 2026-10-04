@@ -1,5 +1,15 @@
 # Changelog
 
+## V3.47
+
+- Stop presenting upstream API keys as new website passwords: keep them masked,
+  disable credential autofill and mark them to be ignored by password managers.
+- Default ordinary configuration inputs to password-manager exclusion and action
+  buttons to type=button; preserve explicit login/password-change autocomplete
+  semantics and submit buttons.
+- Add regression coverage for API-key metadata, non-submitting actions and real
+  administrator login/password-change forms without changing credential payloads.
+
 ## V3.46
 
 - Honor per-Key upstream model display names in health-check selection and job

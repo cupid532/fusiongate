@@ -375,6 +375,8 @@ function SecurityTab() {
         </p>
 
         <form
+          id="fusiongate-admin-password-change"
+          autoComplete="on"
           onSubmit={(e) => {
             e.preventDefault()
             if (canSubmit) changePw.mutate()
@@ -386,6 +388,7 @@ function SecurityTab() {
             <div className="relative">
               <Input
                 id="current-pw"
+                name="current_password"
                 type={showCurrent ? "text" : "password"}
                 autoComplete="current-password"
                 value={currentPw}
@@ -407,6 +410,7 @@ function SecurityTab() {
             <div className="relative">
               <Input
                 id="new-pw"
+                name="new_password"
                 type={showNew ? "text" : "password"}
                 autoComplete="new-password"
                 value={newPw}
@@ -428,6 +432,7 @@ function SecurityTab() {
             <Label htmlFor="confirm-pw">确认新密码</Label>
             <Input
               id="confirm-pw"
+              name="confirm_password"
               type="password"
               autoComplete="new-password"
               value={confirmPw}
