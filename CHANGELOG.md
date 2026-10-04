@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.45
+
+- Advertise enabled public model routes in `/v1/models` even when their upstream
+  model names differ, so clients can discover manually configured mappings.
+- Add regression coverage for mapped model visibility and access-key permissions,
+  plus the complete manual upstream rename, route sync and native forwarding flow.
+
 ## V3.44
 
 - Add manual upstream model inventory editing, batch input and explicit per-Key

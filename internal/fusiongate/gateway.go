@@ -402,8 +402,10 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 	// The advertised list must describe the same channels the inference path can
 	// actually select. Types with no verified inference support are left out, and
 	// the credential-bearing channel types are included because V3.13 restored
-	// them on the endpoints their own API exposes.
-	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 AND r.public_name=r.upstream_model AND p.type IN ('openai','grok','openrouter','openai_compatible','opencode','anthropic','anthropic_compatible','codex_oauth','claude_oauth','grok_oauth') GROUP BY r.public_name ORDER BY r.public_name`)
+	// them on the endpoints their own API exposes. Advertise the public name even
+	// when it maps to a different upstream name: inference resolves and rewrites
+	// these mappings, and clients must be able to discover them here.
+	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 AND p.type IN ('openai','grok','openrouter','openai_compatible','opencode','anthropic','anthropic_compatible','codex_oauth','claude_oauth','grok_oauth') GROUP BY r.public_name ORDER BY r.public_name`)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return

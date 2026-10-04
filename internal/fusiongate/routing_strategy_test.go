@@ -320,6 +320,40 @@ func TestModelsHideRoutesWhoseProviderIsDisabled(t *testing.T) {
 	}
 }
 
+func TestModelsAdvertiseMappedPublicNames(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	providerID := insertTestProvider(t, a, "cline", "openai_compatible", "http://cline.test", "token", 1, 1, "normalized", "any", 0, 3, 30)
+	insertTestRoute(t, a, providerID, "deepseek/deepseek-v4.1-flash", "cline-pass/deepseek-v4.1-flash", "chat,stream", 1)
+	insertTestRoute(t, a, providerID, "hidden-public", "hidden-upstream", "chat", 1)
+	if _, err := a.db.Exec(`UPDATE model_routes SET enabled=0 WHERE public_name='hidden-public'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []authKey{{AllowAll: true}, {AllowModels: "deepseek/deepseek-v4.1-flash"}} {
+		rec := httptest.NewRecorder()
+		a.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil), key)
+		var response struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &response) != nil {
+			t.Fatalf("models status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if len(response.Data) != 1 || response.Data[0].ID != "deepseek/deepseek-v4.1-flash" {
+			t.Fatalf("models must advertise the mapped public name, not the upstream name: %s", rec.Body.String())
+		}
+	}
+	rec := httptest.NewRecorder()
+	a.models(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil), authKey{AllowModels: "other-model"})
+	if strings.Contains(rec.Body.String(), "deepseek-v4.1-flash") {
+		t.Fatalf("mapped model bypassed access-key permissions: %s", rec.Body.String())
+	}
+}
+
 func TestModelsAdvertiseReasoningAndImageInput(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
