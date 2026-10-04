@@ -51,6 +51,31 @@ describe("Routes passthrough routing status", () => {
     expect(screen.queryByRole("combobox", { name: "全局起始渠道选择策略" })).toBeNull()
   })
 
+  it("lists only routes whose channel is enabled and not archived", async () => {
+    const base = routeRows[0]
+    const rows = [
+      { ...base, id: 1, public_name: "live-model", provider_name: "Live", provider_enabled: true, provider_archived: false },
+      { ...base, id: 2, public_name: "stopped-model", provider_name: "Stopped", provider_enabled: false, provider_archived: false },
+      { ...base, id: 3, public_name: "archived-model", provider_name: "Gone", provider_enabled: true, provider_archived: true },
+    ]
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input), "http://localhost").pathname
+      if (path === "/api/admin/routes") return response(rows)
+      if (path === "/api/admin/routing") return response({ strategy: "priority_failover" })
+      if (path === "/api/admin/model-aliases") return response([])
+      if (path === "/api/admin/pricing") return response({ status: {}, interval: "0s", sources: [] })
+      return response({})
+    }))
+    mount()
+    // A stopped or archived channel is not a candidate the gateway will try, so
+    // its routes must not make a public model look routable. The name appears in
+    // both the group heading and the alias manager, hence the plural queries.
+    expect((await screen.findAllByText("live-model")).length).toBeGreaterThan(0)
+    expect(screen.queryAllByText("stopped-model")).toHaveLength(0)
+    expect(screen.queryAllByText("archived-model")).toHaveLength(0)
+    expect(screen.getByText("已隐藏 2 条属于停用或归档渠道的路由；这些渠道重新启用后会自动回到此列表。")).toBeTruthy()
+  })
+
   it("states the ordering is unknown on query error, offers retry, and recovers", async () => {
     let queryFails = true
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {

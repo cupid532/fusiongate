@@ -86,6 +86,34 @@ describe("channel management workflow", () => {
   })
 })
 
+describe("channel status grouping", () => {
+  function mountMixed() {
+    const providers = [
+      { id: 1, name: "Live", base_url: "https://live.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 1, sort_order: 0, model_count: 1, failure_threshold: 5, health_check_enabled: true, health_check_status: "healthy" },
+      { id: 2, name: "Stopped", base_url: "https://stopped.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: false, archived: false, notes: "", priority: 2, sort_order: 1, model_count: 1, failure_threshold: 5, health_check_enabled: true, health_check_status: "pending" },
+      { id: 3, name: "Gone", base_url: "https://gone.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: true, notes: "", priority: 3, sort_order: 2, model_count: 1, failure_threshold: 5, health_check_enabled: true, health_check_status: "pending" },
+    ] as Provider[]
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => new Response(JSON.stringify(path === "/api/admin/providers" ? providers : path === "/api/admin/routing" ? { strategy: "priority_failover" } : []), { status: 200, headers: { "content-type": "application/json" } })))
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ConfirmProvider><Providers /></ConfirmProvider></QueryClientProvider>)
+  }
+
+  it("opens on enabled channels and orders the groups enabled, disabled, all, archived", async () => {
+    mountMixed()
+    // The default view is the channels that actually serve traffic.
+    expect(await screen.findByText("Live")).toBeTruthy()
+    expect(screen.queryByText("Stopped")).toBeNull()
+    expect(screen.queryByText("Gone")).toBeNull()
+    const labels = screen.getAllByRole("button").map((button) => button.textContent ?? "").filter((text) => /^(已启用|已停用|全部|归档) \d+$/.test(text))
+    expect(labels).toEqual(["已启用 1", "已停用 1", "全部 2", "归档 1"])
+  })
+
+  it("no longer offers the ambiguous attention filter", async () => {
+    mountMixed()
+    await screen.findByText("Live")
+    expect(screen.queryByText(/需关注/)).toBeNull()
+  })
+})
+
 describe("reorderProviderIDs", () => {
   it("keeps hidden providers in the complete reorder payload", () => {
     // IDs 2 and 4 represent rows omitted by search/status filters.

@@ -99,7 +99,14 @@ export function Routes() {
   const [initialModel, setInitialModel] = useState("")
   const [newGroup, setNewGroup] = useState(false)
   const [renameModel, setRenameModel] = useState("")
-  const { data: routes = [], isLoading } = useQuery({ queryKey: ["routes"], queryFn: () => api<Route[]>("/api/admin/routes") })
+  const { data: allRoutes = [], isLoading } = useQuery({ queryKey: ["routes"], queryFn: () => api<Route[]>("/api/admin/routes") })
+  // Only a route whose provider is enabled and not archived is a candidate the
+  // gateway will actually try. A route kept for a stopped channel must not make
+  // its public model look routable, and a model whose every channel is stopped
+  // must not be listed at all. The routes are still stored, so re-enabling the
+  // channel brings them back with their prices and aliases intact.
+  const routes = useMemo(() => allRoutes.filter((route) => route.provider_enabled && !route.provider_archived), [allRoutes])
+  const stoppedRouteCount = allRoutes.length - routes.length
   const { data: aliases = [] } = useQuery({ queryKey: ["model-aliases"], queryFn: () => api<ModelAlias[]>("/api/admin/model-aliases") })
   // Read-only: the single strategy cannot be changed from the console, but the
   // ordering text is taken from the server so it cannot drift from the code.
@@ -235,6 +242,7 @@ export function Routes() {
           </CardContent></Card>
         })}</div>
       )}
+      {!isLoading && stoppedRouteCount > 0 && <p className="mt-3 text-xs text-muted-foreground">已隐藏 {stoppedRouteCount} 条属于停用或归档渠道的路由；这些渠道重新启用后会自动回到此列表。</p>}
       <RouteDialog open={routeOpen} onOpenChange={setRouteOpen} route={editingRoute} initialModel={initialModel} newGroup={newGroup} />
       {renameModel && <ModelGroupRenameDialog model={renameModel} onClose={() => setRenameModel("")} />}
       <PricingDialog open={pricingOpen} onOpenChange={setPricingOpen} model={pricingModel} routes={selectedRoutes} />

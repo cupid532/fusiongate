@@ -1,5 +1,16 @@
 # Changelog
 
+## V3.50
+
+- Open the upstream-channel list on enabled channels, and order its groups
+  enabled, disabled, all, archived. Drop the "需关注" group: it only restated
+  health status the row badge already shows, and it hid the enabled/disabled
+  distinction the list is for.
+- Show only routes whose channel is enabled and not archived on the model-routing
+  page, so a route kept for a stopped channel can no longer make its public model
+  look routable and a model with no available channel disappears. The routes
+  themselves are untouched, and the page says how many are hidden.
+
 ## V3.49
 
 - Stop keeping a public route for a model no Key permission allows: when the last
