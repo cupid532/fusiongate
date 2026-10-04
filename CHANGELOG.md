@@ -1,5 +1,15 @@
 # Changelog
 
+## V3.46
+
+- Honor per-Key upstream model display names in health-check selection and job
+  results instead of using the public request name as the title.
+- Use the prefix-free upstream model name as the default presentation label when
+  no display name is configured; keep full request and upstream names visible as
+  secondary metadata and leave routing/forwarding identities unchanged.
+- Keep blank manual display names unset and add regression coverage for metadata
+  propagation, per-Key labels and prefix-free presentation defaults.
+
 ## V3.45
 
 - Advertise enabled public model routes in `/v1/models` even when their upstream

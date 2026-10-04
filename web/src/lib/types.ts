@@ -537,6 +537,7 @@ export interface HealthCheckResult {
   provider_key_hint?: string
   route_id?: number
   public_name?: string
+  display_name?: string
   upstream_model?: string
   model?: string
   status: string
@@ -599,6 +600,7 @@ export interface CodexAccountQuota {
 }
 
 export interface HealthCheckKeyPreview {
+  display_name?: string
   key_id: number
   name: string
   hint: string
@@ -609,6 +611,7 @@ export interface HealthCheckKeyPreview {
 }
 
 export interface HealthCheckRoutePreview {
+  display_name?: string
   route_id: number
   public_name: string
   upstream_model: string

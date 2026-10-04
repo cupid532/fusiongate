@@ -233,10 +233,9 @@ func (a *App) saveManualModels(ctx context.Context, providerID int64, in manualM
 			} else if source == "" {
 				source = "both"
 			}
+			// Empty means use the presentation fallback, not a persisted full
+			// upstream identifier that masks the default prefix-free label.
 			display := e.DisplayName
-			if display == "" {
-				display = e.Model
-			}
 			if exists {
 				_, err = tx.ExecContext(ctx, `UPDATE provider_api_key_models SET model=?,display_name=?,capabilities=?,enabled=?,model_source=?,manual_display_name=?,manual_capabilities=? WHERE provider_key_id=? AND model=?`, e.Model, display, e.Capabilities, boolInt(enabled), source, display, e.Capabilities, keyID, currentName)
 			} else {

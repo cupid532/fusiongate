@@ -85,6 +85,87 @@ afterEach(() => {
 })
 
 describe("HealthCheckDialog", () => {
+  it("uses upstream display names in preview, retains full wire names, and selects original route IDs", async () => {
+    const targets = preview()
+    targets.routes[0] = { ...targets.routes[0], route_id: 71, public_name: "public-flash", upstream_model: "deepseek/deepseek-v4.1-flash", display_name: "我的 / Flash" }
+    targets.routes[1] = { ...targets.routes[1], route_id: 72, public_name: "other-public-flash", upstream_model: "other/deepseek-v4.1-flash", supported: true, keys: targets.routes[0].keys }
+    const calls = mockFetch((url, init) => {
+      if (url.endsWith("/health-check-targets")) return json(targets)
+      if (url === "/api/admin/health-checks" && init?.method === "POST") return json(job(), 202)
+      if (url === "/api/admin/health-checks") return json({ active: false })
+      return undefined
+    })
+    renderDialog()
+    await screen.findByText("我的 / Flash")
+    expect(screen.getByText("deepseek-v4.1-flash")).toBeTruthy()
+    expect(screen.getByText("请求 public-flash · 上游 deepseek/deepseek-v4.1-flash")).toBeTruthy()
+    expect(screen.getByText("请求 other-public-flash · 上游 other/deepseek-v4.1-flash")).toBeTruthy()
+    const checkbox = screen.getByRole("checkbox", { name: /我的 \/ Flash/ }) as HTMLInputElement
+    fireEvent.click(checkbox)
+    expect(checkbox.checked).toBe(true)
+    fireEvent.click(screen.getByText("测活选中"))
+    await screen.findByText("全部健康")
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({ provider_ids: [7], model_scope: "selected", route_ids: [71] })
+  })
+
+  it("prefers the single supporting filtered Key's display name without changing the checked route", async () => {
+    const targets = preview()
+    targets.routes[0].upstream_model = "deepseek/deepseek-v4.1-flash"
+    targets.routes[0].display_name = "渠道显示名称"
+    targets.routes[0].keys[0].display_name = "Key 专属 / Flash"
+    targets.routes[0].keys.push({ ...targets.routes[0].keys[0], key_id: 26, name: "Key 2", display_name: "" })
+    targets.routes[1].display_name = "不可用路由显示名称"
+    targets.routes[1].keys[0].display_name = "不可用 Key 名称"
+    const calls = mockFetch((url, init) => {
+      if (url.endsWith("/health-check-targets")) return json(targets)
+      if (url === "/api/admin/health-checks" && init?.method === "POST") return json(job(), 202)
+      if (url === "/api/admin/health-checks") return json({ active: false })
+      return undefined
+    })
+    renderDialog()
+    await screen.findByText("渠道显示名称")
+    fireEvent.click(screen.getByRole("checkbox", { name: /渠道显示名称/ }))
+    fireEvent.click(screen.getByRole("button", { name: "Key 1" }))
+    expect(screen.getByText("Key 专属 / Flash")).toBeTruthy()
+    expect(screen.getByText("不可用路由显示名称")).toBeTruthy()
+    expect(screen.queryByText("不可用 Key 名称")).toBeNull()
+    expect((screen.getByRole("checkbox", { name: /Key 专属 \/ Flash/ }) as HTMLInputElement).checked).toBe(true)
+    fireEvent.click(screen.getByRole("button", { name: "Key 2" }))
+    expect(screen.getByText("渠道显示名称")).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Key 1" }))
+    // A supported Key with an empty display name falls back to the route label.
+    expect(screen.getByText("渠道显示名称")).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Key 2" }))
+    expect(screen.getByText("渠道显示名称")).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Key 1" }))
+    fireEvent.click(screen.getByText("测活选中"))
+    await screen.findByText("全部健康")
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({ provider_ids: [7], model_scope: "selected", route_ids: [1], provider_key_ids: [25] })
+  })
+
+  it("renders result titles from explicit display names or upstream basenames, never public aliases", async () => {
+    const finished = job({ total: 3, completed: 3, healthy: 3, results: [
+      { ...job().results[0], public_name: "public-custom", upstream_model: "vendor/custom", model: "legacy/wrong", display_name: "我的 / Flash" },
+      { ...job().results[0], route_id: 2, public_name: "public-flash", upstream_model: "deepseek/deepseek-v4.1-flash", model: "legacy/wrong", display_name: "" },
+      { ...job().results[0], route_id: 3, public_name: "other-public-flash", model: "other/deepseek-v4.1-flash" },
+    ] })
+    mockFetch((url, init) => {
+      if (url === "/api/admin/health-checks" && init?.method === "POST") return json(finished, 202)
+      if (url === "/api/admin/health-checks") return json({ active: false })
+      return undefined
+    })
+    renderDialog({ providerIds: [7, 8], autoStart: true })
+    await screen.findByText("全部健康")
+    expect(screen.getByText("我的 / Flash")).toBeTruthy()
+    expect(screen.getAllByText("deepseek-v4.1-flash")).toHaveLength(2)
+    expect(screen.queryByText("public-custom")).toBeNull()
+    expect(screen.queryByText("public-flash")).toBeNull()
+    expect(screen.queryByText("wrong")).toBeNull()
+    expect(screen.getByText("请求 public-custom · 上游 vendor/custom")).toBeTruthy()
+    expect(screen.getByText("请求 public-flash · 上游 deepseek/deepseek-v4.1-flash")).toBeTruthy()
+    expect(screen.getByText("请求 other-public-flash · 上游 other/deepseek-v4.1-flash")).toBeTruthy()
+  })
+
   it("shows why a route cannot be probed and keeps it unselectable", async () => {
     mockFetch((url) => {
       if (url.endsWith("/health-check-targets")) return json(preview())

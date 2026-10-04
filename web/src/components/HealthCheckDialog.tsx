@@ -5,6 +5,7 @@ import { ApiError, healthChecksApi } from "@/lib/api"
 import type { HealthCheckJob, HealthCheckRoutePreview } from "@/lib/types"
 import { describeHealthReason, describeHealthStartError, describeHealthStatus } from "@/lib/health-check-messages"
 import { cn } from "@/lib/utils"
+import { modelDisplayName } from "@/lib/model-display-name"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -319,6 +320,8 @@ export function ProviderHealthPanel({ open, providerId, providerIds: batchIds, o
                     {routes.map((r) => {
                       const ok = routeProbeable(r)
                       const supportingKeys = r.keys.filter((k) => k.supported)
+                      const selectedKey = selectedKeys.size === 1 ? supportingKeys.find((k) => selectedKeys.has(k.key_id)) : undefined
+                      const displayName = selectedKey?.display_name?.trim() ? selectedKey.display_name : r.display_name
                       return (
                         <label
                           key={r.route_id}
@@ -328,8 +331,10 @@ export function ProviderHealthPanel({ open, providerId, providerIds: batchIds, o
                           <input type="checkbox" className="mt-1" disabled={!ok} checked={ok && selectedRoutes.has(r.route_id)} onChange={(e) => toggleRoute(r.route_id, e.target.checked)} />
                           <span className="min-w-0 flex-1">
                             <span className="flex flex-wrap items-baseline gap-x-2">
-                              <span className="font-mono text-sm">{r.public_name}</span>
-                              {r.upstream_model.toLowerCase() !== r.public_name.toLowerCase() && <span className="text-xs text-muted-foreground">上游 {r.upstream_model}</span>}
+                              <span className="font-mono text-sm">{modelDisplayName(r.upstream_model, displayName)}</span>
+                            </span>
+                            <span className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">
+                              请求 {r.public_name} · 上游 {r.upstream_model}
                             </span>
                             {!r.supported ? (
                               <span className="mt-0.5 flex items-start gap-1 text-xs text-amber-600">
@@ -418,14 +423,17 @@ export function ProviderHealthPanel({ open, providerId, providerIds: batchIds, o
               {results.length === 0 && <div className="py-6 text-center text-sm text-muted-foreground">{problemsOnly ? "没有问题项" : "没有结果"}</div>}
               {results.map((r, i) => {
                 const st = describeHealthStatus(r.status)
+                const upstreamModel = r.upstream_model || r.model || ""
                 return (
                   <div key={`${r.route_id}-${r.provider_key_id}-${i}`} className="flex items-start gap-3 rounded-lg px-3 py-2 hover:bg-muted/40">
                     <span className="min-w-0 flex-1">
                       <span className="flex flex-wrap items-baseline gap-x-2">
-                        <span className="font-mono text-sm font-medium">{r.public_name || r.model || r.provider_name}</span>
+                        <span className="font-mono text-sm font-medium">{modelDisplayName(upstreamModel, r.display_name) || r.provider_name}</span>
                         {single == null && <span className="text-xs text-muted-foreground">{r.provider_name}</span>}
-                        {r.model && r.public_name && r.model.toLowerCase() !== r.public_name.toLowerCase() && <span className="text-xs text-muted-foreground">上游 {r.model}</span>}
                       </span>
+                      {(r.public_name || upstreamModel) && <span className="block break-all font-mono text-[11px] text-muted-foreground">
+                        {r.public_name && `请求 ${r.public_name}`}{r.public_name && upstreamModel && " · "}{upstreamModel && `上游 ${upstreamModel}`}
+                      </span>}
                       <span className="block text-[11px] text-muted-foreground">
                         Key {keyLabel(r.provider_key_name, r.provider_key_hint)}
                         {r.status !== "skipped" && r.status !== "queued" && r.latency_ms > 0 && ` · ${r.latency_ms} ms${r.first_byte_ms ? ` · 首字节 ${r.first_byte_ms} ms` : ""}`}

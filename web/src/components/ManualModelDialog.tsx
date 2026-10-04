@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Switch } from "@/components/ui/switch"
 
 import { parseManualModels } from "@/lib/manual-models"
+import { modelDisplayName } from "@/lib/model-display-name"
 
 export function ManualModelDialog({ open, onOpenChange, providerId, keys, selectedKeyId, editing, initialModels = "", onBusyChange }: {
   open: boolean; onOpenChange: (open: boolean) => void; providerId: number; keys: ProviderKey[]; selectedKeyId: number | null
@@ -61,7 +62,7 @@ export function ManualModelDialog({ open, onOpenChange, providerId, keys, select
       <DialogHeader><DialogTitle>{editing ? "编辑上游模型" : initialModels ? "复制模型到其他 Key" : "手动添加模型"}</DialogTitle><DialogDescription>无需上游模型列表接口。只修改所选 Key 的模型权限，保存不会发起付费生成请求。</DialogDescription></DialogHeader>
       <div className="space-y-4">
         <div className="space-y-1.5"><Label htmlFor="manual-model-names">{editing ? "上游模型名" : "上游模型名（每行一个，最多 200 个）"}</Label><Textarea id="manual-model-names" value={names} onChange={(event) => setNames(event.target.value)} rows={editing ? 1 : 4} placeholder="vendor/model-v2" className="font-mono text-xs" /></div>
-        {models.length === 1 && <div className="space-y-1.5"><Label htmlFor="manual-model-display">显示名称（选填，不改变转发名称）</Label><Input id="manual-model-display" value={displayName} onChange={(event) => setDisplayName(event.target.value)} /></div>}
+        {models.length === 1 && <div className="space-y-1.5"><Label htmlFor="manual-model-display">显示名称（选填，不改变转发名称）</Label><Input id="manual-model-display" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={`留空默认去掉渠道前缀：${modelDisplayName(models[0])}`} /></div>}
         <div className="space-y-1.5"><Label htmlFor="manual-model-capabilities">能力</Label><Input id="manual-model-capabilities" value={capabilities} onChange={(event) => setCapabilities(event.target.value)} placeholder="chat,stream,tools" /></div>
         <fieldset className="rounded-md border p-3"><legend className="px-1 text-sm font-medium">适用 Key（{keyIds.length}）</legend><div className="mb-2 flex gap-2"><Button variant="outline" size="sm" onClick={() => setKeyIds(keys.map((key) => key.id))}>当前渠道全部 Key</Button><Button variant="ghost" size="sm" onClick={() => setKeyIds(selectedKeyId ? [selectedKeyId] : [])}>仅当前 Key</Button></div><div className="grid gap-2 sm:grid-cols-2">{keys.map((key) => <label key={key.id} className="flex items-center gap-2 text-sm"><input type="checkbox" checked={keyIds.includes(key.id)} onChange={(event) => setKeyIds((previous) => event.target.checked ? [...previous, key.id] : previous.filter((id) => id !== key.id))} />{key.name || key.key_hint}{!key.enabled && <span className="text-xs text-muted-foreground">（Key 已停用）</span>}</label>)}</div></fieldset>
         <label className="flex items-center gap-2 text-sm"><Switch checked={enabled} onCheckedChange={setEnabled} />启用所选 Key 的模型权限（不改变 Key 自身启停）</label>

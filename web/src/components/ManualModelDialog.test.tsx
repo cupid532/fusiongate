@@ -34,6 +34,25 @@ describe("manual upstream models", () => {
     expect(calls[0].path).toBe("/api/admin/providers/10/manual-models")
     expect(calls[0].body).toMatchObject({ entries: [{ model: "Vendor/Model-X", capabilities: "chat,stream" }, { model: "backup", capabilities: "chat,stream" }], key_ids: [1, 2], enabled: true, create_routes: true })
   })
+  it("hints at the default basename without changing upstream or request names", async () => {
+    const { calls, close } = show()
+    fireEvent.change(screen.getByLabelText("上游模型名（每行一个，最多 200 个）"), { target: { value: "deepseek/deepseek-v4.1-flash" } })
+    const display = screen.getByLabelText("显示名称（选填，不改变转发名称）") as HTMLInputElement
+    expect(display.value).toBe("")
+    expect(display.placeholder).toBe("留空默认去掉渠道前缀：deepseek-v4.1-flash")
+    fireEvent.click(screen.getByRole("button", { name: "保存模型" }))
+    await waitFor(() => expect(close).toHaveBeenCalledWith(false))
+    expect(calls[0].body).toMatchObject({ entries: [{ model: "deepseek/deepseek-v4.1-flash", display_name: "" }] })
+    expect(calls[0].body).not.toHaveProperty("public_name")
+  })
+  it("saves the edited explicit display name independently of wire names", async () => {
+    const { calls, close } = show({ model: "deepseek/deepseek-v4.1-flash", display_name: "旧名称", enabled: true, capabilities: "chat,stream" } as ProviderKeyModel)
+    fireEvent.change(screen.getByLabelText("显示名称（选填，不改变转发名称）"), { target: { value: "我的 / Flash" } })
+    fireEvent.click(screen.getByRole("button", { name: "保存模型" }))
+    await waitFor(() => expect(close).toHaveBeenCalledWith(false))
+    expect(calls[0].body).toMatchObject({ entries: [{ model: "deepseek/deepseek-v4.1-flash", display_name: "我的 / Flash" }], original_model: "deepseek/deepseek-v4.1-flash", sync_routes: false })
+    expect(calls[0].body).not.toHaveProperty("public_name")
+  })
   it("disables shared route rename until all old-model keys are selected", () => {
     const model = { model: "old", display_name: "Old", enabled: true, capabilities: "chat,stream" } as ProviderKeyModel
     show(model, keys.map((key) => ({ ...key, models: [model] })))

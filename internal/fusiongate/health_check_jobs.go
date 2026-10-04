@@ -43,6 +43,7 @@ type healthCheckTarget struct {
 	ProviderKeyHint string
 	RouteID         int64
 	PublicName      string
+	DisplayName     string
 	UpstreamModel   string
 	Capabilities    string
 	// SkipReason is set when the route is kept in the job only to be reported
@@ -92,6 +93,7 @@ type healthCheckItemResult struct {
 	ProviderKeyHint string `json:"provider_key_hint,omitempty"`
 	RouteID         int64  `json:"route_id,omitempty"`
 	PublicName      string `json:"public_name,omitempty"`
+	DisplayName     string `json:"display_name,omitempty"`
 	Status          string `json:"status"`
 	LatencyMS       int64  `json:"latency_ms"`
 	FirstByteMS     int64  `json:"first_byte_ms"`
@@ -170,6 +172,7 @@ func (m *healthCheckJobManager) StartModels(ctx context.Context, providerIDs, ro
 			ProviderKeyHint: target.ProviderKeyHint,
 			RouteID:         target.RouteID,
 			PublicName:      target.PublicName,
+			DisplayName:     target.DisplayName,
 			Model:           target.UpstreamModel,
 			Mode:            mode,
 			Status:          "queued",
@@ -343,6 +346,7 @@ func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers 
 			return nil, err
 		}
 		target.ProviderName = providerNames[target.ProviderID]
+		target.DisplayName = modelDisplayName(target.UpstreamModel, "")
 		targets = append(targets, target)
 	}
 	if err := rows.Err(); err != nil {
@@ -365,9 +369,18 @@ func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers 
 		}
 		allowed[id] = true
 	}
+	namesByProvider := map[int64]providerModelDisplayNames{}
+	for _, providerID := range providerIDs {
+		names, err := m.app.providerModelDisplayNames(ctx, providerID)
+		if err != nil {
+			return nil, err
+		}
+		namesByProvider[providerID] = names
+	}
 	expanded := make([]healthCheckTarget, 0, len(targets))
 	for _, target := range targets {
-		keyTargets, reason, err := m.routeKeyTargets(ctx, target, allowed)
+		target.DisplayName = namesByProvider[target.ProviderID].forModel(target.UpstreamModel)
+		keyTargets, reason, err := m.routeKeyTargets(ctx, target, allowed, namesByProvider[target.ProviderID])
 		if err != nil {
 			return nil, err
 		}
@@ -400,7 +413,7 @@ func (m *healthCheckJobManager) loadModelTargets(ctx context.Context, providers 
 // actual cause — the model switched off on every key, the model missing from
 // every key's inventory, or no key having health checks on — so the caller can
 // report the route as skipped instead of failing the whole job.
-func (m *healthCheckJobManager) routeKeyTargets(ctx context.Context, target healthCheckTarget, allowed map[int64]bool) ([]healthCheckTarget, string, error) {
+func (m *healthCheckJobManager) routeKeyTargets(ctx context.Context, target healthCheckTarget, allowed map[int64]bool, names providerModelDisplayNames) ([]healthCheckTarget, string, error) {
 	var authKind string
 	if err := m.app.db.QueryRowContext(ctx, `SELECT auth_kind FROM providers WHERE id=?`, target.ProviderID).Scan(&authKind); err != nil {
 		return nil, "", err
@@ -451,6 +464,7 @@ func (m *healthCheckJobManager) routeKeyTargets(ctx context.Context, target heal
 		}
 		item := target
 		item.ProviderKeyID, item.ProviderKeyName, item.ProviderKeyHint = c.id, c.name, c.hint
+		item.DisplayName = names.forKey(c.id, target.UpstreamModel)
 		out = append(out, item)
 	}
 	if len(out) > 0 {
@@ -470,6 +484,7 @@ type healthCheckKeyPreview struct {
 	KeyID              int64  `json:"key_id"`
 	Name               string `json:"name"`
 	Hint               string `json:"hint"`
+	DisplayName        string `json:"display_name,omitempty"`
 	Enabled            bool   `json:"enabled"`
 	HealthCheckEnabled bool   `json:"health_check_enabled"`
 	Supported          bool   `json:"supported"`
@@ -479,6 +494,7 @@ type healthCheckKeyPreview struct {
 type healthCheckRoutePreview struct {
 	RouteID       int64                   `json:"route_id"`
 	PublicName    string                  `json:"public_name"`
+	DisplayName   string                  `json:"display_name,omitempty"`
 	UpstreamModel string                  `json:"upstream_model"`
 	Capabilities  string                  `json:"capabilities"`
 	Supported     bool                    `json:"supported"`
@@ -544,6 +560,10 @@ func (m *healthCheckJobManager) Preview(ctx context.Context, providerID int64) (
 		}
 	}
 
+	names, err := m.app.providerModelDisplayNames(ctx, providerID)
+	if err != nil {
+		return out, err
+	}
 	rows, err := m.app.db.QueryContext(ctx, `SELECT id,public_name,upstream_model,capabilities FROM model_routes WHERE provider_id=? AND enabled=1 ORDER BY sort_order,id`, providerID)
 	if err != nil {
 		return out, err
@@ -554,6 +574,7 @@ func (m *healthCheckJobManager) Preview(ctx context.Context, providerID int64) (
 		if err := rows.Scan(&route.RouteID, &route.PublicName, &route.UpstreamModel, &route.Capabilities); err != nil {
 			return out, err
 		}
+		route.DisplayName = names.forModel(route.UpstreamModel)
 		if !strings.Contains(route.Capabilities, "chat") {
 			route.Reason = reasonNotChat
 			out.Routes = append(out.Routes, route)
@@ -566,9 +587,10 @@ func (m *healthCheckJobManager) Preview(ctx context.Context, providerID int64) (
 			continue
 		}
 		healthKeys := 0
+		displaySelected := false
 		disabledSomewhere := false
 		for _, k := range keys {
-			kp := healthCheckKeyPreview{KeyID: k.id, Name: k.name, Hint: k.hint, Enabled: k.enabled, HealthCheckEnabled: k.healthEnabled}
+			kp := healthCheckKeyPreview{KeyID: k.id, Name: k.name, Hint: k.hint, DisplayName: names.forKey(k.id, route.UpstreamModel), Enabled: k.enabled, HealthCheckEnabled: k.healthEnabled}
 			supports := providerKeySupportsModel(k.policy, k.allowlist, k.model, k.defaultModel, route.UpstreamModel, k.inventory, k.exclusions)
 			switch {
 			case !k.enabled:
@@ -589,6 +611,10 @@ func (m *healthCheckJobManager) Preview(ctx context.Context, providerID int64) (
 				healthKeys++
 			}
 			if kp.Supported {
+				if !displaySelected {
+					route.DisplayName = kp.DisplayName
+					displaySelected = true
+				}
 				route.Supported = true
 				out.Probeable++
 			}
@@ -706,7 +732,7 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 		m.finishItem(jobID, index, healthCheckItemResult{
 			ProviderID: item.ProviderID, ProviderName: item.ProviderName, Mode: mode,
 			ProviderKeyID: item.ProviderKeyID, ProviderKeyName: item.ProviderKeyName, ProviderKeyHint: item.ProviderKeyHint,
-			RouteID: item.RouteID, PublicName: item.PublicName, Model: item.Model,
+			RouteID: item.RouteID, PublicName: item.PublicName, DisplayName: item.DisplayName, Model: item.Model,
 			Status: "cancelled", Error: "health check cancelled",
 		})
 		return
@@ -734,7 +760,7 @@ func (m *healthCheckJobManager) runItem(ctx context.Context, jobID string, index
 	finished := healthCheckItemResult{
 		ProviderID: item.ProviderID, ProviderName: item.ProviderName,
 		ProviderKeyID: item.ProviderKeyID, ProviderKeyName: item.ProviderKeyName, ProviderKeyHint: item.ProviderKeyHint,
-		RouteID: item.RouteID, PublicName: item.PublicName,
+		RouteID: item.RouteID, PublicName: item.PublicName, DisplayName: item.DisplayName,
 		Status: result.Status, Mode: mode, LatencyMS: result.LatencyMS,
 		FirstByteMS: result.FirstByteMS, Model: result.Model,
 		ModelCount: result.ModelCount, Error: result.Error,
@@ -756,6 +782,7 @@ func (m *healthCheckJobManager) finishItem(jobID string, index int, result healt
 	if job == nil || index < 0 || index >= len(job.Results) {
 		return
 	}
+	result.DisplayName = job.Results[index].DisplayName
 	result.StartedAt = job.Results[index].StartedAt
 	result.FinishedAt = now()
 	job.Results[index] = result
