@@ -1,3 +1,16 @@
+{
+    servers {
+        timeouts {
+            # Caddy 2.11.6 can re-arm the request read deadline after EOF in
+            # HTTP/1 reverse_proxy, canceling an active SSE response at 60s.
+            # Keep a hard upload ceiling, not the faulty idle wrapper.
+            read_body_idle -1s
+            read_body 3m
+            read_header 15s
+        }
+    }
+}
+
 {$FUSIONGATE_DOMAIN} {
     encode zstd gzip
 

@@ -69,7 +69,7 @@ type App struct {
 	ledgerWriterDone      chan struct{}
 	ledgerClosed          bool
 	authMu                sync.Mutex
-	refreshMu             sync.Mutex
+	refreshSlots          chan struct{}
 	oauthSessions         map[string]oauthSession
 	authImports           map[string]credentialImportSession
 	ledgerCleanupMu       sync.Mutex
@@ -317,6 +317,7 @@ func New(cfg Config) (*App, error) {
 		rate: map[string]*rateWindow{}, providerStates: map[int64]*providerRuntime{},
 		providerKeyCooldowns: map[int64]time.Time{}, providerKeyRoundRobin: map[string]int{}, roundRobinCursor: map[string]int{},
 		smoothWeights: map[string]map[int64]float64{},
+		refreshSlots:  make(chan struct{}, 1),
 		oauthSessions: map[string]oauthSession{}, authImports: map[string]credentialImportSession{},
 		healthProbes: map[int64]struct{}{}, balanceCache: map[int64]ProviderUpstreamBalance{},
 		loginAttempts: map[string]*rateWindow{}, loginVerifiers: make(chan struct{}, 4),

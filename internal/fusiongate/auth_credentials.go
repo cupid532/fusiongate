@@ -1776,8 +1776,15 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET auth_status='expired',status='auth_expired',last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
 		return errors.New(detail)
 	}
-	a.refreshMu.Lock()
-	defer a.refreshMu.Unlock()
+	select {
+	case a.refreshSlots <- struct{}{}:
+		defer func() { <-a.refreshSlots }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	var encrypted []byte
 	var kind string
 	if err := a.db.QueryRowContext(ctx, `SELECT credential,auth_kind FROM providers WHERE id=?`, z.Provider.ID).Scan(&encrypted, &kind); err != nil {
@@ -1800,6 +1807,12 @@ func (a *App) refreshProviderCredential(ctx context.Context, z *resolvedRoute, f
 	}
 	refreshed, err := a.refreshOAuthCredentialViaNode(ctx, current, z.Provider.IPPoolNodeID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		detail := safeOAuthRefreshFailure(err)
 		_, _ = a.db.ExecContext(context.Background(), `UPDATE providers SET auth_status='refresh_failed',status='auth_expired',last_error=?,updated_at=? WHERE id=?`, detail, now(), z.Provider.ID)
 		a.log.Warn("oauth refresh failed", "provider_id", z.Provider.ID, "platform", current.Platform, "error_type", fmt.Sprintf("%T", err))

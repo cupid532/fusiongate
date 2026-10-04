@@ -1,5 +1,28 @@
 # Changelog
 
+## V3.43
+
+- Keep authentication-rejected credentials isolated for the entire inference
+  request, including when every credential of a channel has failed. Exhaustion
+  now advances to another channel rather than making isolated credentials
+  eligible again when their cooldown expires or is reset.
+- Classify explicit structured upstream credential failures across HTTP 400,
+  401, 403 and 5xx; isolate those credentials without treating ordinary malformed
+  requests or protocol-policy denials as retryable authentication faults.
+- Count distinct credential identities rather than model mappings and reserve
+  an attempt for later channels so a large failing key pool cannot consume all
+  failover opportunities. Bound pre-commit attempts and refresh by the remaining
+  routing windows, recheck deadlines after retry waits, and leave committed
+  active streams governed by their idle timeout rather than the routing window.
+- Make serialized OAuth refresh waiting cancellation-aware and keep refresh
+  timeouts/cancellations distinct from invalid credentials. Reject late response
+  commitment after a routing deadline and restore headers before trying backup.
+- Disable Caddy's faulty request-body idle wrapper in the deployment template,
+  retaining upload and header deadlines. Reproduce and document the Caddy 2.11.6
+  HTTP/1 POST EOF deadline issue that aborts active SSE responses after 60 seconds.
+- Add regression coverage for OAuth credentials, single/multiple API keys,
+  duplicate mappings, authentication failover, budget fairness and routing windows.
+
 ## V3.42
 
 - Preserve spaces, newlines, and tabs in protocol-bridged text, reasoning,

@@ -295,12 +295,7 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 		// must not inherit a pause it never asked for.
 		run.retryPause = 0
 		channelDeadline := time.Now().Add(channelWindow)
-		budget := channelAttempts
-		if len(keys) > budget {
-			// Never grant a channel fewer attempts than it has usable Keys: an
-			// isolated bad Key must be survivable inside the channel.
-			budget = len(keys)
-		}
+		budget := inferenceChannelBudget(channelAttempts, inferenceCredentialCount(keys), maxAttempts-run.attempts, len(run.plan.Channels)-index-1)
 		for attempt := 1; attempt <= budget; attempt++ {
 			if r.Context().Err() != nil {
 				run.stop(r, "downstream_canceled")
@@ -314,7 +309,18 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 				run.finish(w, r, "failover_window_exceeded")
 				return
 			}
-			if attempt > 1 && !run.pause(r, attempt, channelDeadline) {
+			waitDeadline := channelDeadline
+			if deadline.Before(waitDeadline) {
+				waitDeadline = deadline
+			}
+			if attempt > 1 && !run.pause(r, attempt, waitDeadline) {
+				break
+			}
+			if !time.Now().Before(deadline) {
+				run.finish(w, r, "failover_window_exceeded")
+				return
+			}
+			if !time.Now().Before(channelDeadline) {
 				break
 			}
 			compatible := make([]resolvedRoute, 0, len(keys))
@@ -368,9 +374,12 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 
 			diagnostics := &attemptDiagnostics{start: started, RetryWaitMS: run.retryWait.Milliseconds()}
 			run.retryWait = 0
-			attemptRequest := r.WithContext(context.WithValue(r.Context(), diagnosticsKey{}, diagnostics))
-			output := &diagnosticWriter{ResponseWriter: w, diagnostics: diagnostics, stream: run.stream}
-			output.observer.onOutput = diagnostics.firstOutput
+			attemptContext, window := newInferenceAttemptWindow(r.Context(), waitDeadline)
+			attemptRequest := r.WithContext(context.WithValue(attemptContext, diagnosticsKey{}, diagnostics))
+			headerBeforeAttempt := w.Header().Clone()
+			diagnosticOutput := &diagnosticWriter{ResponseWriter: w, diagnostics: diagnostics, stream: run.stream}
+			diagnosticOutput.observer.onOutput = diagnostics.firstOutput
+			output := &inferenceWindowWriter{ResponseWriter: diagnosticOutput, guard: window}
 			var firstByte time.Duration
 			result, cancel := run.attempt(output, attemptRequest, z, adapter, func() {
 				diagnostics.firstByte()
@@ -397,6 +406,11 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			case result.Response != nil:
 				if result.Retryable {
 					if !run.retain(result) {
+						if attemptContext.Err() != nil && r.Context().Err() == nil {
+							result.Response.Body.Close()
+							result.Response = nil
+							break
+						}
 						// The error body exceeded the bounded buffer: forward the
 						// original bytes rather than truncating the upstream answer.
 						run.committed = true
@@ -435,6 +449,19 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 				stop = run.stopReasonFor(decision, result)
 			}
 			cancel()
+			expired, committed := window.close()
+			if expired && !committed {
+				restoreInferenceHeaders(w.Header(), headerBeforeAttempt)
+				run.committed = false
+				result.Handled = false
+				result.Status = http.StatusGatewayTimeout
+				result.Err = context.DeadlineExceeded
+				result.Reason = "upstream_timeout"
+				result.Retryable = true
+				diagnostics.timedOut("failover_attempt_timeout")
+				decision = decisionAdvanceChannel
+				stop, terminal = "failover", false
+			}
 			// A client may close its connection after receiving the complete
 			// response. Do not overwrite an already settled result during cleanup.
 			if r.Context().Err() != nil && !(terminal && result.Err == nil) {
@@ -493,7 +520,7 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 				run.finish(w, r, "upstream_client_error")
 				return
 			}
-			if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			if inferenceCredentialFailure(result) {
 				// Isolate this credential for the rest of the request so the next
 				// attempt inside the same channel uses a different Key.
 				isolated[z.ProviderKeyID] = true
@@ -613,6 +640,9 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 	a := run.app
 	if client, target, ok := parseBridgeAdapter(adapter); ok {
 		result, cancel := run.bridgeAttempt(w, r, z, client, target, onFirstByte)
+		if inferenceCredentialFailure(result) || result.Reason == "upstream_protocol_denied" {
+			return result, cancel
+		}
 		if protocolPolicyDenied(result.Response) {
 			result.Retryable = false
 			result.Reason = "upstream_protocol_denied"
@@ -673,6 +703,9 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 		}
 		result = attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
 		return result, func() {}
+	}
+	if inferenceCredentialFailure(result) || result.Reason == "upstream_protocol_denied" {
+		return result, cancel
 	}
 	if protocolPolicyDenied(result.Response) {
 		result.Retryable = false
@@ -829,7 +862,10 @@ func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute,
 		}
 		return attemptResult{Status: status, Reason: reason, Err: err, Retryable: retry}, cancel
 	}
-	if err := a.ensureFreshProviderCredential(incoming.Context(), &z); err != nil {
+	if err := a.ensureFreshProviderCredential(ctx, &z); err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return failed(err, "upstream_timeout")
+		}
 		return attemptResult{Status: http.StatusUnauthorized, Retryable: true, Reason: "auth_expired", Err: err}, cancel
 	}
 	base, err := url.Parse(z.Provider.BaseURL)
@@ -898,12 +934,7 @@ func (a *App) inferenceSend(incoming *http.Request, raw []byte, z resolvedRoute,
 			onFirstByte()
 		}
 	}, cancel: cancelContext}
-	return attemptResult{
-		Status:     resp.StatusCode,
-		Response:   resp,
-		Retryable:  retryableStatus(resp.StatusCode),
-		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
-	}, cancel
+	return inferenceHTTPResponseResult(resp), cancel
 }
 
 // acquireInferenceRoute selects one credential of a channel and reserves it.
@@ -924,7 +955,9 @@ func (a *App) acquireInferenceRoute(keys []resolvedRoute, isolated map[int64]boo
 	start := (attempt - 1) % len(keys)
 	for offset := 0; offset < len(keys); offset++ {
 		z := keys[(start+offset)%len(keys)]
-		if isolated[z.ProviderKeyID] && len(isolated) < len(keys) {
+		if isolated[z.ProviderKeyID] {
+			// Isolation lasts for the whole request. Exhausting the channel's
+			// credentials must advance failover, not resurrect a rejected Key.
 			continue
 		}
 		state := a.stateForLocked(z.Provider)

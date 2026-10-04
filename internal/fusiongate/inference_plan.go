@@ -320,6 +320,9 @@ func classifyInferenceResult(result attemptResult, downstreamCanceled bool) infe
 		}
 		return decisionTerminal
 	}
+	if inferenceCredentialFailure(result) {
+		return decisionRetryChannel
+	}
 	if result.Reason == "protocol_fallback" {
 		return decisionRetryChannel
 	}

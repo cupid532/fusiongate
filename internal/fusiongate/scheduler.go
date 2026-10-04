@@ -428,7 +428,7 @@ func isProviderFailure(result attemptResult) bool {
 	if isNeutralResult(result) {
 		return false
 	}
-	if result.Err != nil {
+	if inferenceCredentialFailure(result) || result.Err != nil {
 		return true
 	}
 	switch result.Status {
@@ -441,6 +441,9 @@ func isProviderFailure(result attemptResult) bool {
 func providerStatus(result attemptResult) string {
 	if !isProviderFailure(result) {
 		return "healthy"
+	}
+	if inferenceCredentialFailure(result) {
+		return "auth_expired"
 	}
 	switch result.Status {
 	case http.StatusUnauthorized, http.StatusForbidden:
@@ -475,7 +478,7 @@ func (a *App) completeRouteWithWriter(z resolvedRoute, result attemptResult, lat
 		if cooldown <= 0 {
 			cooldown = 30 * time.Second
 		}
-		if result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden || result.Status == http.StatusTooManyRequests {
+		if inferenceCredentialFailure(result) || result.Status == http.StatusTooManyRequests {
 			if cooldown < 5*time.Minute {
 				cooldown = 5 * time.Minute
 			}
@@ -544,8 +547,7 @@ func (a *App) completeRouteWithWriter(z resolvedRoute, result attemptResult, lat
 		if threshold <= 0 {
 			threshold = DefaultFailureThreshold
 		}
-		immediate := result.Status == http.StatusUnauthorized || result.Status == http.StatusForbidden ||
-			result.Status == http.StatusTooManyRequests
+		immediate := inferenceCredentialFailure(result) || result.Status == http.StatusTooManyRequests
 		if immediate || state.ConsecutiveFailures >= threshold {
 			cooldown := time.Duration(z.Provider.CooldownSeconds) * time.Second
 			if cooldown <= 0 {
@@ -572,13 +574,13 @@ func (a *App) completeRouteWithWriter(z resolvedRoute, result attemptResult, lat
 			}
 			state.CircuitOpenUntil = time.Now().Add(cooldown)
 			openUntil = state.CircuitOpenUntil.UTC().Format(time.RFC3339Nano)
-			switch result.Status {
-			case http.StatusTooManyRequests:
+			switch {
+			case inferenceCredentialFailure(result):
+				status = "auth_expired"
+			case result.Status == http.StatusTooManyRequests:
 				// Keep the reason visible in the console while CircuitOpenUntil
 				// prevents this account from being selected during cooldown.
 				status = "rate_limited"
-			case http.StatusUnauthorized, http.StatusForbidden:
-				status = "auth_expired"
 			default:
 				status = "circuit_open"
 			}

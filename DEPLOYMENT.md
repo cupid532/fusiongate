@@ -256,6 +256,39 @@ preserving ownership and permissions, ensure `/opt/fusiongate/data` is owned by 
 
 The database cannot decrypt saved upstream credentials without the matching master key.
 
+## Long HTTP/1 streaming responses and Caddy 2.11.6
+
+Caddy 2.11.6 defaults `read_body_idle` to one minute. Its request-body
+idle wrapper can re-arm a socket read deadline after EOF when proxying a
+known-length HTTP/1 POST. That deadline can cancel an otherwise active SSE
+response: the client sees `terminated`, Caddy logs `reading: context canceled`,
+and FusionGate records `downstream_canceled` at approximately 60 seconds.
+An absent timeout field in the admin JSON does not mean the default is disabled.
+
+The bundled Caddy template disables this faulty idle wrapper while retaining
+an upload ceiling and a request-header deadline. For a shared host Caddy,
+merge the following into the existing global options (scope to the matching
+listener, e.g. `servers :443`, when appropriate):
+
+```caddyfile
+servers {
+    timeouts {
+        read_body_idle -1s
+        read_body 3m
+        read_header 15s
+    }
+}
+```
+
+`0` selects the default rather than disabling the wrapper; use a negative
+value. Validate the configuration and reload Caddy gracefully. This change
+preserves the default write-idle protection. Verify with a known-length POST
+and continuously streaming response lasting longer than 60 seconds, not just
+with a health check. Keep a rollback copy of the original host configuration.
+
+Upstream implementation: [Caddy 2.11.6 idle reader](https://github.com/caddyserver/caddy/blob/v2.11.6/modules/caddyhttp/idletimeout.go)
+and [default timeouts](https://github.com/caddyserver/caddy/blob/v2.11.6/modules/caddyhttp/app.go).
+
 ## Post-install checklist
 
 - Store the generated or chosen administrator password in a password manager; the installer displays a generated password only once.
