@@ -1,5 +1,17 @@
 # Changelog
 
+## V3.49
+
+- Stop keeping a public route for a model no Key permission allows: when the last
+  permission for a model is withdrawn, its route is removed and recorded as an
+  exclusion, so the channel's public-model count, `/v1/models` discovery, and
+  health-check targets no longer advertise a model whose every request would fail.
+- Re-enabling the model clears that exclusion and recreates the route, and a route
+  whose upstream name the Key configuration never mentions stays untouched.
+- Replace the regression test that asserted permission removal preserves the
+  route with coverage for the new contract, plus a test that withdrawing one
+  permission drops only that route.
+
 ## V3.48
 
 - Only treat a Key as using an IP pool node when its egress mode is "node";

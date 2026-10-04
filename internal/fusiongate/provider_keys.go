@@ -1071,9 +1071,72 @@ AND NOT EXISTS(SELECT 1 FROM model_route_exclusions WHERE provider_id=? AND (LOW
 		}
 		added += int(n)
 	}
-	// Key permission changes must not destroy mapping configuration or aliases.
-	// Unsupported routes remain configured but resolveProviderKeysBatch naturally
-	// gives them no eligible Key until an administrator restores permission.
+	// A public route must describe something this channel can actually serve.
+	// When the last Key permission for a model is withdrawn, the route is
+	// deleted and recorded as an exclusion so the console, /v1/models discovery,
+	// and health checks stop advertising a model that no Key can select. Turning
+	// the model back on states it as explicit above, which clears the exclusion
+	// and recreates the route. Only models this provider's Key configuration
+	// already knows about are considered, so a hand-written route for an
+	// arbitrary upstream name survives until it is granted a permission.
+	known := map[string]bool{}
+	for _, key := range keys {
+		for model := range key.inventory {
+			known[model] = true
+		}
+		for model := range key.exclusions {
+			known[model] = true
+		}
+		if fixed := normalizeProviderKeyModel(key.fixed); fixed != "" {
+			known[fixed] = true
+		}
+	}
+	if fallback := normalizeProviderKeyModel(defaultModel); fallback != "" {
+		known[fallback] = true
+	}
+	routes, err := tx.QueryContext(ctx, `SELECT id,public_name,upstream_model FROM model_routes WHERE provider_id=?`, providerID)
+	if err != nil {
+		return added, err
+	}
+	type syncedRoute struct {
+		id         int64
+		publicName string
+		upstream   string
+	}
+	var stale []syncedRoute
+	for routes.Next() {
+		var route syncedRoute
+		if err := routes.Scan(&route.id, &route.publicName, &route.upstream); err != nil {
+			routes.Close()
+			return added, err
+		}
+		normalized := normalizeProviderKeyModel(route.upstream)
+		if !known[normalized] || supports(normalized) {
+			continue
+		}
+		stale = append(stale, route)
+	}
+	if err := routes.Err(); err != nil {
+		routes.Close()
+		return added, err
+	}
+	if err := routes.Close(); err != nil {
+		return added, err
+	}
+	for _, route := range stale {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM model_routes WHERE id=?`, route.id); err != nil {
+			return added, err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM model_aliases WHERE target_model=? AND NOT EXISTS(SELECT 1 FROM model_routes WHERE public_name=?)`, route.publicName, route.publicName); err != nil {
+			return added, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO model_route_exclusions(provider_id,public_name,upstream_model,created_at) VALUES(?,?,?,?)`, providerID, normalizeProviderKeyModel(route.upstream), normalizeProviderKeyModel(route.upstream), stamp); err != nil {
+			return added, err
+		}
+		a.routeMu.Lock()
+		a.forgetRouteCursorsLocked(strings.ToLower(strings.TrimSpace(route.publicName)))
+		a.routeMu.Unlock()
+	}
 	return added, nil
 }
 

@@ -1,12 +1,70 @@
 package fusiongate
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// Withdrawing one model's permission must drop that public route while leaving
+// the models that are still selective untouched, and re-enabling must restore
+// the route the same save recorded as an exclusion.
+func TestModelPermissionRemovalDropsOnlyThatRoute(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	p := insertTestProvider(t, a, "cline-like", "openai_compatible", "https://upstream.invalid", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	key := insertProviderKeyForTest(t, a, p, "sk-test", "10.4", "", providerKeyEgressInherit, nil, 1, 0)
+	save := func(models ...string) {
+		t.Helper()
+		if _, err := a.saveProviderModelManagement(context.Background(), p, []providerModelManagementItem{{KeyID: key, ModelPolicy: "fallback", Models: models}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("cline-pass/keep", "cline-pass/drop")
+	var n int
+	if err := a.db.QueryRow(`SELECT count(*) FROM model_routes WHERE provider_id=?`, p).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("initial routes=%d err=%v", n, err)
+	}
+	save("cline-pass/keep")
+	if err := a.db.QueryRow(`SELECT count(*) FROM model_routes WHERE provider_id=? AND LOWER(upstream_model)='cline-pass/drop'`, p).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("unservable route kept count=%d err=%v", n, err)
+	}
+	if err := a.db.QueryRow(`SELECT count(*) FROM model_routes WHERE provider_id=? AND LOWER(upstream_model)='cline-pass/keep'`, p).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("servable route lost count=%d err=%v", n, err)
+	}
+	save("cline-pass/keep", "cline-pass/drop")
+	if err := a.db.QueryRow(`SELECT count(*) FROM model_routes WHERE provider_id=?`, p).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("restored routes=%d err=%v", n, err)
+	}
+}
+
+// A route whose upstream the Key configuration never mentions is an
+// administrator's own mapping and must survive a permission sync untouched.
+func TestUnknownUpstreamRouteSurvivesPermissionSync(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	p := insertTestProvider(t, a, "hand-written", "openai_compatible", "https://upstream.invalid", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	key := insertProviderKeyForTest(t, a, p, "sk-test", "key", "", providerKeyEgressInherit, nil, 1, 0)
+	if _, err := a.db.Exec(`INSERT INTO model_routes(public_name,provider_id,upstream_model,created_at,updated_at) VALUES('hand-written',?,'Vendor/NotConfigured',?,?)`, p, now(), now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.saveProviderModelManagement(context.Background(), p, []providerModelManagementItem{{KeyID: key, ModelPolicy: "fallback", Models: []string{"cline-pass/keep"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := a.db.QueryRow(`SELECT count(*) FROM model_routes WHERE provider_id=? AND public_name='hand-written'`, p).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("hand-written route count=%d err=%v", n, err)
+	}
+}
 
 func modelManagementFixture(t *testing.T) (*App, int64, int64) {
 	t.Helper()

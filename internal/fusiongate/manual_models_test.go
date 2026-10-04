@@ -194,8 +194,13 @@ func TestManualModelsBackupRoundTripKeepsMetadata(t *testing.T) {
 	}
 }
 
-func TestManualModelsPermissionSaveDoesNotDeleteMappings(t *testing.T) {
+func TestManualModelsPermissionRemovalDropsUnservableRoute(t *testing.T) {
 	a, p, keys := manualModelsFixture(t)
+	// A fallback Key with no inventory yet can select any model, so it keeps the
+	// route alive; constrain the unrelated Key to isolate the withdrawn one.
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET model_policy='allowlist',model_allowlist='' WHERE id=?`, keys[1]); err != nil {
+		t.Fatal(err)
+	}
 	_, err := a.saveManualModels(context.Background(), p, manualModelsInput{KeyIDs: keys[:1], Entries: []manualModelEntry{{Model: "KeptCase"}}, CreateRoutes: true})
 	if err != nil {
 		t.Fatal(err)
@@ -204,16 +209,29 @@ func TestManualModelsPermissionSaveDoesNotDeleteMappings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var model, source string
-	if err = a.db.QueryRow(`SELECT upstream_model FROM model_routes WHERE public_name='keptcase'`).Scan(&model); err != nil || model != "KeptCase" {
-		t.Fatalf("mapping lost model=%q err=%v", model, err)
+	// Withdrawing the last permission must not leave a public route that no Key
+	// can serve: the console, /v1/models, and health checks would otherwise
+	// advertise a model whose every request fails. The name is recorded as an
+	// exclusion instead, so discovery cannot quietly recreate the route.
+	var routes int
+	if err = a.db.QueryRow(`SELECT count(*) FROM model_routes WHERE public_name='keptcase'`).Scan(&routes); err != nil || routes != 0 {
+		t.Fatalf("unservable route kept count=%d err=%v", routes, err)
 	}
+	var exclusions int
+	if err = a.db.QueryRow(`SELECT count(*) FROM model_route_exclusions WHERE provider_id=? AND LOWER(upstream_model)='keptcase'`, p).Scan(&exclusions); err != nil || exclusions != 1 {
+		t.Fatalf("route exclusion count=%d err=%v", exclusions, err)
+	}
+	var source string
 	if err = a.db.QueryRow(`SELECT model_source FROM provider_api_key_models WHERE provider_key_id=?`, keys[0]).Scan(&source); err != nil || source != "manual" {
 		t.Fatalf("source=%q err=%v", source, err)
 	}
 	_, err = a.saveProviderModelManagement(context.Background(), p, []providerModelManagementItem{{KeyID: keys[0], ModelPolicy: "allowlist", Models: []string{"KeptCase"}}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	var model string
+	if err = a.db.QueryRow(`SELECT upstream_model FROM model_routes WHERE public_name='keptcase'`).Scan(&model); err != nil || model != "KeptCase" {
+		t.Fatalf("route not restored model=%q err=%v", model, err)
 	}
 	var n int
 	if err = a.db.QueryRow(`SELECT count(*) FROM provider_api_key_models WHERE provider_key_id=?`, keys[0]).Scan(&n); err != nil || n != 1 {
