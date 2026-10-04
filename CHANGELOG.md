@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.48
+
+- Only treat a Key as using an IP pool node when its egress mode is "node";
+  ignore the inert historical node id left on "inherit"/"direct" Keys, which
+  previously blocked deleting a node nothing actually routed through.
+- Name the blocking providers and Keys in the delete conflict so the operator can
+  find the assignment to change, and add regression coverage for both the inert
+  and genuinely pinned cases.
+
 ## V3.47
 
 - Stop presenting upstream API keys as new website passwords: keep them masked,

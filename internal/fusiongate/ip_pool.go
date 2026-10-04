@@ -559,16 +559,49 @@ func (a *App) ipPoolNodeByID(w http.ResponseWriter, r *http.Request, _ adminCtx)
 		}
 		writeJSON(w, http.StatusOK, response)
 	case http.MethodDelete:
-		var providerCount int
-		if err := a.db.QueryRow(`SELECT (SELECT COUNT(*) FROM providers WHERE ip_pool_node_id=?)+(SELECT COUNT(*) FROM provider_api_keys WHERE ip_pool_node_id=?)`, id, id).Scan(&providerCount); err != nil {
+		// Only a provider's own exit assignment and a Key pinned with
+		// egress_mode="node" actually route traffic through this node. Keys on
+		// "inherit" or "direct" can keep a historical ip_pool_node_id from an
+		// earlier configuration; that value is inert, so counting it refused to
+		// delete a node that nothing really used.
+		rows, err := a.db.Query(`SELECT p.name FROM providers p WHERE p.ip_pool_node_id=? UNION ALL SELECT p.name || ' · ' || k.name FROM provider_api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.egress_mode=? AND k.ip_pool_node_id=?`, id, providerKeyEgressNode, id)
+		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		if providerCount > 0 {
-			fail(w, http.StatusConflict, "node_in_use", fmt.Sprintf("node is still assigned to %d provider or API key configuration(s); change their network exit before deleting it", providerCount))
+		users := []string{}
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				_ = rows.Close()
+				fail(w, http.StatusInternalServerError, "database_error", err.Error())
+				return
+			}
+			users = append(users, name)
+		}
+		if err := rows.Close(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		res, err := a.db.Exec(`DELETE FROM ip_pool_nodes WHERE id=?`, id)
+		if len(users) > 0 {
+			fail(w, http.StatusConflict, "node_in_use", fmt.Sprintf("node is still used by %d provider or API key configuration(s): %s; change their network exit before deleting it", len(users), summarizeNodeUsers(users)))
+			return
+		}
+		// provider_api_keys.ip_pool_node_id is ON DELETE RESTRICT, so an inert
+		// historical id left behind by "inherit"/"direct" mode would still make
+		// the DELETE fail with a foreign-key error. Release those first; the
+		// column does not affect routing for those modes.
+		tx, err := a.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(r.Context(), `UPDATE provider_api_keys SET ip_pool_node_id=NULL WHERE ip_pool_node_id=? AND egress_mode<>?`, id, providerKeyEgressNode); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		res, err := tx.ExecContext(r.Context(), `DELETE FROM ip_pool_nodes WHERE id=?`, id)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -577,11 +610,26 @@ func (a *App) ipPoolNodeByID(w http.ResponseWriter, r *http.Request, _ adminCtx)
 			fail(w, http.StatusNotFound, "not_found", "IP pool node not found")
 			return
 		}
+		if err := tx.Commit(); err != nil {
+			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
 		_ = a.reconcileIPPool(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "PATCH or DELETE required")
 	}
+}
+
+// summarizeNodeUsers keeps the delete-conflict message readable when many
+// channels share one node, while still naming enough of them for the operator
+// to find and change the offending exit assignment.
+func summarizeNodeUsers(users []string) string {
+	const limit = 5
+	if len(users) <= limit {
+		return strings.Join(users, ", ")
+	}
+	return strings.Join(users[:limit], ", ") + fmt.Sprintf(" and %d more", len(users)-limit)
 }
 
 func (a *App) testIPPoolNode(w http.ResponseWriter, r *http.Request, id int64) {

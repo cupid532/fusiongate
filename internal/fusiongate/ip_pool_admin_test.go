@@ -1,6 +1,7 @@
 package fusiongate
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -121,5 +122,75 @@ func TestProvidersListIncludesMaskedIPPoolAssignment(t *testing.T) {
 	}
 	if strings.Contains(body, "user:secret") {
 		t.Fatalf("providers response exposed proxy credential: %s", body)
+	}
+}
+
+func insertIPPoolNodeForTest(t *testing.T, a *App, name string, port int) int64 {
+	t.Helper()
+	link, err := a.encrypt("socks5://user:secret@proxy.example.com:1080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := a.db.Exec(`INSERT INTO ip_pool_nodes(name,protocol,server,share_link,enabled,local_port,status,created_at,updated_at) VALUES(?,'socks5','proxy.example.com:1080',?,0,?,'pending',?,?)`, name, link, port, now(), now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := result.LastInsertId()
+	return id
+}
+
+func deleteIPPoolNodeForTest(a *App, id int64) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	a.ipPoolNodeByID(recorder, httptest.NewRequest(http.MethodDelete, "/api/admin/ip-pool/"+intString(id), nil), adminCtx{})
+	return recorder
+}
+
+func TestIPPoolNodeDeletionOnlyCountsEffectiveKeyEgress(t *testing.T) {
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+
+	// A Key left in "inherit" mode can keep a historical node id while it really
+	// routes through the provider's exit. That stale value must not block
+	// deleting the node, which is what made the console report a phantom user.
+	inertNode := insertIPPoolNodeForTest(t, a, "Inert Node", 23001)
+	inertProvider := insertTestProvider(t, a, "inert-provider", "openai_compatible", "https://inert.example.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	insertProviderKeyForTest(t, a, inertProvider, "sk-inert-node-12345678", "Key 1", "", providerKeyEgressInherit, inertNode, 1, 0)
+	if recorder := deleteIPPoolNodeForTest(a, inertNode); recorder.Code != http.StatusOK {
+		t.Fatalf("inert key reference blocked deletion: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	// The inert column is released with the node, so no orphan reference is left
+	// pointing at a node id that no longer exists.
+	var leftover sql.NullInt64
+	if err := a.db.QueryRow(`SELECT ip_pool_node_id FROM provider_api_keys WHERE provider_id=?`, inertProvider).Scan(&leftover); err != nil {
+		t.Fatal(err)
+	}
+	if leftover.Valid {
+		t.Fatalf("inert key reference was not released: node=%d", leftover.Int64)
+	}
+
+	// A Key actually pinned with egress_mode="node" still protects the node, and
+	// the conflict now names the channel and Key so the operator can find them.
+	pinnedNode := insertIPPoolNodeForTest(t, a, "Pinned Node", 23002)
+	pinnedProvider := insertTestProvider(t, a, "pinned-provider", "openai_compatible", "https://pinned.example.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	keyID := insertProviderKeyForTest(t, a, pinnedProvider, "sk-pinned-node-12345678", "主 Key", "", providerKeyEgressNode, pinnedNode, 1, 0)
+	conflict := deleteIPPoolNodeForTest(a, pinnedNode)
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("pinned key did not protect node: status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+	for _, want := range []string{"pinned-provider", "主 Key"} {
+		if !strings.Contains(conflict.Body.String(), want) {
+			t.Fatalf("conflict message %q does not name %q", conflict.Body.String(), want)
+		}
+	}
+
+	// Switching the Key back to inherit (keeping the stale id) releases the node.
+	if _, err := a.db.Exec(`UPDATE provider_api_keys SET egress_mode=? WHERE id=?`, providerKeyEgressInherit, keyID); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := deleteIPPoolNodeForTest(a, pinnedNode); recorder.Code != http.StatusOK {
+		t.Fatalf("released node still blocked: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
