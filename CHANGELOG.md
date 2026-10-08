@@ -1,5 +1,17 @@
 # Changelog
 
+## V3.51
+
+- Deleting an IP pool node now automatically switches bound channel defaults and
+  independently pinned API Keys to direct connections, including disabled and
+  archived channels, instead of refusing deletion while the node is in use.
+- Release assignments and delete the node in one transaction: any failure rolls
+  back all changes. Preserve channel/Key enabled states, credentials, unrelated
+  node assignments, and the mode of inert historical inherit/direct references.
+- Explain the direct-connection fallback and connectivity impact in single and
+  bulk deletion confirmations, and add regression coverage for atomic rollback.
+- Synchronize the release VERSION marker with the application version.
+
 ## V3.50
 
 - Open the upstream-channel list on enabled channels, and order its groups

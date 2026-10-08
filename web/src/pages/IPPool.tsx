@@ -203,7 +203,7 @@ export function IPPool() {
                   disabled={batchBusy || uncertainBatch}
                   onClick={async () => {
                     const names = [...selected].map((id) => nodes.find((n) => n.id === id)?.name).filter(Boolean).slice(0, 5).join("、")
-                    if (await confirm({ title: `删除选中的 ${selected.size} 个节点？`, description: `${names}${selected.size > 5 ? " 等" : ""}。此操作不可恢复。`, destructive: true, confirmLabel: `删除 ${selected.size} 个` })) {
+                    if (await confirm({ title: `删除选中的 ${selected.size} 个节点？`, description: `${names}${selected.size > 5 ? " 等" : ""}。删除后，绑定这些节点的渠道和独立绑定这些节点的 API Key 会自动改为直连，可能影响连通性。此操作不可恢复。`, destructive: true, confirmLabel: `删除 ${selected.size} 个` })) {
                       batchDelete.mutate([...selected])
                     }
                   }}
@@ -301,7 +301,7 @@ export function IPPool() {
                             variant="ghost"
                             size="icon"
                             onClick={async () => {
-                              if (await confirmDelete(`节点「${n.name}」`)) remove.mutate(n.id)
+                              if (await confirmDelete(`节点「${n.name}」`, "删除后，绑定此节点的渠道和独立绑定此节点的 API Key 会自动改为直连，可能影响连通性。此操作不可恢复。")) remove.mutate(n.id)
                             }}
                             disabled={batchBusy || remove.isPending} aria-label={`删除 ${n.name}`}
                           >

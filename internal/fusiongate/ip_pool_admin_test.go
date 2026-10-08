@@ -67,25 +67,15 @@ func TestIPPoolNodeCRUDAndProviderBinding(t *testing.T) {
 
 	deleteRecorder := httptest.NewRecorder()
 	a.ipPoolNodeByID(deleteRecorder, httptest.NewRequest(http.MethodDelete, "/api/admin/ip-pool/"+intString(created.ID), nil), adminCtx{})
-	if deleteRecorder.Code != http.StatusConflict {
-		t.Fatalf("delete in-use node status=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
-	}
-
-	unbind := httptest.NewRequest(http.MethodPatch, "/api/admin/providers/"+intString(providerID), strings.NewReader(`{"ip_pool_node_id":0}`))
-	unbindRecorder := httptest.NewRecorder()
-	a.providerByID(unbindRecorder, unbind, adminCtx{})
-	if unbindRecorder.Code != http.StatusOK {
-		t.Fatalf("unbind provider status=%d body=%s", unbindRecorder.Code, unbindRecorder.Body.String())
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("delete bound node status=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
 	}
 	var count int
 	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers WHERE id=? AND ip_pool_node_id IS NULL`, providerID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("provider did not return to direct mode: count=%d err=%v", count, err)
 	}
-
-	deleteRecorder = httptest.NewRecorder()
-	a.ipPoolNodeByID(deleteRecorder, httptest.NewRequest(http.MethodDelete, "/api/admin/ip-pool/"+intString(created.ID), nil), adminCtx{})
-	if deleteRecorder.Code != http.StatusOK {
-		t.Fatalf("delete unused node status=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	if recorder := deleteIPPoolNodeForTest(a, created.ID); recorder.Code != http.StatusNotFound {
+		t.Fatalf("delete missing node status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -145,52 +135,123 @@ func deleteIPPoolNodeForTest(a *App, id int64) *httptest.ResponseRecorder {
 	return recorder
 }
 
-func TestIPPoolNodeDeletionOnlyCountsEffectiveKeyEgress(t *testing.T) {
+func TestIPPoolNodeDeletionReleasesAssignments(t *testing.T) {
 	a, err := New(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-
-	// A Key left in "inherit" mode can keep a historical node id while it really
-	// routes through the provider's exit. That stale value must not block
-	// deleting the node, which is what made the console report a phantom user.
-	inertNode := insertIPPoolNodeForTest(t, a, "Inert Node", 23001)
-	inertProvider := insertTestProvider(t, a, "inert-provider", "openai_compatible", "https://inert.example.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
-	insertProviderKeyForTest(t, a, inertProvider, "sk-inert-node-12345678", "Key 1", "", providerKeyEgressInherit, inertNode, 1, 0)
-	if recorder := deleteIPPoolNodeForTest(a, inertNode); recorder.Code != http.StatusOK {
-		t.Fatalf("inert key reference blocked deletion: status=%d body=%s", recorder.Code, recorder.Body.String())
+	node := insertIPPoolNodeForTest(t, a, "Deleted", 23001)
+	other := insertIPPoolNodeForTest(t, a, "Retained", 23002)
+	for _, state := range []struct {
+		name              string
+		enabled, archived int
+	}{{"active", 1, 0}, {"disabled", 0, 0}, {"archived", 0, 1}} {
+		p := insertTestProvider(t, a, state.name, "openai_compatible", "https://example.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+		if _, err := a.db.Exec(`UPDATE providers SET ip_pool_node_id=?,enabled=?,archived=? WHERE id=?`, node, state.enabled, state.archived, p); err != nil {
+			t.Fatal(err)
+		}
+		for i, mode := range []string{providerKeyEgressNode, providerKeyEgressInherit, providerKeyEgressDirect} {
+			insertProviderKeyForTest(t, a, p, "sk-"+mode, mode, "", mode, node, state.enabled, i)
+		}
+		insertProviderKeyForTest(t, a, p, "sk-other", "other", "", providerKeyEgressNode, other, 1, 3)
 	}
-	// The inert column is released with the node, so no orphan reference is left
-	// pointing at a node id that no longer exists.
-	var leftover sql.NullInt64
-	if err := a.db.QueryRow(`SELECT ip_pool_node_id FROM provider_api_keys WHERE provider_id=?`, inertProvider).Scan(&leftover); err != nil {
+	// A pinned Key must become direct, not inherit a different channel proxy.
+	p := insertTestProvider(t, a, "other-default", "openai_compatible", "https://example.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+	if _, err := a.db.Exec(`UPDATE providers SET ip_pool_node_id=? WHERE id=?`, other, p); err != nil {
 		t.Fatal(err)
 	}
-	if leftover.Valid {
-		t.Fatalf("inert key reference was not released: node=%d", leftover.Int64)
+	key := insertProviderKeyForTest(t, a, p, "sk-pinned", "pinned", "", providerKeyEgressNode, node, 1, 0)
+	if r := deleteIPPoolNodeForTest(a, node); r.Code != http.StatusOK {
+		t.Fatalf("delete status=%d body=%s", r.Code, r.Body.String())
 	}
-
-	// A Key actually pinned with egress_mode="node" still protects the node, and
-	// the conflict now names the channel and Key so the operator can find them.
-	pinnedNode := insertIPPoolNodeForTest(t, a, "Pinned Node", 23002)
-	pinnedProvider := insertTestProvider(t, a, "pinned-provider", "openai_compatible", "https://pinned.example.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
-	keyID := insertProviderKeyForTest(t, a, pinnedProvider, "sk-pinned-node-12345678", "主 Key", "", providerKeyEgressNode, pinnedNode, 1, 0)
-	conflict := deleteIPPoolNodeForTest(a, pinnedNode)
-	if conflict.Code != http.StatusConflict {
-		t.Fatalf("pinned key did not protect node: status=%d body=%s", conflict.Code, conflict.Body.String())
-	}
-	for _, want := range []string{"pinned-provider", "主 Key"} {
-		if !strings.Contains(conflict.Body.String(), want) {
-			t.Fatalf("conflict message %q does not name %q", conflict.Body.String(), want)
+	for _, state := range []struct {
+		name              string
+		enabled, archived int
+	}{{"active", 1, 0}, {"disabled", 0, 0}, {"archived", 0, 1}} {
+		var id int64
+		var ref sql.NullInt64
+		var enabled, archived int
+		if err := a.db.QueryRow(`SELECT id,ip_pool_node_id,enabled,archived FROM providers WHERE name=?`, state.name).Scan(&id, &ref, &enabled, &archived); err != nil {
+			t.Fatal(err)
+		}
+		if ref.Valid || enabled != state.enabled || archived != state.archived {
+			t.Fatalf("channel %s changed incorrectly", state.name)
+		}
+		for _, name := range []string{providerKeyEgressNode, providerKeyEgressInherit, providerKeyEgressDirect, "other"} {
+			var mode string
+			var keyEnabled int
+			if err := a.db.QueryRow(`SELECT egress_mode,ip_pool_node_id,enabled FROM provider_api_keys WHERE provider_id=? AND name=?`, id, name).Scan(&mode, &ref, &keyEnabled); err != nil {
+				t.Fatal(err)
+			}
+			want := name
+			if name == providerKeyEgressNode {
+				want = providerKeyEgressDirect
+			}
+			if name == "other" {
+				if mode != providerKeyEgressNode || !ref.Valid || ref.Int64 != other || keyEnabled != 1 {
+					t.Fatal("unrelated Key changed")
+				}
+				continue
+			}
+			if mode != want || ref.Valid || keyEnabled != state.enabled {
+				t.Fatalf("Key %s changed incorrectly", name)
+			}
 		}
 	}
-
-	// Switching the Key back to inherit (keeping the stale id) releases the node.
-	if _, err := a.db.Exec(`UPDATE provider_api_keys SET egress_mode=? WHERE id=?`, providerKeyEgressInherit, keyID); err != nil {
+	var mode string
+	var ref sql.NullInt64
+	if err := a.db.QueryRow(`SELECT egress_mode,ip_pool_node_id FROM provider_api_keys WHERE id=?`, key).Scan(&mode, &ref); err != nil {
 		t.Fatal(err)
 	}
-	if recorder := deleteIPPoolNodeForTest(a, pinnedNode); recorder.Code != http.StatusOK {
-		t.Fatalf("released node still blocked: status=%d body=%s", recorder.Code, recorder.Body.String())
+	if mode != providerKeyEgressDirect || ref.Valid {
+		t.Fatal("pinned Key inherited another proxy")
+	}
+	var remaining int64
+	if err := a.db.QueryRow(`SELECT ip_pool_node_id FROM providers WHERE id=?`, p).Scan(&remaining); err != nil || remaining != other {
+		t.Fatalf("unrelated channel changed: %v", err)
+	}
+	var count int
+	if err := a.db.QueryRow(`SELECT count(*) FROM ip_pool_nodes WHERE id=?`, node).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("node remains: %v", err)
+	}
+}
+
+func TestIPPoolNodeDeletionRollsBackAssignments(t *testing.T) {
+	for _, stage := range []string{"keys", "node"} {
+		t.Run(stage, func(t *testing.T) {
+			a, err := New(testConfig(t))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer a.Close()
+			node := insertIPPoolNodeForTest(t, a, "Rollback", 23001)
+			p := insertTestProvider(t, a, "bound", "openai_compatible", "https://example.test", "secret", 1, 100, "normalized", "any", 0, 3, 30)
+			if _, err := a.db.Exec(`UPDATE providers SET ip_pool_node_id=? WHERE id=?`, node, p); err != nil {
+				t.Fatal(err)
+			}
+			key := insertProviderKeyForTest(t, a, p, "sk-rollback", "pinned", "", providerKeyEgressNode, node, 1, 0)
+			trigger := `CREATE TRIGGER reject_delete BEFORE DELETE ON ip_pool_nodes BEGIN SELECT RAISE(ABORT,'test failure'); END`
+			if stage == "keys" {
+				trigger = `CREATE TRIGGER reject_update BEFORE UPDATE ON provider_api_keys BEGIN SELECT RAISE(ABORT,'test failure'); END`
+			}
+			if _, err := a.db.Exec(trigger); err != nil {
+				t.Fatal(err)
+			}
+			if r := deleteIPPoolNodeForTest(a, node); r.Code != http.StatusInternalServerError {
+				t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+			}
+			var ref int64
+			var mode string
+			if err := a.db.QueryRow(`SELECT ip_pool_node_id FROM providers WHERE id=?`, p).Scan(&ref); err != nil || ref != node {
+				t.Fatalf("channel not rolled back: %v", err)
+			}
+			if err := a.db.QueryRow(`SELECT ip_pool_node_id,egress_mode FROM provider_api_keys WHERE id=?`, key).Scan(&ref, &mode); err != nil || ref != node || mode != providerKeyEgressNode {
+				t.Fatalf("Key not rolled back: %v", err)
+			}
+			if err := a.db.QueryRow(`SELECT id FROM ip_pool_nodes WHERE id=?`, node).Scan(&ref); err != nil {
+				t.Fatalf("node not rolled back: %v", err)
+			}
+		})
 	}
 }
