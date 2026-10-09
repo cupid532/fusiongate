@@ -22,7 +22,7 @@ services:
         max-size: "10m"
         max-file: "5"
     env_file:
-      - ${FUSIONGATE_ENV_FILE:-/opt/fusiongate/config/fusiongate.env}
+      - ${FUSIONGATE_ENV_FILE:-/home/myservices/fusiongate/config/fusiongate.env}
     environment:
       FUSIONGATE_ADDR: 0.0.0.0:8787
       FUSIONGATE_DATA_DIR: /data
@@ -31,9 +31,9 @@ services:
     ports:
       - "127.0.0.1:${FUSIONGATE_PORT:-18787}:8787"
     volumes:
-      - ${FUSIONGATE_DATA_PATH:-/opt/fusiongate/data}:/data
-      - ${FUSIONGATE_MASTER_KEY_PATH:-/opt/fusiongate/config/master_key}:/run/secrets/fusiongate_master_key:ro
-      - ${FUSIONGATE_ADMIN_PASSWORD_PATH:-/opt/fusiongate/config/admin_password}:/run/secrets/fusiongate_admin_password:ro
+      - ${FUSIONGATE_DATA_PATH:-/home/myservices/fusiongate/data}:/data
+      - ${FUSIONGATE_MASTER_KEY_PATH:-/home/myservices/fusiongate/config/master_key}:/run/secrets/fusiongate_master_key:ro
+      - ${FUSIONGATE_ADMIN_PASSWORD_PATH:-/home/myservices/fusiongate/config/admin_password}:/run/secrets/fusiongate_admin_password:ro
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid,nodev

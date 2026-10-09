@@ -9,7 +9,7 @@
 # mode this is designed to make impossible.
 #
 # It replaces an undocumented flow that had drifted badly: the build context
-# /opt/fusiongate/app was a plain directory with no .git, so nothing tied the
+# /home/myservices/fusiongate/app was a plain directory with no .git, so nothing tied the
 # running image to a commit, and nothing stopped a local edit from being built
 # and shipped without ever reaching GitHub.
 #
@@ -21,8 +21,8 @@
 #
 set -Eeuo pipefail
 
-FUSIONGATE_HOME="${FUSIONGATE_HOME:-/opt/fusiongate}"
-REPO_DIR="${FUSIONGATE_REPO_DIR:-/root/work/fusiongate-ui-strategy}"
+FUSIONGATE_HOME="${FUSIONGATE_HOME:-/home/myservices/fusiongate}"
+REPO_DIR="${FUSIONGATE_REPO_DIR:-/home/myservices/fusiongate/source}"
 COMPOSE_FILE="${FUSIONGATE_COMPOSE_FILE:-$FUSIONGATE_HOME/docker-compose.yml}"
 BUILD_ROOT="$FUSIONGATE_HOME/releases"
 HEALTH_URL="${FUSIONGATE_HEALTH_URL:-http://127.0.0.1:18787/healthz}"

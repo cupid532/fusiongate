@@ -175,20 +175,20 @@ curl -fsSL https://raw.githubusercontent.com/cupid532/fusiongate/main/deploy/ins
 
 ```bash
 # 更新到安装时记录的 GitHub ref
-sudo /opt/fusiongate/app/deploy/install.sh --update
+sudo /home/myservices/fusiongate/app/deploy/install.sh --update
 
-# 生成带校验和的受保护备份（默认写入 /var/backups/fusiongate）
-sudo /opt/fusiongate/app/deploy/install.sh --backup
+# 生成带校验和的受保护备份（默认写入 /home/myservices/fusiongate/backups）
+sudo /home/myservices/fusiongate/app/deploy/install.sh --backup
 
-# 校验并恢复备份；旧数据安全副本保存在 /opt/fusiongate/pre-restore-<stamp>
-sudo /opt/fusiongate/app/deploy/install.sh --restore /var/backups/fusiongate/fusiongate-<stamp>.tar.gz
+# 校验并恢复备份；旧数据安全副本保存在 /home/myservices/fusiongate/pre-restore-<stamp>
+sudo /home/myservices/fusiongate/app/deploy/install.sh --restore /home/myservices/fusiongate/backups/fusiongate-<stamp>.tar.gz
 
 # 日常状态与日志
-sudo docker compose --project-directory /opt/fusiongate/app --env-file /opt/fusiongate/config/compose.env -f /opt/fusiongate/app/deploy/compose.production.yml ps
+sudo docker compose --project-directory /home/myservices/fusiongate/app --env-file /home/myservices/fusiongate/config/compose.env -f /home/myservices/fusiongate/app/deploy/compose.production.yml ps
 ```
 
 如果该主机不是由 `deploy/install.sh` 安装的（即没有
-`/opt/fusiongate/.fusiongate-install`，Compose 与 Caddy 由你自己维护），
+`/home/myservices/fusiongate/.fusiongate-install`，Compose 与 Caddy 由你自己维护），
 安装器的 `--update` / `--backup` / `--restore` 都不适用。请改用
 `deploy/deploy-from-origin.sh` 升级——它只允许部署已经推送到 `origin/main`
 的提交，并在部署后校验 `/healthz` 上报的 `version` 与 `revision`，从而保证

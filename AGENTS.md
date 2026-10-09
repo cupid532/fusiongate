@@ -30,6 +30,6 @@ These instructions apply to every automated agent and contributor working in thi
 The deployed host and `origin/main` must always agree on version and behaviour. Practically:
 
 - **Push before you deploy.** `deploy/deploy-from-origin.sh` refuses any commit that is not an ancestor of `origin/main`, refuses a dirty working tree, and refuses a commit whose `Version` matches what is already running. Do not work around these checks; fix the cause.
-- **Never edit the deployed tree.** `/opt/fusiongate/app` and `/opt/fusiongate/releases/*` are build artifacts. Source changes belong in the git checkout, committed and pushed. A previous flow lost this and left the host running code that existed in no commit.
+- **Never edit the deployed tree.** `/home/myservices/fusiongate/app` and `/home/myservices/fusiongate/releases/*` are build artifacts. Source changes belong in the git checkout, committed and pushed. A previous flow lost this and left the host running code that existed in no commit.
 - **The running process must be identifiable.** `/healthz` reports `version` and `revision`; `revision` must equal a real commit SHA on `origin/main`. Keep it that way when touching build flags or the Dockerfile.
 - Built console assets under `internal/fusiongate/ui/` are committed so native `go build`/`go test` can satisfy `//go:embed ui`. The Docker build regenerates them from `web/`, so `web/` is the source of truth — run `deploy/build-web.sh` and commit the result alongside any console change.

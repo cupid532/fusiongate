@@ -40,18 +40,18 @@ The deploy script automatically restores the old image if the container fails it
 
 ## Two deployment models
 
-There are two supported ways to run FusionGate, and they are operated differently. Pick one per host and know which one you are on — `ls /opt/fusiongate/.fusiongate-install` tells you.
+There are two supported ways to run FusionGate, and they are operated differently. Pick one per host and know which one you are on — `ls /home/myservices/fusiongate/.fusiongate-install` tells you.
 
 | | Installer-managed | Self-managed |
 |---|---|---|
 | Set up by | `deploy/install.sh` | hand-written Compose + existing host Caddy |
-| Marker file | `/opt/fusiongate/.fusiongate-install` exists | absent |
-| Compose file | `/opt/fusiongate/app/deploy/compose.production.yml` | `/opt/fusiongate/docker-compose.yml` |
-| Env file | `/opt/fusiongate/config/compose.env` | `/opt/fusiongate/config/fusiongate.env` |
+| Marker file | `/home/myservices/fusiongate/.fusiongate-install` exists | absent |
+| Compose file | `/home/myservices/fusiongate/app/deploy/compose.production.yml` | `/home/myservices/fusiongate/docker-compose.yml` |
+| Env file | `/home/myservices/fusiongate/config/compose.env` | `/home/myservices/fusiongate/config/fusiongate.env` |
 | Caddy | container, managed by the bundle | host service, shared with other sites |
 | Upgrades | `deploy/install.sh --update` | [`deploy/deploy-from-origin.sh`](#self-managed-upgrades) |
 
-Everything below applies to both models except the sections marked otherwise. **The installer-managed layout is operated through `/opt/fusiongate/app/deploy/install.sh` (`--update`, `--backup`, `--restore`), and its backup and restore commands require the marker file** — on a self-managed host, upgrade with `deploy/deploy-from-origin.sh` and use plain `docker compose` for status and logs instead.
+Everything below applies to both models except the sections marked otherwise. **The installer-managed layout is operated through `/home/myservices/fusiongate/app/deploy/install.sh` (`--update`, `--backup`, `--restore`), and its backup and restore commands require the marker file** — on a self-managed host, upgrade with `deploy/deploy-from-origin.sh` and use plain `docker compose` for status and logs instead.
 
 ## Quick navigation
 
@@ -97,7 +97,7 @@ sudo -E env \
 
 The installer itself prompts securely by default. `FUSIONGATE_ADMIN_PASSWORD_FILE` in the example above is intended for provisioning wrappers; when invoking the installer directly, set `FUSIONGATE_ADMIN_PASSWORD` in a protected process environment or use the prompt.
 
-The one-line installer is also the cross-version upgrade path: with no installer marker it performs a fresh install; when `/opt/fusiongate/.fusiongate-install` exists, it reuses the recorded repository/ref, creates a verified pre-upgrade backup, and updates the managed installation. Existing `config/master_key` files are preserved and never regenerated. For a non-interactive or carefully pinned domain, pass `FUSIONGATE_DOMAIN=ai.example.com` to the installer.
+The one-line installer is also the cross-version upgrade path: with no installer marker it performs a fresh install; when `/home/myservices/fusiongate/.fusiongate-install` exists, it reuses the recorded repository/ref, creates a verified pre-upgrade backup, and updates the managed installation. Existing `config/master_key` files are preserved and never regenerated. For a non-interactive or carefully pinned domain, pass `FUSIONGATE_DOMAIN=ai.example.com` to the installer.
 
 V3.05 installer-managed hosts must use this one-line installer for the first V3.06 upgrade; the V3.05 updater expects deployment files removed in V3.06. Run it with the existing domain assigned to the root shell so the site configuration is preserved:
 
@@ -111,14 +111,14 @@ The update makes a verified backup before replacing the app. The existing master
 
 | Path | Purpose |
 |---|---|
-| `/opt/fusiongate/app` | Managed application source and Compose definition (installer-managed only) |
-| `/opt/fusiongate/releases/<sha>` | Immutable `git archive` export used as the build context (self-managed) |
-| `/opt/fusiongate/last-deployed-commit` | Commit SHA of the running image, written after a verified deploy |
-| `/opt/fusiongate/last-rollback-image` | Image tag the previous deploy can be reverted to |
-| `/opt/fusiongate/config` | Root-only configuration and secret source files |
-| `/opt/fusiongate/data` | SQLite database and WAL files, owned by container UID 10001 |
-| `/opt/fusiongate/caddy-data` | TLS certificates and Caddy state |
-| `/var/backups/fusiongate` | Verified backup archives created by `install.sh --backup` |
+| `/home/myservices/fusiongate/app` | Managed application source and Compose definition (installer-managed only) |
+| `/home/myservices/fusiongate/releases/<sha>` | Immutable `git archive` export used as the build context (self-managed) |
+| `/home/myservices/fusiongate/last-deployed-commit` | Commit SHA of the running image, written after a verified deploy |
+| `/home/myservices/fusiongate/last-rollback-image` | Image tag the previous deploy can be reverted to |
+| `/home/myservices/fusiongate/config` | Root-only configuration and secret source files |
+| `/home/myservices/fusiongate/data` | SQLite database and WAL files, owned by container UID 10001 |
+| `/home/myservices/fusiongate/caddy-data` | TLS certificates and Caddy state |
+| `/home/myservices/fusiongate/backups` | Verified backup archives created by `install.sh --backup` |
 
 ## Operations
 
@@ -126,20 +126,20 @@ The installer-managed layout is operated through the installer itself; everythin
 
 ```bash
 # update in place from the GitHub ref recorded at install time
-sudo /opt/fusiongate/app/deploy/install.sh --update
+sudo /home/myservices/fusiongate/app/deploy/install.sh --update
 
-# create a checksummed backup (FUSIONGATE_BACKUP_DIR, default /var/backups/fusiongate)
-sudo /opt/fusiongate/app/deploy/install.sh --backup
+# create a checksummed backup (FUSIONGATE_BACKUP_DIR, default /home/myservices/fusiongate/backups)
+sudo /home/myservices/fusiongate/app/deploy/install.sh --backup
 
-# verify and restore a backup; the pre-restore safety copy is kept on the same filesystem under /opt/fusiongate
-sudo /opt/fusiongate/app/deploy/install.sh --restore /var/backups/fusiongate/fusiongate-<stamp>.tar.gz
+# verify and restore a backup; the pre-restore safety copy is kept on the same filesystem under /home/myservices/fusiongate
+sudo /home/myservices/fusiongate/app/deploy/install.sh --restore /home/myservices/fusiongate/backups/fusiongate-<stamp>.tar.gz
 
 ```
 
 Day-to-day status and logs come from the Compose project:
 
 ```bash
-COMPOSE="docker compose --project-directory /opt/fusiongate/app --env-file /opt/fusiongate/config/compose.env -f /opt/fusiongate/app/deploy/compose.production.yml"
+COMPOSE="docker compose --project-directory /home/myservices/fusiongate/app --env-file /home/myservices/fusiongate/config/compose.env -f /home/myservices/fusiongate/app/deploy/compose.production.yml"
 sudo $COMPOSE ps
 sudo $COMPOSE logs -f --tail 300 fusiongate
 ```
@@ -162,7 +162,7 @@ On a self-managed host, upgrades go through `deploy/deploy-from-origin.sh`. Its 
 
 ```bash
 # deploy whatever origin/main currently points at
-sudo /root/work/fusiongate-ui-strategy/deploy/deploy-from-origin.sh
+sudo /home/myservices/fusiongate/source/deploy/deploy-from-origin.sh
 
 # check every precondition without building anything
 sudo FUSIONGATE_DRY_RUN=1 .../deploy/deploy-from-origin.sh
@@ -194,14 +194,14 @@ What it then does:
 curl -fsS https://api.codelee.de/healthz | jq '{version, revision}'
 
 # what GitHub has
-git -C /root/work/fusiongate-ui-strategy fetch origin --quiet
-git -C /root/work/fusiongate-ui-strategy rev-parse origin/main
+git -C /home/myservices/fusiongate/source fetch origin --quiet
+git -C /home/myservices/fusiongate/source rev-parse origin/main
 ```
 
 The `revision` and `origin/main` values must be identical. If they are not, the host is running something GitHub does not have (or vice versa) and the next deploy should reconcile it.
 
 > The build context is a throwaway export, not a checkout. Do not edit
-> `/opt/fusiongate/app` or `/opt/fusiongate/releases/*` and expect it to
+> `/home/myservices/fusiongate/app` or `/home/myservices/fusiongate/releases/*` and expect it to
 > survive — all source changes belong in the git checkout, committed and
 > pushed.
 
@@ -211,9 +211,9 @@ Codex and Claude browser authorization use the official CLI-compatible `localhos
 
 Imported OAuth credentials are encrypted with `FUSIONGATE_MASTER_KEY`. Before every update or migration, back up the following together:
 
-- `/opt/fusiongate/data/fusiongate.db` (and any `-wal` / `-shm` files when the service is running);
-- `/opt/fusiongate/config` or the secret source containing `FUSIONGATE_MASTER_KEY`;
-- `/opt/fusiongate/app` and the active Compose definition.
+- `/home/myservices/fusiongate/data/fusiongate.db` (and any `-wal` / `-shm` files when the service is running);
+- `/home/myservices/fusiongate/config` or the secret source containing `FUSIONGATE_MASTER_KEY`;
+- `/home/myservices/fusiongate/app` and the active Compose definition.
 
 Never paste OAuth JSON into shell history, deployment logs, issue trackers, or chat. Use the authenticated management page over HTTPS. Batch export files contain complete Access / Refresh / ID Tokens; keep them out of source control and delete or encrypt them after migration. Only import or export accounts you own or are authorized to administer.
 
@@ -236,22 +236,22 @@ The installer-managed layout restores a backup in one verified step. `install.sh
 checks the `.sha256` sidecar, confirms the archive contains `data/fusiongate.db` and
 `config/master_key`, validates the extracted database, and swaps `data` and `config` on the
 same filesystem. The pre-restore safety copy is kept at
-`/opt/fusiongate/pre-restore-<stamp>.<suffix>`. If the restored service does not become healthy,
+`/home/myservices/fusiongate/pre-restore-<stamp>.<suffix>`. If the restored service does not become healthy,
 the previous data and key are restored; if rollback itself is incomplete, FusionGate remains
 stopped and the recovery data is preserved for manual repair.
 
 ```bash
 # create a verified backup
-sudo /opt/fusiongate/app/deploy/install.sh --backup
+sudo /home/myservices/fusiongate/app/deploy/install.sh --backup
 
-# restore it (the prior data set stays under /opt/fusiongate/pre-restore-<stamp>.<suffix>)
-sudo /opt/fusiongate/app/deploy/install.sh --restore /var/backups/fusiongate/fusiongate-<stamp>.tar.gz
+# restore it (the prior data set stays under /home/myservices/fusiongate/pre-restore-<stamp>.<suffix>)
+sudo /home/myservices/fusiongate/app/deploy/install.sh --restore /home/myservices/fusiongate/backups/fusiongate-<stamp>.tar.gz
 ```
 ```
 
 On a self-managed host there is no installer-managed layout to restore into: stop the services,
-keep the current installation as a rollback copy, extract the backup into `/opt/fusiongate`
-preserving ownership and permissions, ensure `/opt/fusiongate/data` is owned by UID/GID
+keep the current installation as a rollback copy, extract the backup into `/home/myservices/fusiongate`
+preserving ownership and permissions, ensure `/home/myservices/fusiongate/data` is owned by UID/GID
 `10001:10001`, start the services, and verify `/healthz`.
 
 The database cannot decrypt saved upstream credentials without the matching master key.
