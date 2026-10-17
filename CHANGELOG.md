@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.53
+
+- Clicking an upstream channel's name now opens its merchant site in a new tab
+  instead of the channel management dialog. The configured merchant address is
+  used, falling back to the API host when it is empty; management stays on the
+  row's 管理 button.
+- Rename the add-channel name placeholder from "例如：粥API" to "你的渠道名称" and
+  update the merchant-address hint to match the new link behavior.
+
 ## V3.52
 
 - Consolidate default deployment, source checkout, and protected backup paths under `/home/myservices/fusiongate`; retain environment overrides.

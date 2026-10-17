@@ -10,7 +10,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); location.hash = "" })
 
 function showProviders() {
   const providers = [
-    { id: 1, name: "First", base_url: "https://first.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 1, sort_order: 0, model_count: 2, failure_threshold: 5, health_check_enabled: true, health_check_status: "pending" },
+    { id: 1, name: "First", base_url: "https://first.example/v1", website_url: "https://shop.first.example/account", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 1, sort_order: 0, model_count: 2, failure_threshold: 5, health_check_enabled: true, health_check_status: "pending" },
     { id: 2, name: "Second", base_url: "https://second.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 3, sort_order: 1, model_count: 3, failure_threshold: 5, health_check_enabled: true, health_check_status: "healthy" },
   ] as Provider[]
   vi.stubGlobal("fetch", vi.fn(async (path: string) => new Response(JSON.stringify(path === "/api/admin/providers" ? providers : path === "/api/admin/routing" ? { strategy: "priority_failover" } : []), { status: 200, headers: { "content-type": "application/json" } })))
@@ -34,6 +34,17 @@ describe("channel management workflow", () => {
     expect(screen.getByText("已选 1 · 1 项不在当前筛选结果")).toBeTruthy()
     fireEvent.click(screen.getByRole("checkbox", { name: "选择当前筛选全部渠道" }))
     expect(screen.getByText("已选 2 · 1 项不在当前筛选结果")).toBeTruthy()
+  })
+  it("opens the merchant site from the channel name and keeps management on the button", async () => {
+    showProviders()
+    const merchant = await screen.findByRole("link", { name: "打开 First 商家网站" })
+    expect(merchant.getAttribute("href")).toBe("https://shop.first.example/account")
+    expect(merchant.getAttribute("target")).toBe("_blank")
+    // A channel without a merchant URL falls back to the API host, not to management.
+    expect(screen.getByRole("link", { name: "打开 Second 商家网站" }).getAttribute("href")).toBe("https://second.example")
+    fireEvent.click(merchant)
+    expect(screen.queryByRole("heading", { name: /管理渠道/ })).toBeNull()
+    expect(screen.getByRole("button", { name: "管理 First" })).toBeTruthy()
   })
   it("sorts a priority view without changing persisted positions", async () => {
     showProviders()
