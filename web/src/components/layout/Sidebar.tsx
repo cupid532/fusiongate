@@ -14,6 +14,7 @@ import {
   X,
   Sun,
   Moon,
+  ArrowUpRight,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useTheme } from "@/providers/theme"
@@ -73,17 +74,17 @@ export function Sidebar({
       )}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-[248px] flex-col border-r bg-sidebar px-4 py-5 text-sidebar-foreground transition-transform duration-200 md:translate-x-0",
+          "console-sidebar fixed inset-y-0 left-0 z-40 flex w-[248px] flex-col border-r bg-sidebar px-4 py-6 text-sidebar-foreground transition-transform duration-200 md:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <div className="flex h-12 items-center gap-3 border-b px-2 pb-4 mb-4">
-          <div className="grid h-9 w-9 place-items-center rounded-xl bg-gradient-to-br from-[#66ab71] to-[#458554] text-white shadow-md">
+          <div className="brand-mark grid h-9 w-9 place-items-center">
             <Octagon className="h-5 w-5" />
           </div>
           <div className="leading-tight">
             <div className="text-[15px] font-semibold tracking-tight">FusionGate</div>
-            <div className="text-[10px] uppercase tracking-wider text-sidebar-foreground/50">Control Plane</div>
+            <div className="text-[10px] uppercase tracking-wider text-sidebar-foreground/50">AI CONTROL PLANE</div>
           </div>
           <button
             type="button"
@@ -99,16 +100,17 @@ export function Sidebar({
           Workspace
         </div>
 
-        <nav className="flex flex-col gap-1">
-          {navItems.map((item) => {
+        <nav className="flex flex-col gap-1" aria-label="主导航">
+          {navItems.map((item, index) => {
             const active = item.page === page
             return (
               <button
+                type="button"
                 key={item.page}
                 onClick={() => onNavigate(item.page)}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "group relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                  "nav-item group relative flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors",
                   active
                     ? "text-sidebar-primary-foreground"
                     : "overflow-hidden text-sidebar-foreground/60 hover:bg-sidebar-accent/40 hover:text-sidebar-foreground",
@@ -123,7 +125,7 @@ export function Sidebar({
                 {active && (
                   <motion.span
                     layoutId="nav-active"
-                    className="absolute inset-0 rounded-lg bg-primary"
+                    className="nav-active absolute inset-0 rounded-xl"
                     transition={{ type: "spring", stiffness: 400, damping: 32 }}
                   />
                 )}
@@ -139,24 +141,29 @@ export function Sidebar({
 
                 <item.icon className="relative z-10 h-[18px] w-[18px]" />
                 <span className="relative z-10">{item.label}</span>
+                <span aria-hidden="true" className="relative z-10 ml-auto text-[10px] tabular-nums opacity-40">{String(index + 1).padStart(2, "0")}</span>
               </button>
             )
           })}
         </nav>
 
-        {/* Divider between nav and bottom status */}
-        <div className="mt-auto mx-2 border-t border-sidebar-border" />
+        <a href="#routes" onClick={() => onNavigate("routes")} className="sidebar-note mt-auto mb-5">
+          <span className="eyebrow">BUILT TO CONNECT</span>
+          <span>不同模型。<br />同一个引力中心。</span>
+          <ArrowUpRight size={17} />
+        </a>
+        <div className="mx-2 border-t border-sidebar-border" />
 
         {/* Bottom: online indicator, version, theme toggle */}
         <div className="flex items-center gap-3 px-3 pt-3 pb-1">
-          <span className="flex items-center gap-1.5 text-[10px] text-sidebar-foreground/50">
+          <span className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-[10px] text-sidebar-foreground/50">
             <span
               className="h-1.5 w-1.5 rounded-full"
               style={{ backgroundColor: "#10b981", boxShadow: "0 0 6px rgba(16,185,129,0.45)" }}
             />
-            在线
+            已登录
           </span>
-          <span className="text-[10px] text-muted-foreground">FusionGate {version}</span>
+          <span className="min-w-0 truncate text-[10px] text-muted-foreground" title={`FusionGate ${version}`}>FusionGate {version}</span>
           <button
             type="button"
             onClick={toggle}

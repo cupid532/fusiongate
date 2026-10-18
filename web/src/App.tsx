@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react"
-import { AnimatePresence, motion } from "motion/react"
+import { AnimatePresence, motion, MotionConfig } from "motion/react"
 import { useAuth } from "./providers/auth"
 import { Sidebar, isPage, type Page } from "./components/layout/Sidebar"
 import { Topbar } from "./components/layout/Topbar"
@@ -169,12 +169,14 @@ export default function App() {
   if (!authenticated) return <Login />
 
   return (
-    <div className="min-h-screen">
+    <MotionConfig reducedMotion="user">
+    <div className="console-shell min-h-screen">
+      <a className="skip-to-content" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus() }}>跳到正文</a>
       <NavProgress page={page} />
       <Sidebar page={page} onNavigate={navigate} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
       <div className="md:ml-[248px]">
         <Topbar page={page} onMenu={() => setSidebarOpen(true)} />
-        <main className="mx-auto max-w-[1680px] px-4 py-6 pb-16 sm:px-6 md:px-8 md:py-7">
+        <main id="main-content" tabIndex={-1} className="console-content mx-auto max-w-[1680px] px-4 py-6 pb-16 sm:px-6 md:px-8 md:py-7">
           <AnimatePresence mode="wait">
             <motion.div
               key={page}
@@ -185,8 +187,10 @@ export default function App() {
               <Suspense fallback={<PageFallback />}>{pageContent(page)}</Suspense>
             </motion.div>
           </AnimatePresence>
+          <footer className="console-footer"><span>FusionGate / YOUR MODELS. YOUR RULES.</span><span>私有部署 · 统一连接</span></footer>
         </main>
       </div>
     </div>
+    </MotionConfig>
   )
 }

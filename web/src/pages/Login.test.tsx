@@ -7,6 +7,18 @@ vi.mock("@/providers/auth", () => ({ useAuth: () => ({ login }) }))
 afterEach(() => { cleanup(); vi.resetAllMocks() })
 
 describe("administrator login credential semantics", () => {
+  it("announces login failures and associates them with the password field", async () => {
+    login.mockRejectedValue(new Error("密码错误"))
+    render(<Login />)
+    const input = screen.getByLabelText("管理员密码")
+    fireEvent.change(input, { target: { value: "wrong-password" } })
+    fireEvent.submit(input.closest("form")!)
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("密码错误"))
+    expect(input.getAttribute("aria-invalid")).toBe("true")
+    expect(input.getAttribute("aria-describedby")).toBe("login-error")
+    expect((screen.getByRole("button", { name: "进入控制台" }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
   it("keeps the real login recognizable without ignoring password managers", async () => {
     login.mockResolvedValue(undefined)
     render(<Login />)

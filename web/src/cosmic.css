@@ -1,0 +1,112 @@
+/* FusionGate / Orbital control plane. Keep decoration out of the data path. */
+@layer base {
+  body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
+  ::selection { background: #a4f6ff; color: #082035; }
+  :where(button, a, input, select, textarea, summary):focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; }
+  button:not(:disabled), summary, select { cursor: pointer; }
+  button, input, textarea, select { font: inherit; }
+  :where(input, textarea, select) { accent-color: var(--primary); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  }
+}
+
+.console-shell { background: radial-gradient(ellipse at 75% 0%, #338aff09, transparent 48%), var(--background); }
+.console-content { min-width: 0; }
+.console-content h1.text-2xl { font-size: clamp(25px, 2.4vw, 36px); font-weight: 650; letter-spacing: -.045em; }
+.console-sidebar { background: linear-gradient(180deg, color-mix(in srgb, var(--sidebar) 96%, #338aff), var(--sidebar)); }
+.console-topbar { border-bottom-color: color-mix(in srgb, var(--border) 65%, transparent); }
+.brand-mark { display: grid; place-items: center; flex-shrink: 0; border: 1px solid #b9f0ff66; border-radius: 12px; color: #0b314b; background: linear-gradient(145deg, #e0fbff, #75bbdb 55%, #a4f6ff); box-shadow: inset 0 1px 1px #fff8, 0 0 24px #338aff16; }
+.brand-lockup { display: inline-flex; align-items: center; gap: 12px; font-weight: 650; font-size: 20px; letter-spacing: -.7px; width: fit-content; }
+.brand-lockup .brand-mark { width: 42px; height: 42px; }
+.brand-caption { display: block; margin-top: 2px; font-size: 9px; font-weight: 450; letter-spacing: .16em; color: var(--muted-foreground); }
+.nav-active { background: linear-gradient(100deg, color-mix(in srgb, var(--primary) 15%, transparent), color-mix(in srgb, var(--primary) 4%, transparent)); border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent); }
+.sidebar-note { display: grid; position: relative; gap: 12px; margin-inline: 6px; padding: 18px 14px; border-top: 1px solid var(--sidebar-border); color: var(--muted-foreground); }
+.sidebar-note > span:nth-child(2) { font-size: 15px; line-height: 1.7; letter-spacing: -.02em; }
+.sidebar-note > svg { position: absolute; right: 8px; bottom: 21px; color: var(--primary); }
+.sidebar-note .eyebrow { font-size: 8px; }
+.eyebrow { font-size: 10px; line-height: 1.6; font-weight: 550; letter-spacing: .16em; color: var(--primary); }
+.console-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding-top: 25px; margin-top: 40px; border-top: 1px solid var(--border); font-size: 9px; letter-spacing: .09em; color: var(--muted-foreground); }
+.skip-to-content { position: fixed; left: 20px; top: -80px; z-index: 100; padding: 12px 20px; background: var(--primary); color: var(--primary-foreground); border-radius: 30px; }
+.skip-to-content:focus { top: 12px; }
+.type-outline { color: transparent; -webkit-text-stroke: 1px var(--primary); }
+
+/* The dashboard has a compact poster, not a marketing-page-sized interruption. */
+.dashboard-hero { position: relative; isolation: isolate; overflow: hidden; min-height: 340px; margin-bottom: 28px; padding: 30px 34px 48px; border: 1px solid var(--border); border-radius: 24px; background: radial-gradient(ellipse at 85% 50%, #338aff25, transparent 65%), var(--card); }
+.dashboard-hero-copy { position: relative; z-index: 2; width: 65%; }
+.dashboard-hero h1 { margin: 14px 0 8px; font-size: 24px; font-weight: 550; letter-spacing: -.05em; }
+.dashboard-display { font-size: clamp(35px, 4.4vw, 72px); font-weight: 800; font-style: italic; line-height: .98; letter-spacing: -.065em; }
+.dashboard-hero-copy > p { margin: 17px 0; font-size: 12px; color: var(--muted-foreground); line-height: 1.8; }
+.dashboard-hero-actions { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.hero-link { display: inline-flex; gap: 18px; align-items: center; padding: 10px 17px; border-radius: 30px; background: var(--primary); color: var(--primary-foreground); font-size: 12px; font-weight: 600; }
+.hero-link-secondary { display: inline-flex; gap: 8px; align-items: center; color: var(--muted-foreground); font-size: 12px; }
+.hero-link:hover { filter: brightness(1.08); }
+.hero-link-secondary:hover { color: var(--primary); }
+.dashboard-sculpture { position: absolute !important; right: -30px; top: -35px; width: 52%; height: calc(100% + 40px); }
+.dashboard-hero-caption { position: absolute; bottom: 15px; left: 34px; right: 34px; display: flex; justify-content: space-between; gap: 12px; color: var(--muted-foreground); font-size: 8px; letter-spacing: .15em; }
+.section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 25px 0 14px; }
+.section-heading > span:last-child { font-size: 10px; color: var(--muted-foreground); }
+.metric-card { position: relative; box-shadow: none; }
+.metric-card::after { content: ""; position: absolute; bottom: 0; left: 16px; right: 16px; height: 1px; background: linear-gradient(90deg, var(--primary), transparent); opacity: .25; }
+.metric-card:hover { background: color-mix(in srgb, var(--card) 95%, var(--primary)); }
+
+/* Original SVG sculpture: lightweight gradients, no canvas / remote assets. */
+.gateway-art { position: relative; pointer-events: none; }
+.gateway-art svg { width: 100%; height: 100%; overflow: visible; }
+.gateway-art-core { transform-origin: 320px 260px; animation: gate-float 9s ease-in-out infinite; }
+.gateway-art-orbits { transform-origin: 320px 260px; animation: gate-orbit 28s ease-in-out infinite; }
+@keyframes gate-float { 0%, 100% { transform: translateY(-7px) rotate(-3deg); } 50% { transform: translateY(7px) rotate(3deg); } }
+@keyframes gate-orbit { 0%, 100% { transform: rotate(-5deg); } 50% { transform: rotate(7deg); } }
+
+/* Brand entry / editorial poster + calm, unmistakable access form. */
+.login-scene { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(380px, .85fr); min-height: 100svh; background: radial-gradient(ellipse at 25% 45%, #338aff0d, transparent 60%), var(--background); }
+.login-story { display: flex; flex-direction: column; justify-content: space-between; padding: 40px clamp(28px, 4vw, 80px) 28px; position: relative; min-width: 0; overflow: hidden; }
+.login-poster { position: relative; isolation: isolate; padding: 48px 0 36px; min-height: 590px; }
+.login-poster h1 { position: relative; z-index: 1; margin: 25px 0 0; font-size: clamp(72px, 8.2vw, 156px); line-height: .97; letter-spacing: -.075em; font-weight: 850; font-style: italic; }
+.login-sculpture { position: absolute; z-index: 2; width: 88%; height: 450px; top: 105px; right: -20%; }
+.login-story-copy { position: relative; z-index: 3; margin-top: 95px; max-width: 290px; }
+.login-story-copy p { color: var(--muted-foreground); font-size: 14px; line-height: 1.9; margin-top: 12px; }
+.orbit-caption { position: absolute; right: -10px; bottom: 45px; color: var(--muted-foreground); font-size: 9px; line-height: 1.8; letter-spacing: .1em; }
+.login-story-footer { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding-top: 20px; font-size: 9px; letter-spacing: .1em; color: var(--muted-foreground); }
+.login-access { display: flex; flex-direction: column; justify-content: space-between; padding: 42px clamp(28px, 4vw, 72px) 28px; border-left: 1px solid var(--border); background: color-mix(in srgb, var(--card) 72%, transparent); }
+.login-access-top { display: flex; justify-content: space-between; align-items: center; color: var(--muted-foreground); }
+.login-access-top .eyebrow { color: var(--muted-foreground); }
+.login-form { width: 100%; max-width: 390px; align-self: center; margin: 64px 0; }
+.login-form h2 { font-size: clamp(32px, 3vw, 46px); letter-spacing: -.06em; font-weight: 550; line-height: 1.2; }
+.login-assurances { display: flex; flex-wrap: wrap; gap: 14px; border-top: 1px solid var(--border); padding-top: 24px; margin-top: 32px; }
+.login-assurances span { display: inline-flex; align-items: center; gap: 5px; color: var(--muted-foreground); font-size: 10px; }
+.login-assurances svg { color: var(--primary); }
+.login-access-bottom { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted-foreground); font-size: 8px; letter-spacing: .08em; }
+
+@media (min-width: 1600px) { .login-poster { min-height: 700px; } .login-sculpture { height: 550px; } .login-story-copy { margin-top: 145px; } }
+@media (max-height: 760px) and (min-width: 901px) { .login-poster { min-height: 500px; padding-top: 30px; } .login-poster h1 { font-size: clamp(70px, 7.5vw, 125px); } .login-sculpture { height: 370px; top: 80px; } .login-story-copy { margin-top: 60px; } }
+@media (max-width: 1100px) { .sidebar-note { display: none; } .console-sidebar nav { margin-bottom: auto; } .dashboard-sculpture { opacity: .65; right: -50px; } .dashboard-hero-copy { width: 75%; } .login-sculpture { right: -25%; } .orbit-caption { display: none; } }
+@media (max-width: 900px) {
+  .login-scene { grid-template-columns: 1fr; }
+  .login-story { padding: 24px 28px 20px; }
+  .login-poster { min-height: 280px; padding: 28px 0 0; }
+  .login-poster > .eyebrow { font-size: 8px; }
+  .login-poster h1 { font-size: clamp(60px, 11vw, 100px); }
+  .login-sculpture { width: 52%; height: 300px; top: -10px; right: -4%; opacity: .8; }
+  .login-story-copy { margin-top: 20px; }
+  .login-story-copy p, .login-story-footer { display: none; }
+  .login-access { border-left: 0; border-top: 1px solid var(--border); padding: 24px 28px; }
+  .login-access-top { max-width: 390px; width: 100%; align-self: center; }
+  .login-form { margin: 35px 0; }
+}
+@media (max-width: 600px) {
+  .dashboard-hero { padding: 24px 20px 46px; min-height: 330px; border-radius: 20px; }
+  .dashboard-hero-copy { width: 100%; }
+  .dashboard-display { font-size: clamp(36px, 9vw, 54px); }
+  .dashboard-sculpture { width: 65%; height: 220px; right: -75px; top: 42px; opacity: .2; z-index: -1; }
+  .dashboard-hero-caption { left: 20px; right: 20px; font-size: 6px; }
+  .dashboard-hero-actions { gap: 14px; }
+  .login-poster { min-height: 240px; }
+  .login-sculpture { width: 65%; right: -25%; top: 0; height: 260px; opacity: .65; }
+  .login-poster h1 { font-size: clamp(54px, 14vw, 80px); }
+  .login-poster > .eyebrow { max-width: 200px; }
+  .login-story-copy .eyebrow { font-size: 9px; }
+  .login-story { padding-inline: 24px; }
+  .login-access { padding-inline: 24px; }
+  .console-footer { font-size: 8px; }
+}

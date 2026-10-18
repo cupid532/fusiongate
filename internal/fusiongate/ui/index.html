@@ -15,7 +15,7 @@
         The theme class is applied by React in providers/theme.tsx, which only
         runs once the bundle has parsed. Until then <html> carried no class, so
         :root — the light palette — painted first and every dark-theme load
-        flashed a full viewport of #eae9e3 before flipping. This resolves the
+        flashed a light viewport before flipping. This resolves the
         same value from the same localStorage key synchronously, before the
         first paint, so there is nothing to flip.
 
@@ -26,17 +26,14 @@
       ;(function () {
         try {
           var stored = localStorage.getItem("fusiongate-theme")
-          var dark =
-            stored === "dark" ||
-            (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches)
-          if (dark) document.documentElement.classList.add("dark")
+          document.documentElement.classList.toggle("dark", stored !== "light")
         } catch (e) {
-          /* no stored preference available; fall through to the light default */
+          document.documentElement.classList.add("dark")
         }
       })()
     </script>
-    <script type="module" crossorigin src="/ui/assets/index-BljRHsnL.js"></script>
-    <link rel="stylesheet" crossorigin href="/ui/assets/index-BO5wI9Jl.css">
+    <script type="module" crossorigin src="/ui/assets/index-_aTeILgw.js"></script>
+    <link rel="stylesheet" crossorigin href="/ui/assets/index-CrlwfX2f.css">
   </head>
   <body>
     <div id="root"></div>

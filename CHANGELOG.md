@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.54
+
+- Redesign the console as an orbital control plane: deep-space and ice-blue palettes, original SVG sculpture, editorial login, compact overview poster, and refreshed navigation and shared controls.
+- Default new sessions to dark while preserving explicit theme preferences and a complete light palette.
+- Add reduced-motion styling, keyboard-operable dashboard links and setup controls, a skip link, and accessible login errors. Preserve existing administrative workflows and API contracts.
+
 ## V3.53
 
 - Clicking an upstream channel's name now opens its merchant site in a new tab

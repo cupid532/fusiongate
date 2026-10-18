@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { animate, motion, useMotionValue } from "motion/react"
-import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, ShieldCheck, HardHat, ChevronDown } from "lucide-react"
+import { Server, Boxes, KeyRound, Activity, AlertTriangle, Coins, ShieldCheck, HardHat, ChevronDown, ArrowUpRight } from "lucide-react"
 import { api } from "@/lib/api"
 import { formatCost, formatTokens, cn } from "@/lib/utils"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { GatewayArt } from "@/components/GatewayArt"
 import { CopyButton } from "@/components/ui/copy-button"
 import { EmptyState } from "@/components/ui/empty-state"
 import { QueryError } from "@/components/ui/query-error"
@@ -147,14 +148,21 @@ export function Dashboard() {
 
   return (
     <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.35 }}>
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">网关概览</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            统一观察 Provider、模型路由、访问密钥和请求状态。
-          </p>
+      <section className="dashboard-hero">
+        <div className="dashboard-hero-copy">
+          <div className="eyebrow">WORKSPACE / 01 — OVERVIEW</div>
+          <h1>网关概览<span className="text-primary">。</span></h1>
+          <div className="dashboard-display" aria-hidden="true">ALL SYSTEMS.<br /><span className="type-outline">ONE GATE.</span></div>
+          <p>统一连接模型、路由与密钥。<br className="sm:hidden" />让每一次调用，都有迹可循。</p>
+          <div className="dashboard-hero-actions">
+            <a href="#providers" className="hero-link">管理上游渠道 <ArrowUpRight size={16} /></a>
+            <a href="#requests" className="hero-link-secondary">查看请求账本 <ArrowUpRight size={14} /></a>
+          </div>
         </div>
-      </div>
+        <GatewayArt className="dashboard-sculpture" />
+        <div className="dashboard-hero-caption"><span>UNIFIED MODEL GATEWAY</span><span>PRIVATE BY DEFAULT ↗</span></div>
+      </section>
+      <div className="section-heading"><span className="eyebrow">01 / 实时脉搏</span><span>每 30 秒自动更新</span></div>
 
       <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
         {statItems.map((item, i) => {
@@ -167,7 +175,11 @@ export function Dashboard() {
               transition={{ duration: 0.4, delay: i * 0.05 }}
             >
               <Card
-                className="cursor-pointer overflow-hidden transition-colors hover:border-primary/30"
+                className="metric-card cursor-pointer overflow-hidden transition-colors hover:border-primary/30"
+                role="link"
+                tabIndex={0}
+                aria-label={`查看${item.label}`}
+                onKeyDown={(event) => { if (event.key === "Enter") navigate(item.target) }}
                 onClick={() => navigate(item.target)}
               >
                 <CardContent className="p-4">
@@ -177,7 +189,7 @@ export function Dashboard() {
                       <item.icon className="h-4 w-4" />
                     </span>
                   </div>
-                  <div className="mt-2.5 text-[26px] font-bold tracking-tight">
+                  <div className="mt-4 text-[32px] font-semibold tracking-tight tabular-nums">
                     {item.format ? (
                       <CountUp value={value} format={item.format} />
                     ) : (
@@ -203,6 +215,7 @@ export function Dashboard() {
         </Card>
       )}
 
+      <div className="section-heading"><span className="eyebrow">02 / 运行洞察</span><span>健康检测与请求状态</span></div>
       <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-[0.65fr_1.35fr]">
         <Card>
           <CardHeader>
@@ -266,23 +279,23 @@ export function Dashboard() {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.35fr_0.65fr]">
         <Card>
-          <CardHeader className="cursor-pointer" onClick={() => setGuideOpen((o) => !o)}>
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base">{setupDone ? "✓ 设置已完成" : "开始使用"}</CardTitle>
+          <CardHeader>
+            <button type="button" className="flex w-full items-center justify-between text-left" onClick={() => setGuideOpen((o) => !o)} aria-expanded={guideOpen} aria-controls="setup-guide">
+              <span className="text-base font-semibold">{setupDone ? "✓ 设置已完成" : "开始使用"}</span>
               <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", guideOpen ? "rotate-180" : "")} />
-            </div>
+            </button>
             {!setupDone && <CardDescription>完成三步即可从客户端调用统一模型。</CardDescription>}
           </CardHeader>
           {guideOpen && (
-            <CardContent className="space-y-3">
+            <CardContent id="setup-guide" className="space-y-3">
               {[
                 { n: "01", t: "连接上游 Provider", d: "添加 OpenAI、Anthropic、Gemini 或兼容渠道", page: "providers" },
                 { n: "02", t: "建立统一模型路由", d: "把不同渠道的真实模型合并为统一故障转移组", page: "routes" },
                 { n: "03", t: "签发下游 API Key", d: "一把 Key 按权限访问多个渠道和模型", page: "keys" },
               ].map((s) => (
-                <div
+                <a
                   key={s.n}
-                  onClick={() => { location.hash = s.page }}
+                  href={`#${s.page}`}
                   className="flex cursor-pointer items-center gap-4 rounded-lg border p-3 transition-colors hover:bg-muted/50"
                 >
                   <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary/10 text-sm font-bold text-primary">
@@ -293,7 +306,7 @@ export function Dashboard() {
                     <div className="text-xs text-muted-foreground">{s.d}</div>
                   </div>
                   <svg className="h-4 w-4 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                </div>
+                </a>
               ))}
             </CardContent>
           )}

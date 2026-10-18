@@ -54,20 +54,20 @@ export function Topbar({ page, onMenu }: { page: string; onMenu: () => void }) {
   }
 
   return (
-    <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-2 border-b bg-background/80 px-4 backdrop-blur-md sm:px-6 md:px-8">
+    <header className="console-topbar sticky top-0 z-10 flex h-20 items-center justify-between gap-2 border-b bg-background/80 px-4 backdrop-blur-md sm:px-6 md:px-8">
       <div className="flex min-w-0 items-center gap-2">
         <Button variant="ghost" size="icon" onClick={onMenu} aria-label="打开导航" className="md:hidden">
           <Menu className="h-5 w-5" />
         </Button>
         <div className="truncate text-sm font-semibold text-muted-foreground">
-          <span className="text-muted-foreground/60">FusionGate</span>
+          <span className="text-muted-foreground/60">工作空间</span>
           <span className="mx-2">/</span>
           <span className="text-foreground">{titles[page] ?? "概览"}</span>
           {version && <span className="ml-2 rounded border px-1.5 py-0.5 align-middle text-[10px] font-normal text-muted-foreground">{version}</span>}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
-        <Button variant="ghost" size="icon" onClick={() => void refreshAll()} aria-label="刷新全部" title="刷新全部数据">
+        <Button variant="ghost" size="icon" onClick={() => void refreshAll()} aria-label="刷新全部" disabled={refreshing} title="刷新全部数据">
           <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
         </Button>
         {ago && <span className="hidden text-[10px] tabular-nums text-muted-foreground/60 sm:inline">{ago}</span>}
