@@ -768,7 +768,7 @@ func (a *App) startLedger(k authKey, z resolvedRoute, protocol string, stream bo
 	first := &atomic.Int64{}
 	first.Store(-1)
 	a.ledgerFirstBytes.Store(attemptID, first)
-	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name,provider_key_id,provider_key_name,provider_key_hint,reasoning_effort) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name, z.ProviderKeyID, z.ProviderKeyName, z.ProviderKeyHint, reasoningEffort)
+	a.queueLedgerWrite(`INSERT INTO request_ledger(request_id,gateway_request_id,attempt,retry_reason,created_at,api_key_id,provider_id,route_id,public_model,upstream_model,protocol,stream,client_ip,api_key_name,api_key_prefix,provider_name,provider_key_id,provider_key_name,provider_key_hint,reasoning_effort,upstream_address) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, attemptID, gatewayID, attempt, retryReason, now(), k.ID, z.Provider.ID, z.Route.ID, z.Route.PublicName, z.Route.UpstreamModel, protocol, boolInt(stream), clientIP, k.Name, k.Prefix, z.Provider.Name, z.ProviderKeyID, z.ProviderKeyName, z.ProviderKeyHint, reasoningEffort, ledgerUpstreamAddress(z.Provider.BaseURL))
 	return attemptID
 }
 

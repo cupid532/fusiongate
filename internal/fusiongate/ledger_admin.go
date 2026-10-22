@@ -40,7 +40,7 @@ func (a *App) ledgerUsage() (estBytes, rows int64, err error) {
 		"request_id", "created_at", "completed_at", "public_model", "upstream_model",
 		"protocol", "error_type", "cost_type", "gateway_request_id", "retry_reason",
 		"client_ip", "api_key_name", "api_key_prefix", "provider_name", "reasoning_effort",
-		"diagnostics_json", "candidate_exclusions", "stop_reason",
+		"diagnostics_json", "candidate_exclusions", "stop_reason", "upstream_address",
 	}
 	parts := make([]string, 0, len(cols))
 	for _, c := range cols {
@@ -198,7 +198,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		return
 	}
 
-	q := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms
+	q := `SELECT l.id,l.request_id,l.gateway_request_id,l.attempt,l.retry_reason,l.created_at,COALESCE(l.completed_at,''),l.first_byte_ms,l.public_model,l.upstream_model,l.protocol,l.stream,l.success,l.status_code,l.error_type,l.latency_ms,l.input_tokens,l.output_tokens,l.cached_tokens,l.reasoning_tokens,l.cost_micros,l.cost_type,l.usage_reported,COALESCE(NULLIF(l.provider_name,''),p.name,''),COALESCE(NULLIF(l.api_key_name,''),k.name,''),COALESCE(NULLIF(l.api_key_prefix,''),k.key_prefix,''),l.client_ip,l.reasoning_effort,COALESCE(p.request_timeout_ms,0) AS request_timeout_ms,l.upstream_address
 		FROM request_ledger l LEFT JOIN providers p ON p.id=l.provider_id LEFT JOIN api_keys k ON k.id=l.api_key_id WHERE ` + strings.Join(where, " AND ") + ` ORDER BY l.id ASC`
 	rows, err := a.reader().QueryContext(r.Context(), q, args...)
 	if err != nil {
@@ -213,14 +213,15 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	// BOM so Excel opens UTF-8 columns correctly.
 	w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"时间", "完成时间", "请求ID", "模型", "上游模型", "渠道", "访问秘钥名称", "访问秘钥前缀", "协议", "流式", "状态", "HTTP状态码", "错误类型", "思考强度", "首字节(ms)", "延迟(ms)", "输入Token", "输出Token", "缓存Token", "思考Token", "总Token", "费用(微)", "费用类型", "客户端IP", "重试原因"})
+	_ = cw.Write([]string{"时间", "完成时间", "请求ID", "模型", "上游模型", "渠道", "访问秘钥名称", "访问秘钥前缀", "协议", "流式", "状态", "HTTP状态码", "错误类型", "思考强度", "首字节(ms)", "延迟(ms)", "输入Token", "输出Token", "缓存Token", "思考Token", "总Token", "费用(微)", "费用类型", "客户端IP", "重试原因", "实际上游"})
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency, usageReported int
 		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, apiKeyName, apiKeyPrefix, clientIP, reasoningEffort string
 		var firstByte sql.NullInt64
 		var input, output, cached, reasoning, cost int64
 		var requestTimeoutMS int64
-		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyName, &apiKeyPrefix, &clientIP, &reasoningEffort, &requestTimeoutMS); err != nil {
+		var upstreamAddress string
+		if err := rows.Scan(&id, &rid, &gatewayID, &attempt, &retryReason, &created, &completed, &firstByte, &pm, &um, &proto, &stream, &success, &status, &et, &latency, &input, &output, &cached, &reasoning, &cost, &ct, &usageReported, &providerName, &apiKeyName, &apiKeyPrefix, &clientIP, &reasoningEffort, &requestTimeoutMS, &upstreamAddress); err != nil {
 			a.log.Error("request ledger export scan failed", "error", err)
 			panic(http.ErrAbortHandler)
 		}
@@ -241,7 +242,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			strconv.FormatInt(input, 10), strconv.FormatInt(output, 10),
 			strconv.FormatInt(cached, 10), strconv.FormatInt(reasoning, 10),
 			strconv.FormatInt(input+output, 10), strconv.FormatInt(cost, 10), ct,
-			clientIP, retryReason,
+			clientIP, retryReason, upstreamAddress,
 		})
 	}
 	if err := rows.Err(); err != nil {

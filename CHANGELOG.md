@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.55
+
+- Add “实际上游” to the request ledger: captured direct upstream base address and upstream model per attempt, with full address and existing upstream path in details.
+- Store immutable address snapshots with URL credentials, query strings and fragments removed. Historical addresses remain “未记录”; never infer a reseller's ultimate source or backfill from mutable channel configuration.
+
 ## V3.54
 
 - Redesign the console as an orbital control plane: deep-space and ice-blue palettes, original SVG sculpture, editorial login, compact overview poster, and refreshed navigation and shared controls.

@@ -820,6 +820,7 @@ func (a *App) migrate(ctx context.Context) error {
 		{"request_ledger", "usage_reported", "INTEGER NOT NULL DEFAULT 0"},
 		{"request_ledger", "api_key_name", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "api_key_prefix", "TEXT NOT NULL DEFAULT ''"},
+		{"request_ledger", "upstream_address", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "provider_name", "TEXT NOT NULL DEFAULT ''"},
 		{"request_ledger", "provider_key_id", "INTEGER NOT NULL DEFAULT 0"},
 		{"request_ledger", "provider_key_name", "TEXT NOT NULL DEFAULT ''"},

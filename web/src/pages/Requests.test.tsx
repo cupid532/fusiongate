@@ -101,6 +101,21 @@ describe("request attempt sequences", () => {
 })
 
 describe("Requests filters", () => {
+  it("shows the captured direct upstream and model, leaving legacy addresses unknown", async () => {
+    const payload = page([5, 4])
+    payload.items[0].upstream_address = "https://upstream.example/v1"
+    payload.items[0].upstream_model = "actual-model"
+    list.mockReturnValue(payload)
+    mount()
+    await screen.findByText("https://upstream.example/v1")
+    expect(screen.getByRole("columnheader", { name: "实际上游" })).toBeTruthy()
+    expect(screen.getByText("actual-model")).toBeTruthy()
+    expect(screen.getByText("未记录")).toBeTruthy()
+    fireEvent.click(screen.getByText("model-5"))
+    expect(screen.getByText("实际上游地址")).toBeTruthy()
+    expect(screen.getByText("本次尝试的直接上游，不代表中转商背后的最终来源。")).toBeTruthy()
+  })
+
   it("blocks invalid exact times, hides cached rows and discards a pending page", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
     const client = mount()
