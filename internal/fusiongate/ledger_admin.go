@@ -242,7 +242,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			strconv.FormatInt(input, 10), strconv.FormatInt(output, 10),
 			strconv.FormatInt(cached, 10), strconv.FormatInt(reasoning, 10),
 			strconv.FormatInt(input+output, 10), strconv.FormatInt(cost, 10), ct,
-			clientIP, retryReason, upstreamAddress,
+			clientIP, retryReason, ledgerUpstreamName(upstreamAddress, providerName),
 		})
 	}
 	if err := rows.Err(); err != nil {

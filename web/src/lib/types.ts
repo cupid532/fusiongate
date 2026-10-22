@@ -202,6 +202,7 @@ export interface RequestLedgerRow {
   model: string
   upstream_model: string
   upstream_address?: string
+  upstream_name?: string
   protocol: string
   stream: boolean
   success: boolean

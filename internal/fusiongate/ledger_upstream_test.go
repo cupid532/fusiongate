@@ -2,6 +2,27 @@ package fusiongate
 
 import "testing"
 
+func TestLedgerUpstreamName(t *testing.T) {
+	for _, tc := range []struct{ address, name, want string }{
+		{"https://api.openai.com/v1", "custom", "OpenAI"},
+		{"https://api.anthropic.com", "custom", "Anthropic"},
+		{"https://example.openai.azure.com", "custom", "Azure OpenAI"},
+		{"https://generativelanguage.googleapis.com", "custom", "Google Gemini"},
+		{"https://api.x.ai", "custom", "xAI"},
+		{"https://openrouter.ai/api", "custom", "OpenRouter"},
+		{"https://api.deepseek.com", "custom", "DeepSeek"},
+		{"https://api.openai.com.evil.example", "中转渠道", "中转渠道"},
+		{"https://reseller.example", "某某中转商", "某某中转商"},
+		{"https://reseller.example", "https://reseller.example", "未知"},
+		{"https://reseller.example", "", "未知"},
+		{"", "renamed provider", "未知"},
+	} {
+		if got := ledgerUpstreamName(tc.address, tc.name); got != tc.want {
+			t.Errorf("source = %q, want %q", got, tc.want)
+		}
+	}
+}
+
 func TestLedgerUpstreamAddress(t *testing.T) {
 	for _, tc := range []struct{ raw, want string }{
 		{"https://user:password@example.com:8443/v1?api_key=secret#token", "https://example.com:8443/v1"},

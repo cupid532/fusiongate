@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.56
+
+- Show source names rather than URLs in “实际上游”, including details and CSV. Recognize known official endpoints; otherwise show the captured channel name or 未知. Never infer a reseller's ultimate source from model names.
+
 ## V3.55
 
 - Add “实际上游” to the request ledger: captured direct upstream base address and upstream model per attempt, with full address and existing upstream path in details.
