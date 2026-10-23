@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.58
+
+- Merge task routing progress atomically by departed provider identities, not generation alone. A late success on an old channel cannot undo a proven failover, while older requests may still advance past newer successes on the same channel. Preserve working-Key preferences only within the bound provider.
+- Rebuild resumed plans around the bound provider after priority/order changes; exclude spent channels by ID and retain all unvisited/new candidates for subsequent failover. Preserve absent historical identities so disabled or removed/re-added channels cannot silently reset task progress.
+- Add deterministic completion-order, simultaneous-write, priority permutation and real-request regressions. Keep existing routing-session data/schema and request-level preflight skip behavior compatible.
+
 ## V3.57
 
 - Bound forced Codex non-streaming Responses collection to 32 MiB after gzip decoding; reject overflow and malformed compressed streams before committing a response so normal failover can continue. Apply configured route pricing to collected usage, matching other conversion paths. Leave native streaming and upstream error payloads untouched.

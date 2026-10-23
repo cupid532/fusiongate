@@ -169,9 +169,10 @@ func (c inferenceChannel) label() string {
 
 // inferencePlan is the ordered failover plan for one request.
 //
-// Channels always holds the complete ordered candidate list so a task's history
-// can be stored as absolute positions. Start is where this request begins: a task
-// that already advanced resumes there instead of walking back up the order.
+// Channels holds live departed candidates in a non-executable prefix followed by
+// the bound channel and all remaining unvisited/new candidates. Start separates
+// that prefix from the reachable suffix. Task history is persisted by identity,
+// never by interpreting an old index in a newly sorted priority list.
 type inferencePlan struct {
 	Model     string
 	Channels  []inferenceChannel
@@ -250,19 +251,15 @@ func buildInferencePlan(routes []resolvedRoute, path string, session routingSess
 	if !hasSession || session.ProviderID <= 0 || len(channels) == 0 {
 		return plan
 	}
-	start := resumeStartIndex(session.Order, session.ProviderID, channels)
-	if start >= len(channels) {
-		// Every channel this task knew about is gone. Do not silently restart at
-		// the top of a plan the task has already exhausted; report candidates
-		// exhausted instead, which the console shows as 候选耗尽.
+	plan.Channels, plan.Start = resumeInferenceChannels(session, channels)
+	plan.Resumed = true
+	if plan.Start >= len(plan.Channels) {
+		// No bound or unvisited candidate remains. Recovered spent channels do
+		// not make an exhausted task fresh; only new/unvisited identities do.
 		plan.Channels = nil
+		plan.Start = 0
 		plan.Count = 0
 		plan.Exhausted = true
-		return plan
-	}
-	if start > 0 {
-		plan.Start = start
-		plan.Resumed = true
 	}
 	return plan
 }

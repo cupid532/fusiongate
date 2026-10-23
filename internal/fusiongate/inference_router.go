@@ -1043,26 +1043,31 @@ func (run *inferenceRun) recordFault(id, scope string) {
 
 // advance persists the forward move of this task.
 //
-// The write is monotonic in generation, so a slow request that lost the race
-// cannot move the task back to a channel it already left.
+// The store atomically merges departed identities; a slow success cannot undo
+// this evidence even when it carries a larger observed generation.
 func (run *inferenceRun) advance(r *http.Request, next int) {
-	if run.taskHash == "" || next <= 0 || next >= len(run.plan.Channels) {
+	if run.taskHash == "" || run.skippedAhead || next <= 0 || next >= len(run.plan.Channels) {
 		return
 	}
-	run.session = routingSession{
-		TaskHash:      run.taskHash,
-		TaskScope:     run.taskScope,
-		TaskSource:    run.taskSource,
-		Order:         storedOrderFromChannels(run.plan.Channels),
-		Cursor:        next,
-		ProviderID:    run.plan.Channels[next].ProviderID,
-		ProviderKeyID: run.session.ProviderKeyID,
-		PlanID:        sessionPlanID(run.plan.Channels),
-		Generation:    run.session.Generation + 1,
+	run.saveRoutingSession(r, next, 0)
+}
+
+func (run *inferenceRun) saveRoutingSession(r *http.Request, index int, keyID int64) {
+	session := routingSessionAt(run.session, run.plan.Channels, index)
+	session.TaskHash = run.taskHash
+	session.TaskScope = run.taskScope
+	session.TaskSource = run.taskSource
+	session.ProviderKeyID = keyID
+	stored, err := run.app.storeRoutingSession(r.Context(), session)
+	if err != nil {
+		run.app.log.Error("routing session write", "error", err)
+	} else if stored.ProviderID == session.ProviderID {
+		// Adopt a merged revision only for the provider this request selected.
+		// A stale request must not gain authority to update another provider's
+		// key/history just because a concurrent request advanced it there.
+		session = stored
 	}
-	if err := run.app.bindRoutingSession(r.Context(), run.session); err != nil {
-		run.app.log.Error("routing session advance", "error", err)
-	}
+	run.session = session
 }
 
 // noteSuccess records the channel and credential a task completed on so the next
@@ -1075,21 +1080,7 @@ func (run *inferenceRun) advance(r *http.Request, next int) {
 // higher-priority channel gets its chance back.
 func (run *inferenceRun) noteSuccess(r *http.Request, z resolvedRoute, index int) {
 	if run.taskHash != "" && !run.skippedAhead {
-		session := routingSession{
-			TaskHash:      run.taskHash,
-			TaskScope:     run.taskScope,
-			TaskSource:    run.taskSource,
-			Order:         storedOrderFromChannels(run.plan.Channels),
-			Cursor:        index,
-			ProviderID:    z.Provider.ID,
-			ProviderKeyID: z.ProviderKeyID,
-			PlanID:        sessionPlanID(run.plan.Channels),
-			Generation:    run.session.Generation + 1,
-		}
-		run.session = session
-		if err := run.app.bindRoutingSession(r.Context(), session); err != nil {
-			run.app.log.Error("routing session success", "error", err)
-		}
+		run.saveRoutingSession(r, index, z.ProviderKeyID)
 	}
 	run.app.noteRecoverySuccess(r.Context(), providerFaultScope(z.Provider.ID))
 	run.app.noteRecoverySuccess(r.Context(), keyFaultScope(z.ProviderKeyID))

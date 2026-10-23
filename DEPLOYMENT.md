@@ -2,6 +2,12 @@
 
 The production bundle uses Docker Compose and Caddy. Caddy terminates TLS and proxies requests to FusionGate over an isolated Docker network; the application container is not published directly on the host.
 
+## V3.58 task routing progress
+
+- Routing progress is merged on the SQLite writer in one transaction. A late success cannot pull a task back to a departed channel, even if it observed a newer generation before the other request failed over.
+- Existing sessions retain their provider-ID history without a schema migration. After priority changes, the live bound channel leads, spent identities remain excluded, and all other unvisited/new channels remain reachable by current priority. Temporarily removed spent identities remain spent if they return; a removed bound channel is remembered as departed when the task actually switches away.
+- Preflight skips do not become permanent task advances. Retention/expiry still intentionally resets a task binding; task identity remains scoped to the downstream API key, model and protocol.
+
 ## V3.14 passthrough-first bridging upgrade
 
 - Requests are still forwarded byte for byte when the channel speaks the client's protocol. When a channel refuses it (404/405/501 or an "unsupported / invalid URL" 400), the same channel is retried once through a streaming bridge (Chat ↔ Responses ↔ Messages, Gemini → Chat). The refusal is remembered in memory for 30 minutes and reset on restart. A fixed interface method on a channel skips the native probe and always uses that upstream endpoint.

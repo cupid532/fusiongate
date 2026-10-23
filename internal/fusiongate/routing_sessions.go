@@ -4,10 +4,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -128,23 +131,51 @@ FROM routing_sessions WHERE task_hash=? AND task_scope=?`, taskHash, taskScope).
 	return session, session.usable()
 }
 
-// bindRoutingSession stores a forward cursor. Writes are monotonic: a writer
-// carrying an older generation than the stored row is ignored, so a slow request
-// that loses a race can never move the task back to a channel it already left.
+// bindRoutingSession merges a proposed forward cursor with the persisted task.
+// A generation is only an observed revision, not proof of progress: concurrent
+// success and advance callbacks can propose the same (or even older) generation.
 func (a *App) bindRoutingSession(ctx context.Context, session routingSession) error {
+	_, err := a.storeRoutingSession(ctx, session)
+	return err
+}
+
+// storeRoutingSession reads, merges and writes on the single writer connection
+// in one transaction. A read from reader() followed by an UPSERT would race with
+// another request between the read and write and lose its departed identities.
+func (a *App) storeRoutingSession(ctx context.Context, session routingSession) (routingSession, error) {
 	if !session.usable() {
-		return nil
+		return session, nil
 	}
-	order := session.Order
-	if order == nil {
-		order = []int64{}
-	}
-	encoded, err := json.Marshal(order)
+	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return session, err
+	}
+	defer tx.Rollback()
+	stored := routingSession{TaskHash: session.TaskHash, TaskScope: session.TaskScope}
+	var orderJSON string
+	err = tx.QueryRowContext(ctx, `
+SELECT task_source,order_json,cursor,provider_id,provider_key_id,plan_id,generation,created_at,updated_at
+FROM routing_sessions WHERE task_hash=? AND task_scope=?`, session.TaskHash, session.TaskScope).Scan(
+		&stored.TaskSource, &orderJSON, &stored.Cursor, &stored.ProviderID, &stored.ProviderKeyID,
+		&stored.PlanID, &stored.Generation, &stored.CreatedAt, &stored.UpdatedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return session, err
+	}
+	if err == nil {
+		if err := json.Unmarshal([]byte(orderJSON), &stored.Order); err != nil {
+			return session, fmt.Errorf("decode routing history: %w", err)
+		}
+		session = mergeRoutingSession(stored, session)
+	}
+	if session.Order == nil {
+		session.Order = []int64{}
+	}
+	encoded, err := json.Marshal(session.Order)
+	if err != nil {
+		return session, err
 	}
 	stamp := now()
-	_, err = a.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO routing_sessions(task_hash,task_scope,task_source,order_json,cursor,provider_id,provider_key_id,plan_id,generation,created_at,updated_at)
 VALUES(?,?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(task_hash,task_scope) DO UPDATE SET
@@ -155,11 +186,85 @@ ON CONFLICT(task_hash,task_scope) DO UPDATE SET
   provider_key_id=excluded.provider_key_id,
   plan_id=excluded.plan_id,
   generation=excluded.generation,
-  updated_at=excluded.updated_at
-WHERE excluded.generation >= routing_sessions.generation`,
+  updated_at=excluded.updated_at`,
 		session.TaskHash, session.TaskScope, session.TaskSource, string(encoded), session.Cursor,
 		session.ProviderID, session.ProviderKeyID, session.PlanID, session.Generation, stamp, stamp)
-	return err
+	if err != nil {
+		return session, err
+	}
+	if err := tx.Commit(); err != nil {
+		return session, err
+	}
+	return session, nil
+}
+
+// departedProviders is an identity history, not an offset in today's priority
+// list. Keep absent IDs too: temporarily disabling/removing a spent channel must
+// not make it fresh if it is enabled again during this task's lifetime.
+func (s routingSession) departedProviders() []int64 {
+	if bound := slices.Index(s.Order, s.ProviderID); bound >= 0 {
+		return s.Order[:bound]
+	}
+	return nil
+}
+
+// routingSessionOrder represents history without a schema change: the departed
+// identities precede the bound provider; everything after it is still unvisited.
+func routingSessionOrder(session routingSession, departed []int64, tails ...[]int64) routingSession {
+	order := make([]int64, 0, len(departed)+1)
+	seen := make(map[int64]bool)
+	appendIDs := func(ids []int64) {
+		for _, id := range ids {
+			if id > 0 && !seen[id] && id != session.ProviderID {
+				order = append(order, id)
+				seen[id] = true
+			}
+		}
+	}
+	appendIDs(departed)
+	session.Cursor = len(order)
+	if session.ProviderID > 0 {
+		order = append(order, session.ProviderID)
+		seen[session.ProviderID] = true
+	}
+	for _, tail := range tails {
+		appendIDs(tail)
+	}
+	session.Order = order
+	return session
+}
+
+// mergeRoutingSession resolves concurrent proposals by proof of departure. A
+// success on A cannot undo B's record that A was spent, regardless of generation.
+// Conversely an older request that really exhausted A may advance past newer A
+// successes. An unrelated concurrent binding does not steal the current task.
+func mergeRoutingSession(stored, proposed routingSession) routingSession {
+	past := stored.departedProviders()
+	proposedPast := proposed.departedProviders()
+	next := stored
+	switch {
+	case proposed.ProviderID <= 0 || slices.Contains(past, proposed.ProviderID):
+		// Reject the stale destination, not independent departure evidence.
+	case stored.ProviderID == proposed.ProviderID:
+		// Concurrent successes on the same channel may remember a working Key;
+		// an older snapshot must not erase a newer credential preference.
+		if proposed.Generation >= stored.Generation {
+			next = proposed
+			if next.ProviderKeyID == 0 {
+				// An advance arriving at an already-bound channel carries no
+				// successful-Key evidence. Do not erase a concurrent success.
+				next.ProviderKeyID = stored.ProviderKeyID
+			}
+		}
+	case stored.ProviderID <= 0 || slices.Contains(proposedPast, stored.ProviderID):
+		next = proposed
+	default:
+		// Keep the established binding when concurrent priority snapshots pick
+		// unrelated destinations. Still merge any other exhausted identities.
+	}
+	next.Generation = max(stored.Generation, proposed.Generation)
+	departed := append(append([]int64(nil), past...), proposedPast...)
+	return routingSessionOrder(next, departed, proposed.Order, stored.Order)
 }
 
 // pruneRoutingSessions bounds the table by idle age, hard age and row capacity.
@@ -188,46 +293,55 @@ SELECT rowid FROM routing_sessions ORDER BY updated_at DESC LIMIT -1 OFFSET ?)`,
 	return err
 }
 
-// resumeStartIndex maps a stored channel order onto the freshly computed plan.
-//
-// The stored order is the task's history. Channels that sat ahead of the bound
-// channel when the task moved forward stay behind it forever, even if they have
-// recovered since or a new higher-priority channel appeared: a task never walks
-// back up the order. Channels the task never reached are still reachable.
-func resumeStartIndex(storedOrder []int64, boundProviderID int64, channels []inferenceChannel) int {
-	if boundProviderID <= 0 || len(channels) == 0 {
-		return 0
+// resumeInferenceChannels rebuilds the reachable suffix by provider identity.
+// Merely counting a historical prefix and slicing the untouched live priority
+// order can select a spent channel after a reorder. Keep live spent channels in
+// a non-executable prefix (for diagnostics), lead with the bound channel if it
+// exists, then keep every unvisited/new channel in today's priority order.
+func resumeInferenceChannels(session routingSession, channels []inferenceChannel) ([]inferenceChannel, int) {
+	spent := make(map[int64]bool)
+	for _, id := range session.departedProviders() {
+		spent[id] = true
 	}
-	bound := -1
-	for i, id := range storedOrder {
-		if id == boundProviderID {
-			bound = i
-			break
-		}
-	}
-	if bound < 0 {
-		// No history for the bound channel: fall back to its live position.
-		for i, channel := range channels {
-			if channel.ProviderID == boundProviderID {
-				return i
-			}
-		}
-		return 0
-	}
-	present := map[int64]bool{}
+	ordered := make([]inferenceChannel, 0, len(channels))
+	var bound *inferenceChannel
+	remaining := make([]inferenceChannel, 0, len(channels))
 	for _, channel := range channels {
-		present[channel.ProviderID] = true
-	}
-	behind := 0
-	for _, id := range storedOrder[:bound] {
-		if present[id] {
-			behind++
+		switch {
+		case spent[channel.ProviderID]:
+			ordered = append(ordered, channel)
+		case channel.ProviderID == session.ProviderID:
+			bound = &channel
+		default:
+			remaining = append(remaining, channel)
 		}
 	}
-	if behind > len(channels) {
-		return len(channels)
+	start := len(ordered)
+	if bound != nil {
+		ordered = append(ordered, *bound)
 	}
-	return behind
+	return append(ordered, remaining...), start
+}
+
+// routingSessionAt records only identities before this request's selected
+// channel as departed, while retaining earlier task history, including absent
+// IDs. If the old bound channel disappeared, leaving it for another successful
+// channel also makes that old binding spent rather than reviving it on return.
+func routingSessionAt(previous routingSession, channels []inferenceChannel, index int) routingSession {
+	next := previous
+	next.ProviderID = channels[index].ProviderID
+	if next.ProviderID != previous.ProviderID {
+		next.ProviderKeyID = 0
+	}
+	next.PlanID = sessionPlanID(channels)
+	next.Generation++
+	departed := append([]int64(nil), previous.departedProviders()...)
+	if previous.ProviderID > 0 && previous.ProviderID != next.ProviderID {
+		departed = append(departed, previous.ProviderID)
+	}
+	order := storedOrderFromChannels(channels)
+	departed = append(departed, order[:index]...)
+	return routingSessionOrder(next, departed, order, previous.Order)
 }
 
 func sessionPlanID(channels []inferenceChannel) string {
