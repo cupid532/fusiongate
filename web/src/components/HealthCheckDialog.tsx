@@ -180,16 +180,15 @@ export function ProviderHealthPanel({ open, providerId, providerIds: batchIds, o
       setError("")
       try {
         const body: Parameters<typeof healthChecksApi.start>[0] = { provider_ids: providerIds, model_scope: scope }
-        if (scope === "selected") {
-          const chosen = routes.filter((r) => selectedRoutes.has(r.route_id) && routeProbeable(r))
-          body.route_ids = chosen.map((r) => r.route_id)
-          if (selectedKeys.size > 0) {
-            // Only send keys that actually serve a chosen route; the server
-            // rejects a key selection that matches nothing.
-            const used = new Set<number>()
-            for (const r of chosen) for (const k of r.keys) if (k.supported && selectedKeys.has(k.key_id)) used.add(k.key_id)
-            body.provider_key_ids = [...used]
-          }
+        const chosen = routes.filter((r) => (scope === "all" || selectedRoutes.has(r.route_id)) && routeProbeable(r))
+        if (scope === "selected") body.route_ids = chosen.map((r) => r.route_id)
+        if (selectedKeys.size > 0) {
+          // Both buttons respect the Key filter. An empty list means "all
+          // keys" to the server, so never submit an empty intersection.
+          const used = new Set<number>()
+          for (const r of chosen) for (const k of r.keys) if (k.supported && selectedKeys.has(k.key_id)) used.add(k.key_id)
+          if (used.size === 0) throw new Error("当前 Key 过滤下没有可检活的模型，请重新选择 Key 或模型")
+          body.provider_key_ids = [...used]
         }
         const created = await healthChecksApi.start(body)
         setBlocker(null)

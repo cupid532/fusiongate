@@ -2,6 +2,7 @@ package fusiongate
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -676,14 +677,17 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 		stream = true
 	}
 	result, cancel := a.inferenceAttempt(r, body, z, inferenceUpstreamPath(z, run.path), stream, onFirstByte)
-	if codexResponses && !run.stream && result.Response != nil && result.Status < 400 {
+	if codexResponses && !run.stream && result.Response != nil && result.Status >= 200 && result.Status < 300 {
 		// The client asked for a JSON Responses answer, but the backend only
-		// streams. Buffer the forced SSE and hand back the completed JSON the
-		// client expects, mirroring proxyUpstream's BufferSSE path.
-		buffered, readErr := io.ReadAll(result.Response.Body)
+		// streams. Decode only this successful response: native streaming and
+		// error responses must keep their original compressed wire bytes.
+		buffered, readErr := readCodexResponseSSE(result.Response)
 		result.Response.Body.Close()
 		result.Response = nil
 		cancel()
+		if len(buffered) > maxBufferedUpstreamBody {
+			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_response_too_large", Err: fmt.Errorf("buffered Codex SSE response exceeded %d bytes", maxBufferedUpstreamBody)}, func() {}
+		}
 		if readErr != nil {
 			return attemptResult{Status: http.StatusBadGateway, Retryable: true, Reason: "upstream_read_error", Err: readErr}, func() {}
 		}
@@ -700,6 +704,9 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write(encoded); err != nil {
 			return attemptResult{Status: http.StatusBadGateway, Handled: true, Reason: "downstream_write_error", Err: err}, func() {}
+		}
+		if usage.Reported {
+			cost(z, &usage)
 		}
 		result = attemptResult{Status: http.StatusOK, Handled: true, Usage: usage}
 		return result, func() {}
@@ -738,6 +745,27 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 	}
 	return result, cancel
 
+}
+
+// readCodexResponseSSE buffers the forced stream for a non-streaming Codex
+// response. The limit applies after decompression so a small gzip body cannot
+// expand into an unbounded allocation. The caller owns closing the response and
+// canceling the upstream request on every outcome.
+func readCodexResponseSSE(resp *http.Response) ([]byte, error) {
+	var reader io.Reader = resp.Body
+	switch encoding := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Encoding"))); encoding {
+	case "", "identity":
+	case "gzip":
+		decoded, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		defer decoded.Close()
+		reader = decoded
+	default:
+		return nil, fmt.Errorf("unsupported Codex SSE content encoding %q", encoding)
+	}
+	return io.ReadAll(io.LimitReader(reader, maxBufferedUpstreamBody+1))
 }
 
 // nativeBody is the client's own body. Only when the route maps the public name

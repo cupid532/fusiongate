@@ -1,5 +1,14 @@
 # Changelog
 
+## V3.57
+
+- Bound forced Codex non-streaming Responses collection to 32 MiB after gzip decoding; reject overflow and malformed compressed streams before committing a response so normal failover can continue. Apply configured route pricing to collected usage, matching other conversion paths. Leave native streaming and upstream error payloads untouched.
+- Distinguish real session/CSRF rejection from request-specific HTTP 403 errors: an incorrect current password no longer signs the administrator out, and a failed CSRF logout is not reported as confirmed revocation.
+- Honor explicit Key filters for both selected-model and all-model manual health checks; never silently expand an empty filtered selection into probes of every Key.
+- Upgrade the production Go compiler to supported Go 1.26.10, HTTP/2 and compression security fixes, Vite 8.3.5, Vitest 4.1.12, and source-map-js 1.2.2. Add weekly npm Dependabot coverage without broad framework-major upgrades.
+- Preserve existing immutable release exports, rollback images and shared Docker caches during deployment; retention and deletion require a separate operator decision.
+- Correct stale passthrough and IP-node deletion documentation to match existing behavior.
+
 ## V3.56
 
 - Show source names rather than URLs in “实际上游”, including details and CSV. Recognize known official endpoints; otherwise show the captured channel name or 未知. Never infer a reseller's ultimate source from model names.

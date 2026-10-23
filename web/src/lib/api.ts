@@ -22,9 +22,9 @@ export class ApiError extends Error {
   }
 }
 
-/** True when the error means "your session is gone", not "this request was bad". */
+/** True when the console must reauthenticate, not when an individual action was denied. */
 export function isAuthError(error: unknown): boolean {
-  return error instanceof ApiError && (error.status === 401 || error.status === 403)
+  return error instanceof ApiError && (error.status === 401 || (error.status === 403 && error.code === "csrf_failed"))
 }
 
 export async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
@@ -44,8 +44,9 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
     try {
       data = text ? JSON.parse(text) : null
     } catch {
-      if (res.status === 401 || res.status === 403) reportUnauthorized()
-      throw new ApiError(res.ok ? 502 : res.status, "invalid_response", `网关返回了无法解析的数据（HTTP ${res.status}），请刷新核对操作结果`)
+      const apiError = new ApiError(res.ok ? 502 : res.status, "invalid_response", `网关返回了无法解析的数据（HTTP ${res.status}），请刷新核对操作结果`)
+      if (isAuthError(apiError)) reportUnauthorized()
+      throw apiError
     }
   } else if (res.ok && res.status !== 204) {
     throw new ApiError(502, "invalid_response", "网关未返回预期的 JSON 数据，请检查连接并刷新核对操作结果")
@@ -53,11 +54,9 @@ export async function api<T = unknown>(path: string, options: RequestInit = {}):
   if (!res.ok) {
     const err = (data as { error?: { message?: string; code?: string } })?.error
     const apiError = new ApiError(res.status, err?.code ?? "error", err?.message ?? res.statusText)
-    // A 401 means the server forgot our session (restart or 12h expiry); a 403
-    // here is a CSRF rejection, which happens for the same reason — the token
-    // we hold belongs to a session that no longer exists. Either way the only
-    // recovery is to sign in again, so surface it instead of failing silently.
-    if (apiError.status === 401 || apiError.status === 403) reportUnauthorized()
+    // Only a 401 or an explicit CSRF failure needs reauthentication. Other
+    // 403s can reject an action while the administrator session remains valid.
+    if (isAuthError(apiError)) reportUnauthorized()
     throw apiError
   }
   return data as T
@@ -132,7 +131,7 @@ export async function apiDownload(path: string, options: RequestInit, expected: 
       // Non-JSON error body; keep the status text.
     }
     const apiError = new ApiError(res.status, code, message)
-    if (apiError.status === 401 || apiError.status === 403) reportUnauthorized()
+    if (isAuthError(apiError)) reportUnauthorized()
     throw apiError
   }
   const contentType = (res.headers.get("content-type") ?? "").toLowerCase()

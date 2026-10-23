@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react"
 import { useQueryClient } from "@tanstack/react-query"
-import { api, isAuthError, setCsrfToken } from "@/lib/api"
+import { api, ApiError, setCsrfToken } from "@/lib/api"
 import { notify, setUnauthorizedHandler } from "@/lib/notify"
 
 type Session = {
@@ -59,9 +59,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // Sessions live in the gateway's memory with a 12h expiry, so they vanish on
-  // every restart. Previously nothing noticed: the console stayed fully drawn
-  // while every request 401'd behind it. Now any 401/403 from anywhere drops
-  // back to the login screen and says why.
+  // every restart. A 401 or an explicit csrf_failed asks for reauthentication;
+  // an ordinary action-level 403 (such as a wrong current password) does not.
+  // Stale CSRF can also follow a login in another tab, without cookie revocation.
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setCsrfToken("")
@@ -70,7 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           notify({
             tone: "error",
             title: "登录状态已失效",
-            description: "网关重启或会话过期，请重新登录。",
+            description: "会话过期或安全校验失效，请重新登录。",
           })
         }
         return false
@@ -93,20 +93,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await api("/api/admin/logout", { method: "POST" })
       endSession()
     } catch (error) {
-      // A 401/403 means the session is already gone — there is nothing left to
-      // revoke, so this counts as a finished logout.
-      if (isAuthError(error)) {
+      // Only a 401 proves the session is already gone. A stale CSRF token
+      // rejects logout before the gateway revokes the still-valid cookie.
+      if (error instanceof ApiError && error.status === 401) {
         endSession()
         return
       }
-      // Only the gateway can revoke the session cookie. If the request never
-      // reached it, dropping to the login screen would *look* like a logout
-      // while the old cookie stayed valid, and a reload would walk straight
-      // back in. Keep the console where it is and say what happened instead.
+      // Only the gateway can revoke the session cookie. A network failure or
+      // CSRF rejection must not look like a confirmed logout. The global CSRF
+      // handler may already have requested reauthentication; explain that the
+      // cookie can still be valid even if the login screen is now visible.
       notify({
         tone: "error",
         title: "退出未完成",
-        description: "网关没有确认退出，当前会话可能仍然有效。请检查网络后重试。",
+        description: "网关没有确认退出，当前会话可能仍然有效。请刷新页面后重试退出；如需登录，请重新登录后再退出。",
       })
     }
   }, [endSession])

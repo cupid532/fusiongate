@@ -21,8 +21,8 @@ These instructions apply to every automated agent and contributor working in thi
 - Run `gofmt` on changed Go files.
 - Run `go test ./...` and `go vet ./...` before pushing.
 - For console changes, also run `npm run build`, `npx tsc -b`, `npx oxlint`, and `npx vitest run` in `web/`.
-- `go.mod` requires Go 1.25; if the host toolchain is older, run the Go steps in a container:
-  `docker run --rm -v "$PWD:/src" -w /src golang:1.25.12-alpine sh -c "apk add --no-cache build-base && go test ./..."`
+- `go.mod` requires Go 1.26.10 or newer; use a supported toolchain with current security patches. If the host toolchain is older, run the Go steps in a container:
+  `docker run --rm -v "$PWD:/src" -w /src golang:1.26.10-alpine sh -c "apk add --no-cache build-base && go test ./..."`
 - Never commit `.env` files, databases, credentials, secrets, or deployment data.
 
 ## Deployment parity

@@ -27,8 +27,6 @@ COMPOSE_FILE="${FUSIONGATE_COMPOSE_FILE:-$FUSIONGATE_HOME/docker-compose.yml}"
 BUILD_ROOT="$FUSIONGATE_HOME/releases"
 HEALTH_URL="${FUSIONGATE_HEALTH_URL:-http://127.0.0.1:18787/healthz}"
 PUBLIC_HEALTH_URL="${FUSIONGATE_PUBLIC_HEALTH_URL:-https://api.codelee.de/healthz}"
-KEEP_ROLLBACK_IMAGES="${FUSIONGATE_KEEP_ROLLBACK_IMAGES:-3}"
-KEEP_RELEASES="${FUSIONGATE_KEEP_RELEASES:-3}"
 HEALTH_TIMEOUT_SECONDS="${FUSIONGATE_HEALTH_TIMEOUT_SECONDS:-120}"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -112,9 +110,13 @@ fi
 # contain what is committed at that SHA. Uncommitted files cannot leak in even
 # by accident.
 BUILD_DIR="$BUILD_ROOT/$TARGET_SHORT"
+if [[ -e "$BUILD_DIR" || -L "$BUILD_DIR" ]]; then
+  log "preserving existing build export $BUILD_DIR"
+  BUILD_DIR="$(mktemp -d "$BUILD_ROOT/$TARGET_SHORT-$STAMP-XXXXXX")"
+else
+  mkdir -p "$BUILD_DIR"
+fi
 log "exporting $TARGET_SHORT to $BUILD_DIR"
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
 git -C "$REPO_DIR" archive --format=tar "$TARGET_SHA" | tar -x -C "$BUILD_DIR"
 
 CANDIDATE_IMAGE="fusiongate:candidate-$TARGET_SHORT"
@@ -197,24 +199,11 @@ fi
 echo "$TARGET_SHA" > "$FUSIONGATE_HOME/last-deployed-commit"
 
 # ---------------------------------------------------------------------------
-# 6. Keep the disk from refilling
+# 6. Preserve recovery assets
 # ---------------------------------------------------------------------------
-# This host reached 83% full on ~44 accumulated fusiongate tags plus build
-# cache. Every commit is on GitHub and rebuildable, so a handful of rollback
-# points is all that is worth keeping.
-log "pruning old build artifacts"
-mapfile -t old_images < <(
-  docker images 'fusiongate:rollback-*' --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' \
-    | sort -r | tail -n "+$((KEEP_ROLLBACK_IMAGES + 1))" | cut -f2
-)
-for image in "${old_images[@]:-}"; do
-  [[ -n "$image" ]] && docker rmi "$image" >/dev/null 2>&1 || true
-done
-docker images 'fusiongate:candidate-*' --format '{{.Repository}}:{{.Tag}}' \
-  | grep -v "^${CANDIDATE_IMAGE}$" | xargs -r -n1 docker rmi >/dev/null 2>&1 || true
-( cd "$BUILD_ROOT" && ls -1dt */ 2>/dev/null | tail -n "+$((KEEP_RELEASES + 1))" | xargs -r rm -rf )
-docker builder prune -f --keep-storage 2GB >/dev/null 2>&1 || true
-docker image prune -f >/dev/null 2>&1 || true
+# An update is not authorization to delete historical releases, rollback images
+# or shared Docker caches. Retention is an operator decision made separately.
+log "preserving release exports, rollback images and Docker build caches"
 
 cat <<SUMMARY
 

@@ -205,6 +205,58 @@ describe("HealthCheckDialog", () => {
     expect(start?.body).toEqual({ provider_ids: [7], model_scope: "selected", route_ids: [1], provider_key_ids: [25] })
   })
 
+  it.each(["all", "selected"] as const)("respects the Key filter for the %s model scope", async (scope) => {
+    const targets = preview()
+    const secondKey = { ...targets.routes[0].keys[0], key_id: 26, name: "Key 2" }
+    targets.routes[0].keys.push(secondKey)
+    targets.routes[1] = { ...targets.routes[1], supported: true, reason: undefined, keys: [...targets.routes[1].keys, secondKey] }
+    targets.probeable = 2
+    const calls = mockFetch((url, init) => {
+      if (url.endsWith("/health-check-targets")) return json(targets)
+      if (url === "/api/admin/health-checks" && init?.method === "POST") return json(job(), 202)
+      if (url === "/api/admin/health-checks") return json({ active: false })
+      return undefined
+    })
+    renderDialog()
+    await screen.findByText("gpt-live")
+    fireEvent.click(screen.getByRole("button", { name: "Key 1" }))
+    // The second model is probeable with Key 2, but must not generate with an
+    // unselected Key just because the operator chooses "all" models.
+    expect((screen.getByRole("checkbox", { name: /gpt-ghost/ }) as HTMLInputElement).disabled).toBe(true)
+    fireEvent.click(screen.getByText("全选可检活"))
+    fireEvent.click(screen.getByText(scope === "all" ? "一键测活全部" : "测活选中"))
+
+    await screen.findByText("全部健康")
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({
+      provider_ids: [7],
+      model_scope: scope,
+      ...(scope === "selected" ? { route_ids: [1] } : {}),
+      provider_key_ids: [25],
+    })
+  })
+
+  it("does not broaden an unsupported Key selection into an unfiltered health check", async () => {
+    const targets = preview()
+    targets.routes[0].keys[0].supported = false
+    targets.routes[0].keys.push({ ...targets.routes[0].keys[0], key_id: 26, name: "Key 2", supported: true })
+    const calls = mockFetch((url) => {
+      if (url.endsWith("/health-check-targets")) return json(targets)
+      if (url === "/api/admin/health-checks") return json({ active: false })
+      return undefined
+    })
+    renderDialog()
+    await screen.findByText("gpt-live")
+    fireEvent.click(screen.getByRole("button", { name: "Key 1" }))
+    fireEvent.click(screen.getByText("全选可检活"))
+    const all = screen.getByRole<HTMLButtonElement>("button", { name: "一键测活全部" })
+    const selected = screen.getByRole<HTMLButtonElement>("button", { name: "测活选中" })
+    expect(all.disabled).toBe(true)
+    expect(selected.disabled).toBe(true)
+    fireEvent.click(all)
+    fireEvent.click(selected)
+    expect(calls.some((call) => call.method === "POST")).toBe(false)
+  })
+
   it("treats another running job as a blocker, not a failure", async () => {
     const other = job({ id: "other", status: "running", total: 105, completed: 40, healthy: 40, results: [{ provider_id: 9, provider_name: "Grok · a", status: "healthy", latency_ms: 1, model_count: 0 }], can_cancel: true })
     let active = true

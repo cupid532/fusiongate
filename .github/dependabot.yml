@@ -1,5 +1,12 @@
 version: 2
 updates:
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    groups:
+      vitest:
+        patterns: ["vitest", "@vitest/*"]
   - package-ecosystem: gomod
     directory: /
     schedule:
