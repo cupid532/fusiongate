@@ -174,6 +174,8 @@ type Provider struct {
 	KeySelectionMode        string  `json:"key_selection_mode"`
 	ProtocolPolicy          string  `json:"protocol_policy"`
 	ProtocolPreference      string  `json:"protocol_preference"`
+	ImageMode               string  `json:"image_mode"`
+	ImageOuterModel         string  `json:"image_outer_model"`
 	APIKeyCount             int     `json:"api_key_count"`
 	EnabledAPIKeyCount      int     `json:"enabled_api_key_count"`
 	PassthroughSupported    bool    `json:"passthrough_supported"`
@@ -797,6 +799,8 @@ func (a *App) migrate(ctx context.Context) error {
 		{"providers", "key_selection_mode", "TEXT NOT NULL DEFAULT 'configured'"},
 		{"providers", "protocol_policy", "TEXT NOT NULL DEFAULT 'auto'"},
 		{"providers", "protocol_preference", "TEXT NOT NULL DEFAULT ''"},
+		{"providers", "image_mode", "TEXT NOT NULL DEFAULT 'legacy'"},
+		{"providers", "image_outer_model", "TEXT NOT NULL DEFAULT ''"},
 		{"providers", "multi_key_initialized", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "sort_order", "INTEGER NOT NULL DEFAULT 0"},
 		{"providers", "archived", "INTEGER NOT NULL DEFAULT 0"},

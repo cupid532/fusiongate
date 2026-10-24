@@ -38,6 +38,19 @@ function show(p: Provider | null) {
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe("ProviderDialog passthrough", () => {
+  it("saves explicit image tools configuration without guessing a model", async () => {
+    setup()
+    show(provider({ type: "codex_oauth" }))
+    fireEvent.click(screen.getByRole("button", { name: /转发与调度/ }))
+    expect((screen.getByRole("combobox", { name: "图片生成方式" }) as HTMLSelectElement).value).toBe("legacy")
+    fireEvent.change(screen.getByRole("combobox", { name: "图片生成方式" }), { target: { value: "responses" } })
+    expect((screen.getByRole("textbox", { name: "外层模型标识" }) as HTMLInputElement).value).toBe("")
+    expect(screen.queryByRole("option", { name: /原生图片接口/ })).toBeNull()
+    fireEvent.change(screen.getByRole("textbox", { name: "外层模型标识" }), { target: { value: "chosen-text" } })
+    fireEvent.click(screen.getByRole("button", { name: "保存渠道参数" }))
+    await waitFor(() => expect(requests.find((request) => request.url === "/api/admin/providers/7")?.body).toEqual({ image_mode: "responses", image_outer_model: "chosen-text" }))
+  })
+
   it("clears channel egress with zero and leaves other connection settings untouched", async () => {
     setup()
     show(provider({ ip_pool_node_id: 8 }))

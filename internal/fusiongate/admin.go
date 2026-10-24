@@ -291,7 +291,7 @@ func validEditableProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.reader().Query(`SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.stream_start_timeout_ms,p.stream_idle_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
+		rows, err := a.reader().Query(`SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.stream_start_timeout_ms,p.stream_idle_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,p.image_mode,p.image_outer_model,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -303,7 +303,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			var enabled, archived, hasRefresh, healthCheckEnabled int
 			var groupID, ipPoolNodeID sql.NullInt64
 			var manualBalance sql.NullInt64
-			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.WebsiteURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &archived, &p.Priority, &p.SortOrder, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.StreamStartTimeoutMS, &p.StreamIdleTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &healthCheckEnabled, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastFirstByteMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS, &p.HealthCheckMode, &p.HealthCheckFirstByteMS, &p.HealthCheckModel, &p.HealthCheckModelCount, &manualBalance, &p.BalanceBaselineAt, &p.BalanceMultiplierOpenAI, &p.BalanceMultiplierClaude, &p.BalanceMultiplierGrok, &p.BalanceMultiplierGemini, &p.BalanceMultiplierOther, &ipPoolNodeID, &p.IPPoolNodeName, &p.IPPoolNodeProtocol, &p.DefaultModel, &p.KeySelectionMode, &p.ProtocolPolicy, &p.ProtocolPreference, &p.APIKeyCount, &p.EnabledAPIKeyCount); err != nil {
+			if err := rows.Scan(&p.ID, &p.Name, &p.Type, &p.BaseURL, &p.WebsiteURL, &p.AuthKind, &p.AuthSource, &p.AuthAccountID, &p.AuthEmail, &p.AuthExpiresAt, &p.AuthStatus, &hasRefresh, &enabled, &archived, &p.Priority, &p.SortOrder, &p.Weight, &p.Status, &p.Notes, &p.PassthroughMode, &p.ClientPolicy, &p.MaxConcurrency, &p.RequestTimeoutMS, &p.StreamStartTimeoutMS, &p.StreamIdleTimeoutMS, &p.FailureThreshold, &p.CooldownSeconds, &healthCheckEnabled, &p.ConsecutiveFailures, &p.CircuitOpenUntil, &p.LastError, &p.LastLatencyMS, &p.LastFirstByteMS, &p.LastSuccessAt, &p.LastFailureAt, &p.ModelCount, &groupID, &p.GroupSortOrder, &p.LastHealthCheckAt, &p.HealthCheckStatus, &p.HealthCheckError, &p.HealthCheckLatencyMS, &p.HealthCheckMode, &p.HealthCheckFirstByteMS, &p.HealthCheckModel, &p.HealthCheckModelCount, &manualBalance, &p.BalanceBaselineAt, &p.BalanceMultiplierOpenAI, &p.BalanceMultiplierClaude, &p.BalanceMultiplierGrok, &p.BalanceMultiplierGemini, &p.BalanceMultiplierOther, &ipPoolNodeID, &p.IPPoolNodeName, &p.IPPoolNodeProtocol, &p.DefaultModel, &p.KeySelectionMode, &p.ProtocolPolicy, &p.ProtocolPreference, &p.ImageMode, &p.ImageOuterModel, &p.APIKeyCount, &p.EnabledAPIKeyCount); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
@@ -362,6 +362,8 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			KeySelectionMode     string `json:"key_selection_mode"`
 			ProtocolPolicy       string `json:"protocol_policy"`
 			ProtocolPreference   string `json:"protocol_preference"`
+			ImageMode            string `json:"image_mode"`
+			ImageOuterModel      string `json:"image_outer_model"`
 			KeyName              string `json:"key_name"`
 		}
 		if err := readJSON(r, &in); err != nil {
@@ -471,6 +473,17 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		id, _ := res.LastInsertId()
+		if in.ImageMode == "" {
+			in.ImageMode = "legacy"
+		}
+		if err := validateImagePolicy(in.Type, in.ImageMode, in.ImageOuterModel); err != nil {
+			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
+			return
+		}
+		if _, err := tx.Exec(`UPDATE providers SET image_mode=?,image_outer_model=? WHERE id=?`, in.ImageMode, strings.TrimSpace(in.ImageOuterModel), id); err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
+		}
 		if _, err := tx.Exec(`UPDATE providers SET health_check_enabled=? WHERE id=?`, boolInt(healthCheckEnabled), id); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -1041,6 +1054,8 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		KeySelectionMode        *string  `json:"key_selection_mode"`
 		ProtocolPolicy          *string  `json:"protocol_policy"`
 		ProtocolPreference      *string  `json:"protocol_preference"`
+		ImageMode               *string  `json:"image_mode"`
+		ImageOuterModel         *string  `json:"image_outer_model"`
 	}
 	if err := readJSON(r, &in); err != nil {
 		fail(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -1152,6 +1167,24 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 		fail(w, http.StatusBadRequest, "invalid_request", "fixed policy requires one protocol supported by this provider type")
 		return
 	}
+	if in.ImageMode != nil || in.ImageOuterModel != nil || providerType != currentType {
+		var mode, outer string
+		if err := a.reader().QueryRow(`SELECT image_mode,image_outer_model FROM providers WHERE id=?`, id).Scan(&mode, &outer); err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
+		}
+		if in.ImageMode != nil {
+			mode = *in.ImageMode
+		}
+		if in.ImageOuterModel != nil {
+			outer = strings.TrimSpace(*in.ImageOuterModel)
+			in.ImageOuterModel = &outer
+		}
+		if err := validateImagePolicy(providerType, mode, outer); err != nil {
+			fail(w, 400, "invalid_request", err.Error())
+			return
+		}
+	}
 	protocolChanged := in.ProtocolPolicy != nil || in.ProtocolPreference != nil
 	connectionChanged := credentialUpdated || (in.Name != nil && *in.Name != currentName) || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL) || in.IPPoolNodeID != nil || in.DefaultModel != nil || protocolChanged
 	discoveryConnectionChanged := credentialUpdated || (in.Type != nil && *in.Type != currentType) || (in.BaseURL != nil && *in.BaseURL != currentBaseURL) || protocolChanged
@@ -1213,7 +1246,7 @@ func (a *App) providerUpdate(w http.ResponseWriter, r *http.Request, id int64) {
 			return
 		}
 	}
-	res, err := tx.ExecContext(r.Context(), `UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),website_url=COALESCE(?,website_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),stream_start_timeout_ms=COALESCE(?,stream_start_timeout_ms),stream_idle_timeout_ms=COALESCE(?,stream_idle_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),key_selection_mode=COALESCE(?,key_selection_mode),protocol_policy=COALESCE(?,protocol_policy),protocol_preference=COALESCE(?,protocol_preference),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, in.WebsiteURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.StreamStartTimeoutMS, in.StreamIdleTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, now(), id)
+	res, err := tx.ExecContext(r.Context(), `UPDATE providers SET name=COALESCE(?,name),type=COALESCE(?,type),base_url=COALESCE(?,base_url),website_url=COALESCE(?,website_url),credential=COALESCE(?,credential),enabled=COALESCE(?,enabled),archived=COALESCE(?,archived),priority=COALESCE(?,priority),weight=COALESCE(?,weight),notes=COALESCE(?,notes),passthrough_mode=COALESCE(?,passthrough_mode),client_policy=COALESCE(?,client_policy),max_concurrency=COALESCE(?,max_concurrency),request_timeout_ms=COALESCE(?,request_timeout_ms),stream_start_timeout_ms=COALESCE(?,stream_start_timeout_ms),stream_idle_timeout_ms=COALESCE(?,stream_idle_timeout_ms),failure_threshold=COALESCE(?,failure_threshold),cooldown_seconds=COALESCE(?,cooldown_seconds),health_check_enabled=COALESCE(?,health_check_enabled),group_id=CASE WHEN ? THEN ? ELSE group_id END,group_sort_order=COALESCE(?,group_sort_order),ip_pool_node_id=CASE WHEN ? THEN ? ELSE ip_pool_node_id END,default_model=COALESCE(?,default_model),key_selection_mode=COALESCE(?,key_selection_mode),protocol_policy=COALESCE(?,protocol_policy),protocol_preference=COALESCE(?,protocol_preference),image_mode=COALESCE(?,image_mode),image_outer_model=COALESCE(?,image_outer_model),updated_at=? WHERE id=?`, in.Name, in.Type, in.BaseURL, in.WebsiteURL, encryptedCredential, maybeBool(in.Enabled), maybeBool(in.Archived), in.Priority, in.Weight, in.Notes, in.PassthroughMode, in.ClientPolicy, in.MaxConcurrency, in.RequestTimeoutMS, in.StreamStartTimeoutMS, in.StreamIdleTimeoutMS, in.FailureThreshold, in.CooldownSeconds, maybeBool(in.HealthCheckEnabled), groupAssignRequested, groupIDArg, in.GroupSortOrder, in.IPPoolNodeID != nil, ipPoolNodeArg, in.DefaultModel, in.KeySelectionMode, in.ProtocolPolicy, in.ProtocolPreference, in.ImageMode, in.ImageOuterModel, now(), id)
 	if err != nil {
 		lowerErr := strings.ToLower(err.Error())
 		if in.Name != nil && strings.Contains(lowerErr, "unique") && strings.Contains(lowerErr, "providers.name") {

@@ -823,7 +823,20 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		}
 		sort.Slice(allModels, func(i, j int) bool { return allModels[i].ID < allModels[j].ID })
 		if p.Type == "codex_oauth" {
-			allModels = addCodexImageModel(allModels)
+			var mode, outer string
+			if err := a.reader().QueryRow(`SELECT image_mode,image_outer_model FROM providers WHERE id=?`, p.ID).Scan(&mode, &outer); err == nil && mode == "responses" {
+				found := false
+				for _, model := range allModels {
+					if model.ID == outer || model.UpstreamID == outer {
+						found = true
+					}
+				}
+				if found {
+					for _, alias := range []string{"gpt-image-1", "gpt-image-2"} {
+						allModels = append(allModels, discoveredModel{ID: alias, UpstreamID: outer, DisplayName: alias + " (Responses tool alias)", Capabilities: "image"})
+					}
+				}
+			}
 		}
 		if p.Type == "grok_oauth" {
 			allModels = enrichGrokModels(allModels)

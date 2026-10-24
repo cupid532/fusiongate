@@ -60,11 +60,10 @@ func codexImageRequest(raw []byte, upstreamModel string) ([]byte, error) {
 		return nil, errors.New("codex OAuth image generation does not support a transparent background")
 	}
 
-	// gpt-image-2 is a built-in tool backend, not the outer Responses model.
-	// Synthetic discovery routes point at gpt-5.5; keep a safe fallback for
-	// manually-created routes whose upstream model was set to an image alias.
+	// An image alias is not an outer Responses model. Never guess a text
+	// model here; tool backend identity remains controlled by the upstream.
 	if upstreamModel == "" || strings.Contains(strings.ToLower(upstreamModel), "image") {
-		upstreamModel = "gpt-5.5"
+		return nil, errors.New("image tool requires an explicitly configured outer model; select an enabled text model in channel image settings")
 	}
 	input := any(prompt)
 	if images, ok := source["_reference_images"].([]any); ok && len(images) > 0 {

@@ -54,6 +54,8 @@ export interface Provider {
   weight: number
   protocol_policy?: string
   protocol_preference?: string
+  image_mode?: string
+  image_outer_model?: string
   passthrough_supported?: boolean
   passthrough_reason?: string
   client_policy: string

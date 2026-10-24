@@ -1,5 +1,13 @@
 # Changelog
 
+## V3.60
+
+- Add channel image policies: disabled, native images, explicit Codex Responses image tools, and visibly labelled legacy compatibility. New UI-created channels default to images disabled; existing channels keep their prior mode.
+- Let operators select a channel-local outer text model or enter its identifier. Check enabled text routes and provider-key restrictions before image attempts; never choose by price or silently substitute a disabled/missing outer model. Ordinary text requests are unaffected.
+- Remove guessed gpt-5.5 execution fallback and automatic discovery binding. Explicit tool-mode discovery uses only the configured model when present. Preserve image policy in provider backup export/import and record selected outer model in the inference ledger.
+- Codex native images remain unavailable until verified. No claim that a tool alias guarantees the actual upstream image backend, or that a real Canvas image generation has passed.
+
+
 ## V3.59
 
 - Register the public image editing endpoint with the same API-key image permissions, CORS, routing, limits and accounting as image generation. Preserve multipart reference files and rewrite only explicitly mapped model names for native channels.

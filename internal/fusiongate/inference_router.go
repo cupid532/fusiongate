@@ -326,6 +326,15 @@ func (run *inferenceRun) execute(w http.ResponseWriter, r *http.Request) {
 			}
 			compatible := make([]resolvedRoute, 0, len(keys))
 			for _, candidate := range keys {
+				if strings.HasPrefix(run.path, "/v1/images/") {
+					var err error
+					candidate, err = a.imagePolicy(candidate)
+					if err != nil {
+						run.lastErr = "image_policy_unavailable"
+						run.noteSkip(fmt.Sprintf("provider=%d: %s", candidate.Provider.ID, err.Error()))
+						continue
+					}
+				}
 				if client, target, bridge := parseBridgeAdapter(inferenceAdapterID(candidate, run.path)); bridge {
 					opts := bridgeOptionsForRequest(r)
 					if err := validateBridgeRouteFor(client, target, run.raw, run.path, opts); err != nil {
@@ -639,6 +648,13 @@ const maxInferenceRetryAfter = 30 * time.Second
 // attempt performs one upstream call for one channel.
 func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resolvedRoute, adapter string, onFirstByte func()) (attemptResult, context.CancelFunc) {
 	a := run.app
+	if strings.HasPrefix(run.path, "/v1/images/") {
+		var err error
+		z, err = a.imagePolicy(z)
+		if err != nil {
+			return attemptResult{Status: http.StatusServiceUnavailable, Reason: "image_policy_unavailable", Retryable: true, Err: err}, func() {}
+		}
+	}
 	if adapter == "codex_oauth:image_generation" {
 		body, err := codexImageInput(run.raw, r.Header.Get("Content-Type"))
 		if err != nil {

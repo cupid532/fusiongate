@@ -57,6 +57,8 @@ type providerBackupProvider struct {
 	KeySelectionMode     string                         `json:"key_selection_mode,omitempty"`
 	ProtocolPolicy       string                         `json:"protocol_policy,omitempty"`
 	ProtocolPreference   string                         `json:"protocol_preference,omitempty"`
+	ImageMode            string                         `json:"image_mode,omitempty"`
+	ImageOuterModel      string                         `json:"image_outer_model,omitempty"`
 	GroupName            string                         `json:"group_name,omitempty"`
 	GroupSortOrder       int                            `json:"group_sort_order,omitempty"`
 	IPPoolNodeName       string                         `json:"ip_pool_node_name,omitempty"`
@@ -143,7 +145,7 @@ func (a *App) providerBackupExport(w http.ResponseWriter, r *http.Request, _ adm
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(r.Context(), `
 SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.notes,p.enabled,p.archived,p.priority,p.weight,p.passthrough_mode,p.client_policy,
-       p.max_concurrency,p.request_timeout_ms,p.stream_start_timeout_ms,p.stream_idle_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,p.group_sort_order,
+       p.max_concurrency,p.request_timeout_ms,p.stream_start_timeout_ms,p.stream_idle_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,p.image_mode,p.image_outer_model,p.group_sort_order,
        COALESCE(g.name,''),COALESCE(n.name,''),p.credential,p.multi_key_initialized
 FROM providers p
 LEFT JOIN provider_groups g ON g.id=p.group_id
@@ -161,7 +163,7 @@ ORDER BY p.priority DESC,p.id`)
 		if err := rows.Scan(&item.ID, &item.Provider.Name, &item.Provider.Type, &item.Provider.BaseURL, &item.Provider.WebsiteURL, &item.Provider.Notes,
 			&enabled, &archived, &item.Provider.Priority, &item.Provider.Weight, &item.Provider.PassthroughMode, &item.Provider.ClientPolicy,
 			&item.Provider.MaxConcurrency, &item.Provider.RequestTimeoutMS, &item.Provider.StreamStartTimeoutMS, &item.Provider.StreamIdleTimeoutMS, &item.Provider.FailureThreshold, &item.Provider.CooldownSeconds, &healthCheckEnabled,
-			&item.Provider.DefaultModel, &item.Provider.KeySelectionMode, &item.Provider.ProtocolPolicy, &item.Provider.ProtocolPreference, &item.Provider.GroupSortOrder, &item.Provider.GroupName, &item.Provider.IPPoolNodeName, &item.Credential, &item.Initialized); err != nil {
+			&item.Provider.DefaultModel, &item.Provider.KeySelectionMode, &item.Provider.ProtocolPolicy, &item.Provider.ProtocolPreference, &item.Provider.ImageMode, &item.Provider.ImageOuterModel, &item.Provider.GroupSortOrder, &item.Provider.GroupName, &item.Provider.IPPoolNodeName, &item.Credential, &item.Initialized); err != nil {
 			rows.Close()
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -673,6 +675,17 @@ func (a *App) providerBackupImport(w http.ResponseWriter, r *http.Request, _ adm
 				return
 			}
 			result.ProvidersUpdated++
+		}
+		if provider.ImageMode == "" {
+			provider.ImageMode = "legacy"
+		}
+		if err := validateImagePolicy(provider.Type, provider.ImageMode, provider.ImageOuterModel); err != nil {
+			fail(w, 400, "invalid_request", err.Error())
+			return
+		}
+		if _, err := tx.Exec(`UPDATE providers SET image_mode=?,image_outer_model=? WHERE id=?`, provider.ImageMode, provider.ImageOuterModel, providerID); err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
 		}
 		healthCheckEnabled := true
 		if provider.HealthCheckEnabled != nil {
