@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.59
+
+- Register the public image editing endpoint with the same API-key image permissions, CORS, routing, limits and accounting as image generation. Preserve multipart reference files and rewrite only explicitly mapped model names for native channels.
+- Reconnect the existing Codex image-generation adapter to the public inference router, including multipart reference images converted into Responses image inputs; report the real adapter and upstream path in request diagnostics. Reject unsupported masks explicitly rather than silently discarding them.
+- Add public-router regression tests for native image edits, Codex generation/editing, model mapping and browser preflight. Preserve upstream terminal errors such as HTTP 409 rather than retrying potentially billable jobs blindly.
+
+
 ## V3.58
 
 - Merge task routing progress atomically by departed provider identities, not generation alone. A late success on an old channel cannot undo a proven failover, while older requests may still advance past newer successes on the same channel. Preserve working-Key preferences only within the bound provider.

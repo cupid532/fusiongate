@@ -123,6 +123,9 @@ func providerInferenceMode(kind, path string) inferenceSupport {
 	}
 	switch kind {
 	case "codex_oauth":
+		if path == "/v1/images/generations" || path == "/v1/images/edits" {
+			return inferenceSupport{mode: inferenceModeBridge}
+		}
 		if path == "/v1/responses/compact" {
 			return support
 		}
@@ -343,6 +346,9 @@ func classifyInferenceResult(result attemptResult, downstreamCanceled bool) infe
 // inferenceAdapterID names the adapter that will serve a route, for the ledger
 // and the console. It never contains credentials.
 func inferenceAdapterID(z resolvedRoute, path string) string {
+	if z.Provider.Type == "codex_oauth" && strings.HasPrefix(path, "/v1/images/") {
+		return "codex_oauth:image_generation"
+	}
 	if adapter := planInferenceAdapter(z, path); adapter != "" {
 		return adapter
 	}
@@ -358,6 +364,9 @@ func inferenceAdapterID(z resolvedRoute, path string) string {
 
 // inferenceAttemptPath is the wire path an attempt actually calls.
 func inferenceAttemptPath(z resolvedRoute, path, adapter string) string {
+	if adapter == "codex_oauth:image_generation" {
+		return "/responses"
+	}
 	if _, target, ok := parseBridgeAdapter(adapter); ok {
 		switch target {
 		case wireChat:

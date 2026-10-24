@@ -639,6 +639,14 @@ const maxInferenceRetryAfter = 30 * time.Second
 // attempt performs one upstream call for one channel.
 func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resolvedRoute, adapter string, onFirstByte func()) (attemptResult, context.CancelFunc) {
 	a := run.app
+	if adapter == "codex_oauth:image_generation" {
+		body, err := codexImageInput(run.raw, r.Header.Get("Content-Type"))
+		if err != nil {
+			failRequest(w, r, http.StatusBadRequest, "invalid_image_request", err.Error())
+			return attemptResult{Status: http.StatusBadRequest, Handled: true, Reason: "invalid_image_request", Err: err}, func() {}
+		}
+		return a.codexImageProxy(w, r, body, z, run.gatewayID, onFirstByte), func() {}
+	}
 	if client, target, ok := parseBridgeAdapter(adapter); ok {
 		result, cancel := run.bridgeAttempt(w, r, z, client, target, onFirstByte)
 		if inferenceCredentialFailure(result) || result.Reason == "upstream_protocol_denied" {
@@ -660,6 +668,14 @@ func (run *inferenceRun) attempt(w http.ResponseWriter, r *http.Request, z resol
 		return run.localCountTokens(w), func() {}
 	}
 	body := run.nativeBody(z)
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") && z.Route.UpstreamModel != "" && z.Route.UpstreamModel != run.requestedModel() {
+		var err error
+		body, err = rewriteImageMultipartModel(run.raw, r.Header.Get("Content-Type"), z.Route.UpstreamModel)
+		if err != nil {
+			failRequest(w, r, http.StatusBadRequest, "invalid_request", "invalid multipart body")
+			return attemptResult{Status: http.StatusBadRequest, Handled: true, Reason: "invalid_request", Err: err}, func() {}
+		}
+	}
 	stream := run.stream
 	// The ChatGPT Codex backend accepts only non-persistent streaming Responses
 	// requests: it hard-rejects store=true and stream=false. The native

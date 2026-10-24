@@ -66,9 +66,17 @@ func codexImageRequest(raw []byte, upstreamModel string) ([]byte, error) {
 	if upstreamModel == "" || strings.Contains(strings.ToLower(upstreamModel), "image") {
 		upstreamModel = "gpt-5.5"
 	}
+	input := any(prompt)
+	if images, ok := source["_reference_images"].([]any); ok && len(images) > 0 {
+		content := []any{map[string]any{"type": "input_text", "text": prompt}}
+		for _, image := range images {
+			content = append(content, map[string]any{"type": "input_image", "image_url": image})
+		}
+		input = content
+	}
 	return json.Marshal(map[string]any{
 		"model":  upstreamModel,
-		"input":  []any{map[string]any{"role": "user", "content": prompt}},
+		"input":  []any{map[string]any{"role": "user", "content": input}},
 		"tools":  []any{tool},
 		"stream": true,
 		"store":  false,

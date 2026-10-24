@@ -67,6 +67,8 @@ func passthroughProtocol(path string) string {
 		return "anthropic_count_tokens"
 	case "/v1/images/generations":
 		return "openai_images"
+	case "/v1/images/edits":
+		return "openai_image_edits"
 	case "/v1/audio/speech":
 		return "openai_audio_speech"
 	case "/v1/audio/transcriptions":

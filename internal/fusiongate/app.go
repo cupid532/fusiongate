@@ -1240,6 +1240,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/v1/messages", a.api(a.inference))
 	mux.HandleFunc("/v1/messages/count_tokens", a.api(a.inference))
 	mux.HandleFunc("/v1/images/generations", a.api(a.inference))
+	mux.HandleFunc("/v1/images/edits", a.api(a.inference))
 	mux.HandleFunc("/v1/audio/speech", a.api(a.inference))
 	mux.HandleFunc("/v1/audio/transcriptions", a.api(a.inference))
 	mux.HandleFunc("/v1/embeddings", a.api(a.inference))
