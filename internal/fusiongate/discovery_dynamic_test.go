@@ -88,7 +88,11 @@ func TestDiscoveryDynamicCatalogRefreshAndGrokEnrichment(t *testing.T) {
 			defer a.Close()
 			p := discoveryProvider{Type: providerType, BaseURL: upstream.URL, Credential: "test"}
 			models, err := a.fetchDiscoveredModels(context.Background(), p)
-			if err != nil || len(models) != 1 || models[0].ID != "future-chat-2099" || !matchesCapability(models[0].Capabilities, "chat") {
+			wantCount := 1
+			if providerType == "codex_oauth" {
+				wantCount = 2
+			}
+			if err != nil || len(models) != wantCount || models[0].ID != "future-chat-2099" || !matchesCapability(models[0].Capabilities, "chat") {
 				t.Fatalf("models=%#v err=%v", models, err)
 			}
 			catalog = `{"models":[{"model":{"model_id":"Future-Chat-2100"}},{"id":"grok-4.6"}]}`

@@ -46,7 +46,10 @@ func (a *App) imagePolicy(z resolvedRoute) (resolvedRoute, error) {
 			return z, errors.New("legacy image outer model is disabled on this channel")
 		}
 	}
-	if mode == "responses" {
+	if mode == "responses" || strings.HasPrefix(z.Route.PublicName, "gpt-image-tool-") {
+		if mode != "responses" {
+			outer = z.Route.UpstreamModel
+		}
 		var count int
 		if err := a.reader().QueryRow(`SELECT COUNT(*) FROM model_routes WHERE provider_id=? AND enabled=1 AND (public_name=? OR upstream_model=?) AND capabilities NOT LIKE '%unsupported%' AND capabilities NOT LIKE '%image%'`, z.Provider.ID, outer, outer).Scan(&count); err != nil {
 			return z, err

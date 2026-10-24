@@ -609,7 +609,17 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Discovered != 1 || len(result.Models) != 1 || result.Models[0].ID != "model-one" {
+			want := 1
+			if tc.platform == "codex" {
+				want = 2
+			}
+			found := false
+			for _, m := range result.Models {
+				if m.ID == "model-one" {
+					found = true
+				}
+			}
+			if result.Discovered != want || len(result.Models) != want || !found {
 				t.Fatalf("discovery=%#v", result)
 			}
 		})
@@ -655,7 +665,7 @@ func TestDiscoverAndImportAllOAuthModelsUsesSingleRequest(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("model endpoint calls=%d, want 1", calls.Load())
 	}
-	if discovery.Discovered != 2 || discovery.Skipped != 1 || imported.Added != 2 || imported.Existing != 0 {
+	if discovery.Discovered != 4 || discovery.Skipped != 1 || imported.Added != 2 || imported.Existing != 0 {
 		t.Fatalf("discovery=%#v imported=%#v", discovery, imported)
 	}
 	rows, err := a.db.Query(`SELECT public_name,upstream_model FROM model_routes WHERE provider_id=? ORDER BY public_name`, providerID)
@@ -728,7 +738,7 @@ func TestOAuthDiscoveryUsesStoredAccessTokenBeforeExpiredMetadataRefresh(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modelCalls.Load() != 1 || discovery.Discovered != 1 || imported.Added != 1 {
+	if modelCalls.Load() != 1 || discovery.Discovered != 2 || imported.Added != 1 {
 		t.Fatalf("calls=%d discovery=%#v imported=%#v", modelCalls.Load(), discovery, imported)
 	}
 }
@@ -790,7 +800,7 @@ func TestOAuthDiscoveryRefreshesOnceAfterAuthenticationRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modelCalls.Load() != 2 || refreshCalls.Load() != 1 || discovery.Discovered != 1 || imported.Added != 1 {
+	if modelCalls.Load() != 2 || refreshCalls.Load() != 1 || discovery.Discovered != 2 || imported.Added != 1 {
 		t.Fatalf("models=%d refresh=%d discovery=%#v imported=%#v", modelCalls.Load(), refreshCalls.Load(), discovery, imported)
 	}
 	var encrypted []byte

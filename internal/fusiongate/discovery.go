@@ -47,6 +47,8 @@ type discoveredModel struct {
 	Excluded                bool     `json:"excluded,omitempty"`
 	Unavailable             bool     `json:"unavailable,omitempty"`
 	SupportedGenerationAPIs []string `json:"-"`
+	ImageToolSupported      bool     `json:"-"`
+	RequiresSelection       bool     `json:"requires_selection,omitempty"`
 }
 
 type providerKeyDiscoveryResult struct {
@@ -117,9 +119,10 @@ type discoveryModelEntry struct {
 	SupportedReasoningLevels   []struct {
 		Effort string `json:"effort"`
 	} `json:"supported_reasoning_levels"`
-	DefaultReasoningEffort string   `json:"default_reasoning_effort"`
-	DefaultReasoningLevel  string   `json:"default_reasoning_level"`
-	InputModalities        []string `json:"input_modalities"`
+	DefaultReasoningEffort string            `json:"default_reasoning_effort"`
+	DefaultReasoningLevel  string            `json:"default_reasoning_level"`
+	InputModalities        []string          `json:"input_modalities"`
+	SupportedTools         []json.RawMessage `json:"supported_tools"`
 	Meta                   struct {
 		Model        string          `json:"model"`
 		ModelID      string          `json:"modelId"`
@@ -299,7 +302,7 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 	seen := map[string]bool{}
 	for _, model := range models {
 		id := providerInventoryModel(model)
-		if id == "" || model.Capabilities == "unsupported" || seen[id] {
+		if model.RequiresSelection || id == "" || model.Capabilities == "unsupported" || seen[id] {
 			continue
 		}
 		var excluded int
@@ -550,6 +553,7 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 		var reasoningEfforts []string
 		var defaultReasoningEffort string
 		var inputModalities []string
+		var imageToolSupported bool
 		var stringEntry string
 		if json.Unmarshal(rawEntry, &stringEntry) == nil {
 			upstreamID = stringEntry
@@ -597,6 +601,18 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 			}
 			defaultReasoningEffort = firstNonEmpty(entry.DefaultReasoningEffort, entry.DefaultReasoningLevel)
 			inputModalities = entry.InputModalities
+			for _, rawTool := range entry.SupportedTools {
+				var name string
+				var tool struct {
+					Type string `json:"type"`
+				}
+				if json.Unmarshal(rawTool, &name) == nil && name == "image_generation" {
+					imageToolSupported = true
+				}
+				if json.Unmarshal(rawTool, &tool) == nil && tool.Type == "image_generation" {
+					imageToolSupported = true
+				}
+			}
 		}
 		upstreamID = strings.TrimSpace(strings.TrimPrefix(upstreamID, "models/"))
 		publicID := strings.ToLower(upstreamID)
@@ -610,7 +626,7 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 			capabilities = discoveredModelCapabilities(capabilities, reasoningEfforts, defaultReasoningEffort, inputModalities)
 		}
 		seen[publicID] = true
-		out = append(out, discoveredModel{ID: publicID, UpstreamID: upstreamID, DisplayName: strings.TrimSpace(displayName), Capabilities: capabilities, SupportedGenerationAPIs: methods})
+		out = append(out, discoveredModel{ID: publicID, UpstreamID: upstreamID, DisplayName: strings.TrimSpace(displayName), Capabilities: capabilities, SupportedGenerationAPIs: methods, ImageToolSupported: imageToolSupported})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, envelope.NextPageToken, nil
@@ -823,19 +839,10 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 		}
 		sort.Slice(allModels, func(i, j int) bool { return allModels[i].ID < allModels[j].ID })
 		if p.Type == "codex_oauth" {
-			var mode, outer string
-			if err := a.reader().QueryRow(`SELECT image_mode,image_outer_model FROM providers WHERE id=?`, p.ID).Scan(&mode, &outer); err == nil && mode == "responses" {
-				found := false
-				for _, model := range allModels {
-					if model.ID == outer || model.UpstreamID == outer {
-						found = true
-					}
-				}
-				if found {
-					for _, alias := range []string{"gpt-image-1", "gpt-image-2"} {
-						allModels = append(allModels, discoveredModel{ID: alias, UpstreamID: outer, DisplayName: alias + " (Responses tool alias)", Capabilities: "image"})
-					}
-				}
+			var err error
+			allModels, err = a.codexAuthImageModels(ctx, p.ID, allModels)
+			if err != nil {
+				return nil, err
 			}
 		}
 		if p.Type == "grok_oauth" {
@@ -1095,7 +1102,9 @@ func (a *App) importSelectedModels(parent context.Context, providerID int64, sel
 
 	models := make([]discoveredModel, 0, len(normalized))
 	for _, id := range normalized {
-		models = append(models, available[id])
+		m := available[id]
+		m.RequiresSelection = false
+		models = append(models, m)
 	}
 	return a.importDiscoveredModels(parent, providerID, models, true)
 }
@@ -1256,7 +1265,7 @@ func (a *App) applySelectedModelsToProvider(parent context.Context, providerID i
 			return modelSelectionResult{}, err
 		}
 		if currentModels[id] {
-			if _, err := tx.ExecContext(parent, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, model.Capabilities, stamp, providerID, upstream); err != nil {
+			if _, err := tx.ExecContext(parent, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=? AND LOWER(public_name)=?`, model.Capabilities, stamp, providerID, upstream, id); err != nil {
 				return modelSelectionResult{}, err
 			}
 			result.Existing++
@@ -1324,6 +1333,9 @@ func (a *App) importDiscoveredModels(parent context.Context, providerID int64, m
 		return modelImportResult{}, err
 	}
 	for _, model := range models {
+		if model.RequiresSelection {
+			continue
+		}
 		model.ID = normalizedModelID(model.ID)
 		model.UpstreamID = normalizedModelID(model.UpstreamID)
 		if model.ID == "" || model.UpstreamID == "" {
@@ -1338,7 +1350,7 @@ func (a *App) importDiscoveredModels(parent context.Context, providerID int64, m
 				return modelImportResult{}, err
 			}
 		}
-		if _, err := tx.ExecContext(parent, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, model.Capabilities, stamp, providerID, model.UpstreamID); err != nil {
+		if _, err := tx.ExecContext(parent, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=? AND LOWER(public_name)=?`, model.Capabilities, stamp, providerID, model.UpstreamID, model.ID); err != nil {
 			return modelImportResult{}, err
 		}
 		var res sql.Result

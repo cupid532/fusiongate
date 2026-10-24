@@ -67,6 +67,8 @@ Canvas → FusionGate → OpenAI 兼容 Codego 的 `gpt-image-2.5-flare` 已完�
 
 ## Codex / Claude / Grok 授权与迁移
 
+- **Codex 图片工具**：认证文件的模型识别列出 `gpt-image-tool-<文字模型>` 候选；这是本地 Responses 图片工具适配入口，不是上游独立图片模型。候选标注「生图未验证」，上游明确提供 supported_tools 时另行说明。自动同步不会启用新候选；在认证文件模型选择器勾选并保存，同时保留对应文字模型启用后，图片客户端可使用该候选名称。未声明支持不等于支持，首次实际调用仍可能被上游拒绝；识别不会消费生图额度。不自动猜外层模型，也不保证实际图片后端身份。
+
 - **浏览器授权**：管理台生成带 PKCE 的官方授权链接。授权结束后，将浏览器地址栏中的完整 `localhost` 回调地址粘贴回 FusionGate；回调只用于提取一次性授权码和校验 state，FusionGate 不要求服务器监听本机回调端口。
 - **JSON 迁移**：可粘贴或批量上传常见结构的 Codex、Claude、Grok OAuth JSON。支持单对象、数组、连续 JSON，以及常见的 `accounts` / `data.accounts` / `credentials` / `token_data` 包装。单文件最大 2 MiB、单次总量最大 8 MiB；非 OAuth 账号和不支持的平台会被忽略。
 - **批量导出**：可按厂商筛选并勾选最多 200 份认证文件，二次确认后下载兼容迁移 JSON。导出文件包含完整 Token，仅用于管理员主动迁移，不会写入页面、浏览器存储或应用日志。

@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.62
+
+- Codex authentication model discovery exposes explicit per-outer-model image-tool candidates without relying on removed channel UI policy. Candidates are local adapters, labelled unverified; optional supported_tools metadata is distinguished from actual generation verification.
+- Automatic import skips new image candidates; operators select them in the existing authentication model picker. Existing image aliases remain discoverable only when their configured outer model is present. No cheapest-model or hard-coded gpt-5.5 substitution.
+- Image-tool candidates require an enabled text-model route and obey provider-key restrictions. Preserve separate text/image route capabilities when both map to the same outer model.
+
 ## V3.61
 
 - Remove image generation strategy and outer-model controls from channel forwarding/scheduling settings, including the associated model-list request and form submission fields.
