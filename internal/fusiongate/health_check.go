@@ -255,13 +255,7 @@ func (h *HealthChecker) probeProviderMode(ctx context.Context, providerID int64,
 		models, discoveryErr := h.app.fetchDiscoveredModels(ctx, p)
 		latency := time.Since(start).Milliseconds()
 		if discoveryErr == nil {
-			count := 0
-			for _, m := range models {
-				if !m.RequiresSelection {
-					count++
-				}
-			}
-			return healthCheckResult{Status: "reachable", Mode: mode, LatencyMS: latency, ModelCount: count}
+			return healthCheckResult{Status: "reachable", Mode: mode, LatencyMS: latency, ModelCount: len(models)}
 		}
 		if ctx.Err() != nil {
 			return healthCheckResult{Status: "timeout", Mode: mode, LatencyMS: latency, Error: "request timeout"}

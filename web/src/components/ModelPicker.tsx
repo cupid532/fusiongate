@@ -20,7 +20,6 @@ type DiscoveredModel = {
   existing?: boolean
   excluded?: boolean
   unavailable?: boolean
-  requires_selection?: boolean
 }
 
 type DiscoverResult = {
@@ -131,7 +130,7 @@ export function ModelPicker({
               ? "所选认证来自不同平台，模型清单无法互通；可为每个认证各自识别并启用全部模型。"
               : targets.length > 1
                 ? "从首个认证识别模型，并将勾选结果应用到所有选中的同平台认证。「全部启用」再保存即等同于一键识别。"
-                : "勾选即启用，取消勾选即关闭。Codex「图片工具候选」是本地适配入口，不是上游独立图片模型；未验证可用，需同时保留对应文字模型启用。识别本身不会发起生图。"}
+                : "勾选即启用，取消勾选即关闭。已启用的模型排在上方。"}
           </DialogDescription>
         </DialogHeader>
 

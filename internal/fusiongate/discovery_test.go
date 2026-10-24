@@ -609,17 +609,7 @@ func TestOAuthProviderModelDiscoveryUsesCompatibleAuthorization(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := 1
-			if tc.platform == "codex" {
-				want = 2
-			}
-			found := false
-			for _, m := range result.Models {
-				if m.ID == "model-one" {
-					found = true
-				}
-			}
-			if result.Discovered != want || len(result.Models) != want || !found {
+			if result.Discovered != 1 || len(result.Models) != 1 || result.Models[0].ID != "model-one" {
 				t.Fatalf("discovery=%#v", result)
 			}
 		})
@@ -665,7 +655,7 @@ func TestDiscoverAndImportAllOAuthModelsUsesSingleRequest(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("model endpoint calls=%d, want 1", calls.Load())
 	}
-	if discovery.Discovered != 4 || discovery.Skipped != 1 || imported.Added != 2 || imported.Existing != 0 {
+	if discovery.Discovered != 2 || discovery.Skipped != 1 || imported.Added != 2 || imported.Existing != 0 {
 		t.Fatalf("discovery=%#v imported=%#v", discovery, imported)
 	}
 	rows, err := a.db.Query(`SELECT public_name,upstream_model FROM model_routes WHERE provider_id=? ORDER BY public_name`, providerID)
@@ -738,7 +728,7 @@ func TestOAuthDiscoveryUsesStoredAccessTokenBeforeExpiredMetadataRefresh(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modelCalls.Load() != 1 || discovery.Discovered != 2 || imported.Added != 1 {
+	if modelCalls.Load() != 1 || discovery.Discovered != 1 || imported.Added != 1 {
 		t.Fatalf("calls=%d discovery=%#v imported=%#v", modelCalls.Load(), discovery, imported)
 	}
 }
@@ -800,7 +790,7 @@ func TestOAuthDiscoveryRefreshesOnceAfterAuthenticationRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if modelCalls.Load() != 2 || refreshCalls.Load() != 1 || discovery.Discovered != 2 || imported.Added != 1 {
+	if modelCalls.Load() != 2 || refreshCalls.Load() != 1 || discovery.Discovered != 1 || imported.Added != 1 {
 		t.Fatalf("models=%d refresh=%d discovery=%#v imported=%#v", modelCalls.Load(), refreshCalls.Load(), discovery, imported)
 	}
 	var encrypted []byte
@@ -817,34 +807,21 @@ func TestOAuthDiscoveryRefreshesOnceAfterAuthenticationRejection(t *testing.T) {
 	}
 }
 
-func TestAddCodexImageModelUsesAvailableHostModel(t *testing.T) {
-	models := []discoveredModel{
-		{ID: "gpt-5.4", UpstreamID: "gpt-5.4", Capabilities: "chat,stream"},
-		{ID: "gpt-5.5", UpstreamID: "GPT-5.5", Capabilities: "chat,stream"},
+func TestCodexDiscoveryDoesNotInventImageModels(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"models": []any{map[string]any{"slug": "gpt-5.5"}}})
+	}))
+	defer upstream.Close()
+	a, err := New(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := addCodexImageModel(models)
-	if len(got) != 4 {
-		t.Fatalf("models=%#v", got)
-	}
-	found := map[string]bool{}
-	for _, model := range got {
-		if model.ID == "gpt-image-1" || model.ID == "gpt-image-2" {
-			if model.UpstreamID != "GPT-5.5" || model.Capabilities != "image" {
-				t.Fatalf("image model=%#v", model)
-			}
-			found[model.ID] = true
-		}
-	}
-	if !found["gpt-image-1"] || !found["gpt-image-2"] {
-		t.Fatalf("synthetic image aliases missing: %#v", got)
-	}
-}
-
-func TestAddCodexImageModelRequiresSupportedHost(t *testing.T) {
-	models := []discoveredModel{{ID: "gpt-oss-20b", UpstreamID: "gpt-oss-20b", Capabilities: "chat,stream"}}
-	got := addCodexImageModel(models)
-	if len(got) != 1 {
-		t.Fatalf("models=%#v", got)
+	defer a.Close()
+	id := insertCodexOAuthTestProvider(t, a, upstream.URL)
+	a.db.Exec(`UPDATE providers SET image_mode='responses',image_outer_model='gpt-5.5' WHERE id=?`, id)
+	got, err := a.discoverProviderModels(context.Background(), id)
+	if err != nil || len(got.Models) != 1 || got.Models[0].ID != "gpt-5.5" {
+		t.Fatalf("discovery=%+v err=%v", got, err)
 	}
 }
 

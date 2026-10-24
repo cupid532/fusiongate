@@ -47,8 +47,6 @@ type discoveredModel struct {
 	Excluded                bool     `json:"excluded,omitempty"`
 	Unavailable             bool     `json:"unavailable,omitempty"`
 	SupportedGenerationAPIs []string `json:"-"`
-	ImageToolSupported      bool     `json:"-"`
-	RequiresSelection       bool     `json:"requires_selection,omitempty"`
 }
 
 type providerKeyDiscoveryResult struct {
@@ -119,10 +117,9 @@ type discoveryModelEntry struct {
 	SupportedReasoningLevels   []struct {
 		Effort string `json:"effort"`
 	} `json:"supported_reasoning_levels"`
-	DefaultReasoningEffort string            `json:"default_reasoning_effort"`
-	DefaultReasoningLevel  string            `json:"default_reasoning_level"`
-	InputModalities        []string          `json:"input_modalities"`
-	SupportedTools         []json.RawMessage `json:"supported_tools"`
+	DefaultReasoningEffort string   `json:"default_reasoning_effort"`
+	DefaultReasoningLevel  string   `json:"default_reasoning_level"`
+	InputModalities        []string `json:"input_modalities"`
 	Meta                   struct {
 		Model        string          `json:"model"`
 		ModelID      string          `json:"modelId"`
@@ -302,7 +299,7 @@ func (a *App) persistProviderKeyDiscovery(ctx context.Context, keyID int64, mode
 	seen := map[string]bool{}
 	for _, model := range models {
 		id := providerInventoryModel(model)
-		if model.RequiresSelection || id == "" || model.Capabilities == "unsupported" || seen[id] {
+		if id == "" || model.Capabilities == "unsupported" || seen[id] {
 			continue
 		}
 		var excluded int
@@ -553,7 +550,6 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 		var reasoningEfforts []string
 		var defaultReasoningEffort string
 		var inputModalities []string
-		var imageToolSupported bool
 		var stringEntry string
 		if json.Unmarshal(rawEntry, &stringEntry) == nil {
 			upstreamID = stringEntry
@@ -601,18 +597,6 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 			}
 			defaultReasoningEffort = firstNonEmpty(entry.DefaultReasoningEffort, entry.DefaultReasoningLevel)
 			inputModalities = entry.InputModalities
-			for _, rawTool := range entry.SupportedTools {
-				var name string
-				var tool struct {
-					Type string `json:"type"`
-				}
-				if json.Unmarshal(rawTool, &name) == nil && name == "image_generation" {
-					imageToolSupported = true
-				}
-				if json.Unmarshal(rawTool, &tool) == nil && tool.Type == "image_generation" {
-					imageToolSupported = true
-				}
-			}
 		}
 		upstreamID = strings.TrimSpace(strings.TrimPrefix(upstreamID, "models/"))
 		publicID := strings.ToLower(upstreamID)
@@ -626,7 +610,7 @@ func parseDiscoveryModels(raw []byte, providerType string) ([]discoveredModel, s
 			capabilities = discoveredModelCapabilities(capabilities, reasoningEfforts, defaultReasoningEffort, inputModalities)
 		}
 		seen[publicID] = true
-		out = append(out, discoveredModel{ID: publicID, UpstreamID: upstreamID, DisplayName: strings.TrimSpace(displayName), Capabilities: capabilities, SupportedGenerationAPIs: methods, ImageToolSupported: imageToolSupported})
+		out = append(out, discoveredModel{ID: publicID, UpstreamID: upstreamID, DisplayName: strings.TrimSpace(displayName), Capabilities: capabilities, SupportedGenerationAPIs: methods})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, envelope.NextPageToken, nil
@@ -688,37 +672,6 @@ func discoveredCapabilities(id, providerType string, methods []string) (string, 
 		capabilities = withOpenCodeProtocol(capabilities, id)
 	}
 	return capabilities, true
-}
-
-func addCodexImageModel(models []discoveredModel) []discoveredModel {
-	host := ""
-	for _, model := range models {
-		if model.ID == "gpt-5.5" && model.Capabilities != "unsupported" {
-			host = model.UpstreamID
-			break
-		}
-	}
-	if host == "" {
-		return models
-	}
-	existing := make(map[string]bool, len(models))
-	for _, model := range models {
-		existing[model.ID] = true
-	}
-	for _, alias := range []struct {
-		id, displayName string
-	}{
-		{"gpt-image-1", "GPT Image 1 (ChatGPT Plus compatibility)"},
-		{"gpt-image-2", "GPT Image 2 (ChatGPT Plus)"},
-	} {
-		if !existing[alias.id] {
-			models = append(models, discoveredModel{
-				ID: alias.id, UpstreamID: host, DisplayName: alias.displayName, Capabilities: "image",
-			})
-		}
-	}
-	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-	return models
 }
 
 func enrichGrokModels(models []discoveredModel) []discoveredModel {
@@ -838,13 +791,6 @@ func (a *App) fetchDiscoveredModels(ctx context.Context, p discoveryProvider) ([
 			continue
 		}
 		sort.Slice(allModels, func(i, j int) bool { return allModels[i].ID < allModels[j].ID })
-		if p.Type == "codex_oauth" {
-			var err error
-			allModels, err = a.codexAuthImageModels(ctx, p.ID, allModels)
-			if err != nil {
-				return nil, err
-			}
-		}
 		if p.Type == "grok_oauth" {
 			allModels = enrichGrokModels(allModels)
 		}
@@ -1102,9 +1048,7 @@ func (a *App) importSelectedModels(parent context.Context, providerID int64, sel
 
 	models := make([]discoveredModel, 0, len(normalized))
 	for _, id := range normalized {
-		m := available[id]
-		m.RequiresSelection = false
-		models = append(models, m)
+		models = append(models, available[id])
 	}
 	return a.importDiscoveredModels(parent, providerID, models, true)
 }
@@ -1333,9 +1277,6 @@ func (a *App) importDiscoveredModels(parent context.Context, providerID int64, m
 		return modelImportResult{}, err
 	}
 	for _, model := range models {
-		if model.RequiresSelection {
-			continue
-		}
 		model.ID = normalizedModelID(model.ID)
 		model.UpstreamID = normalizedModelID(model.UpstreamID)
 		if model.ID == "" || model.UpstreamID == "" {
