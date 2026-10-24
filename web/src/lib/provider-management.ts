@@ -15,8 +15,6 @@ export function providerForm(provider: Provider | null) {
     stream_start_timeout_ms: provider?.stream_start_timeout_ms ?? 0,
     stream_idle_timeout_ms: provider?.stream_idle_timeout_ms ?? 0,
     notes: provider?.notes ?? "",
-    image_mode: provider?.image_mode ?? (provider ? "legacy" : "disabled"),
-    image_outer_model: provider?.image_outer_model ?? "",
     ip_pool_node_id: provider?.ip_pool_node_id ?? 0,
     group_id: provider?.group_id ?? 0,
     key_selection_mode: (provider?.key_selection_mode ?? "configured") as ProviderKeySelectionMode,
@@ -53,7 +51,6 @@ export function providerPatch(form: ProviderForm, baseline: ProviderForm | null,
 
 export function validateProviderForm(form: ProviderForm): Partial<Record<keyof ProviderForm, string>> {
   const errors: Partial<Record<keyof ProviderForm, string>> = {}
-  if (form.image_mode === "responses" && !form.image_outer_model.trim()) errors.image_outer_model = "请指定外层模型，不会自动选择或替换"
   if (!form.name.trim()) errors.name = "请输入渠道名称"
   for (const field of ["baseURL", "websiteURL"] as const) {
     if (field === "websiteURL" && !form[field].trim()) continue

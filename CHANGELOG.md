@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.61
+
+- Remove image generation strategy and outer-model controls from channel forwarding/scheduling settings, including the associated model-list request and form submission fields.
+- New channel forms no longer silently submit images-disabled policy. Keep existing stored policies, account switches, model mappings and native image inference unchanged.
+- Verify both OpenAI-compatible and Codex channel edits do not expose or overwrite stored image policy.
+
 ## V3.60
 
 - Add channel image policies: disabled, native images, explicit Codex Responses image tools, and visibly labelled legacy compatibility. New UI-created channels default to images disabled; existing channels keep their prior mode.
