@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.66
+
+- Display revealed and newly created access keys in a centered, named dialog instead of an off-screen card above long key lists. Keep search, filters and list position intact, with one-click copy and focus restoration without scrolling.
+- Indicate reveal requests in progress, prevent duplicate reveals, and clear plaintext and mutation results when the dialog closes. Preserve key permissions, API behavior and database schema.
+- Add regression coverage for long lists, copy, close/focus, loading/retry, creation and secret cleanup.
+
 ## V3.65
 
 - Record explicit `max` reasoning effort and Anthropic `output_config.effort` in the request ledger.

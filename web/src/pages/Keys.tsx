@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
-import { Plus, Trash2, Eye, KeyRound, Settings2, Lock, Search, CheckCircle2, AlertTriangle } from "lucide-react"
+import { Plus, Trash2, Eye, Loader2, KeyRound, Settings2, Lock, Search, CheckCircle2, AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import type { APIKey } from "@/lib/types"
 import { cn, formatCost } from "@/lib/utils"
@@ -15,9 +15,9 @@ import { Badge } from "@/components/ui/badge"
 import { SegmentedTabs } from "@/components/ui/segmented-tabs"
 import { QueryError } from "@/components/ui/query-error"
 import { StatCard } from "@/components/ui/stat-card"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { useConfirm, useConfirmDelete } from "@/components/ui/confirm"
-import { notifySuccess } from "@/lib/notify"
+import { notifyError, notifySuccess } from "@/lib/notify"
 
 function expiresLabel(iso: string | undefined): { text: string; expired: boolean } | null {
   if (!iso) return null
@@ -80,7 +80,8 @@ export function Keys() {
   const [animateParent] = useAutoAnimate({ duration: 200 })
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState<KeyForm>(emptyForm)
-  const [revealed, setRevealed] = useState("")
+  const [revealed, setRevealed] = useState<{ name: string; key: string } | null>(null)
+  const revealTrigger = useRef<HTMLButtonElement | null>(null)
   const [filter, setFilter] = useState<Filter>("all")
   const [q, setQ] = useState("")
   const [editing, setEditing] = useState<APIKey | null>(null)
@@ -111,6 +112,7 @@ export function Keys() {
   }), [keys])
 
   const create = useMutation({
+    gcTime: 0,
     mutationFn: async (f: KeyForm) => {
       const body: Record<string, unknown> = {
         name: f.name,
@@ -125,9 +127,9 @@ export function Keys() {
       if (!f.never_expires && f.expires_at) body.expires_at = localToISO(f.expires_at)
       return api<{ id: number; key: string }>("/api/admin/keys", { method: "POST", body: JSON.stringify(body) })
     },
-    onSuccess: (res) => {
+    onSuccess: (res, variables) => {
       qc.invalidateQueries({ queryKey: ["keys"] })
-      setRevealed(res.key)
+      setRevealed({ name: variables.name, key: res.key })
       setForm(emptyForm)
       setCreating(false)
     },
@@ -158,9 +160,16 @@ export function Keys() {
   })
 
   const reveal = useMutation({
-    mutationFn: async (id: number) => api<{ key: string }>(`/api/admin/keys/${id}/reveal`, { method: "POST" }),
-    onSuccess: (res) => setRevealed(res.key),
+    gcTime: 0,
+    mutationFn: async ({ id }: { id: number; name: string }) => api<{ key: string }>(`/api/admin/keys/${id}/reveal`, { method: "POST" }),
+    onSuccess: (res, variables) => setRevealed({ name: variables.name, key: res.key }),
   })
+
+  function closeReveal() {
+    setRevealed(null)
+    reveal.reset()
+    create.reset()
+  }
 
   const set = <K extends keyof KeyForm>(k: K, v: KeyForm[K]) => setForm((f) => ({ ...f, [k]: v }))
   const setEdit = <K extends keyof KeyForm>(k: K, v: KeyForm[K]) => setEditForm((f) => ({ ...f, [k]: v }))
@@ -216,7 +225,7 @@ export function Keys() {
           <p className="mt-1 text-xs text-muted-foreground">这是客户端访问 FusionGate 的下游密钥；上游 API Key 请在上游渠道的 Key 管理中配置。</p>
           <p className="mt-1 text-sm text-muted-foreground">签发下游 API Key，按权限访问渠道和模型。</p>
         </div>
-        <Button onClick={() => setCreating((v) => !v)}>
+        <Button onClick={(event) => { revealTrigger.current = event.currentTarget; setCreating((v) => !v) }}>
           <Plus className="h-4 w-4" />
           创建密钥
         </Button>
@@ -285,24 +294,6 @@ export function Keys() {
               <Button onClick={() => { if (!createExpiryMissing) create.mutate(form) }} disabled={!form.name.trim() || create.isPending || createExpiryMissing}>
                 {create.isPending ? "创建中…" : "创建"}
               </Button>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {revealed && (
-        <Card className="mb-4 border-primary/40">
-          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-            <div className="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
-              <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-primary sm:mt-0" />
-              <div className="min-w-0 flex-1">
-                <div className="mb-1 text-xs font-medium text-muted-foreground">完整访问密钥</div>
-                <code className="block break-all font-mono text-sm">{revealed}</code>
-              </div>
-            </div>
-            <div className="flex shrink-0 justify-end gap-2">
-              <CopyButton value={revealed} label="复制密钥" copiedLabel="密钥已复制" variant="outline" size="sm" />
-              <Button variant="outline" size="sm" onClick={() => setRevealed("")}>关闭</Button>
             </div>
           </CardContent>
         </Card>
@@ -388,8 +379,15 @@ export function Keys() {
                           <Button variant="ghost" size="icon" onClick={() => openEdit(k)} aria-label={`编辑 ${k.name}`}>
                             <Settings2 className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" onClick={() => reveal.mutate(k.id)} aria-label={`查看 ${k.name}`}>
-                            <Eye className="h-4 w-4" />
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            disabled={reveal.isPending}
+                            onClick={(event) => { revealTrigger.current = event.currentTarget; reveal.mutate({ id: k.id, name: k.name }) }}
+                            aria-label={`查看 ${k.name}`}
+                            aria-busy={reveal.isPending && reveal.variables?.id === k.id}
+                          >
+                            {reveal.isPending && reveal.variables?.id === k.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
                           </Button>
                           {!k.revoked && (
                             <Button
@@ -424,6 +422,27 @@ export function Keys() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={!!revealed} onOpenChange={(open) => { if (!open) closeReveal() }}>
+        <DialogContent onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          revealTrigger.current?.focus({ preventScroll: true })
+        }}>
+          <DialogHeader>
+            <DialogTitle>完整访问密钥</DialogTitle>
+            <DialogDescription>密钥名称：{revealed?.name}。请妥善保管，不要分享给他人。</DialogDescription>
+          </DialogHeader>
+          {revealed && (
+            <>
+              <code className="block min-w-0 select-all break-all rounded-lg border bg-muted/40 p-4 font-mono text-sm">{revealed.key}</code>
+              <DialogFooter>
+                <Button variant="outline" onClick={closeReveal}>完成</Button>
+                <CopyButton value={revealed.key} label="复制密钥" copiedLabel="密钥已复制" onCopyError={() => notifyError("复制失败，请手动选择并复制密钥")} />
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!editing} onOpenChange={(o) => { if (!o) setEditing(null) }}>
         <DialogContent>
