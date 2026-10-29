@@ -101,6 +101,17 @@ describe("request attempt sequences", () => {
 })
 
 describe("Requests filters", () => {
+  it("labels missing effort as unspecified, not disabled, and renders max", async () => {
+    const payload = page([5, 4])
+    payload.items[0].reasoning_effort = "max"
+    list.mockReturnValue(payload)
+    mount()
+    await screen.findByText("model-5")
+    expect(screen.getByText("max").getAttribute("title")).toContain("请求思考强度")
+    expect(screen.getByText("未指定").getAttribute("title")).toContain("不代表关闭思考")
+    expect(screen.getByRole("columnheader", { name: "思考强度" }).getAttribute("title")).toContain("客户端明确指定")
+  })
+
   it("omits the misleading actual upstream source while retaining diagnostic details", async () => {
     const payload = page([5, 4])
     payload.items[0].upstream_address = "https://api.openai.com/v1"

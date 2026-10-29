@@ -84,14 +84,12 @@ const EFFORT_TONE: Record<string, string> = {
 
 function ReasoningEffort({ value }: { value?: string }) {
   const effort = (value ?? "").trim()
-  // Most rows carry no effort at all (non-reasoning models, or an upstream
-  // that does not report it) — 15k of ~18.6k rows on this deployment. A dash
-  // keeps the column quiet rather than filling it with "—" styled as data.
-  if (!effort) return <span className="text-muted-foreground/40">—</span>
+  // This is the client's explicit request, not the upstream's effective setting.
+  if (!effort) return <span className="text-muted-foreground" title="未记录到明确的请求思考强度，不代表关闭思考；上游可能采用默认值。">未指定</span>
   return (
     <span
       className={cn("font-mono text-[11px] font-medium", EFFORT_TONE[effort.toLowerCase()] ?? "text-foreground")}
-      title={`reasoning effort: ${effort}`}
+      title={`请求思考强度：${effort}（不代表上游实际采用的强度）`}
     >
       {effort}
     </span>
@@ -643,7 +641,7 @@ export function Requests() {
                     <th className="px-4 py-3 font-medium">访问秘钥名称</th>
                     <th className="px-4 py-3 font-medium">渠道</th>
                     <th className="px-4 py-3 font-medium">状态</th>
-                    <th className="px-4 py-3 font-medium">思考强度</th>
+                    <th className="px-4 py-3 font-medium" title="客户端明确指定的请求强度；未指定不代表关闭思考，也不推测上游默认值。">思考强度</th>
                     <th className="px-4 py-3 font-medium">首字节</th>
                     <th className="px-4 py-3 font-medium">Token</th>
                     <th className="px-4 py-3 font-medium">缓存率</th>

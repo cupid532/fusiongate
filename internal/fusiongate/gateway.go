@@ -732,8 +732,10 @@ func requestClientIP(r *http.Request) string {
 }
 
 // requestReasoningEffort reads the reasoning effort a client asked for, accepting both
-// the flat OpenAI Chat form (`reasoning_effort`) and the nested Responses form
-// (`reasoning.effort`). It is recorded on the ledger so the console can show the
+// the flat OpenAI Chat form (`reasoning_effort`), nested Responses form
+// (`reasoning.effort`), and Anthropic form (`output_config.effort`). An absent
+// value means unspecified, not disabled; thinking budgets are not effort levels.
+// It is recorded on the ledger so the console can show the
 // intensity next to the model. The value is clamped to a short known vocabulary so a
 // hostile client cannot store arbitrary text through it.
 func requestReasoningEffort(body map[string]any) string {
@@ -744,10 +746,14 @@ func requestReasoningEffort(body map[string]any) string {
 		if v, ok := reasoning["effort"].(string); ok {
 			raw = v
 		}
+	} else if outputConfig, ok := body["output_config"].(map[string]any); ok {
+		if v, ok := outputConfig["effort"].(string); ok {
+			raw = v
+		}
 	}
 	raw = strings.ToLower(strings.TrimSpace(raw))
 	switch raw {
-	case "none", "minimal", "low", "medium", "high", "xhigh":
+	case "none", "minimal", "low", "medium", "high", "xhigh", "max":
 		return raw
 	}
 	return ""

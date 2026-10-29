@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.65
+
+- Record explicit `max` reasoning effort and Anthropic `output_config.effort` in the request ledger.
+- Label missing effort as unspecified, not disabled; distinguish the client's requested level from the upstream's effective setting. Never infer levels from thinking budgets or tokens, rewrite historical rows, or modify inference request parameters.
+
 ## V3.64
 
 - Remove the misleading “actual upstream” source from the request ledger table, expanded details, and CSV export. A direct channel name cannot establish a reseller's ultimate provider.
