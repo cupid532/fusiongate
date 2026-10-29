@@ -99,6 +99,9 @@ func TestLedgerMinuteFiltersSnapshotsTotalsPaginationAndCSV(t *testing.T) {
 	if rec.Code != 200 || len(records) != 4 {
 		t.Fatalf("CSV status=%d rows=%d", rec.Code, len(records))
 	}
+	if len(records[0]) != 25 || strings.Contains(strings.Join(records[0], ","), "实际上游") {
+		t.Fatalf("unexpected CSV headers: %v", records[0])
+	}
 	if strings.Contains(rec.Body.String(), "private-hash") || strings.Contains(rec.Body.String(), "upstream-secret") {
 		t.Fatal("CSV exposed credentials")
 	}

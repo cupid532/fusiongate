@@ -213,7 +213,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	// BOM so Excel opens UTF-8 columns correctly.
 	w.Write([]byte{0xEF, 0xBB, 0xBF})
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{"时间", "完成时间", "请求ID", "模型", "上游模型", "渠道", "访问秘钥名称", "访问秘钥前缀", "协议", "流式", "状态", "HTTP状态码", "错误类型", "思考强度", "首字节(ms)", "延迟(ms)", "输入Token", "输出Token", "缓存Token", "思考Token", "总Token", "费用(微)", "费用类型", "客户端IP", "重试原因", "实际上游"})
+	_ = cw.Write([]string{"时间", "完成时间", "请求ID", "模型", "上游模型", "渠道", "访问秘钥名称", "访问秘钥前缀", "协议", "流式", "状态", "HTTP状态码", "错误类型", "思考强度", "首字节(ms)", "延迟(ms)", "输入Token", "输出Token", "缓存Token", "思考Token", "总Token", "费用(微)", "费用类型", "客户端IP", "重试原因"})
 	for rows.Next() {
 		var id, attempt, stream, success, status, latency, usageReported int
 		var rid, gatewayID, retryReason, created, completed, pm, um, proto, et, ct, providerName, apiKeyName, apiKeyPrefix, clientIP, reasoningEffort string
@@ -242,7 +242,7 @@ func (a *App) ledgerExport(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			strconv.FormatInt(input, 10), strconv.FormatInt(output, 10),
 			strconv.FormatInt(cached, 10), strconv.FormatInt(reasoning, 10),
 			strconv.FormatInt(input+output, 10), strconv.FormatInt(cost, 10), ct,
-			clientIP, retryReason, ledgerUpstreamName(upstreamAddress, providerName),
+			clientIP, retryReason,
 		})
 	}
 	if err := rows.Err(); err != nil {

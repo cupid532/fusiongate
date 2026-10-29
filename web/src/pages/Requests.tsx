@@ -642,7 +642,6 @@ export function Requests() {
                     <th className="px-4 py-3 font-medium">模型</th>
                     <th className="px-4 py-3 font-medium">访问秘钥名称</th>
                     <th className="px-4 py-3 font-medium">渠道</th>
-                    <th className="px-4 py-3 font-medium" title="直接接入的来源名称；中转渠道不代表其背后的最终来源">实际上游</th>
                     <th className="px-4 py-3 font-medium">状态</th>
                     <th className="px-4 py-3 font-medium">思考强度</th>
                     <th className="px-4 py-3 font-medium">首字节</th>
@@ -674,10 +673,6 @@ export function Requests() {
                               {[r.provider_key_name, r.provider_key_hint].filter(Boolean).join(" · ")}
                             </div>
                           )}
-                        </td>
-                        <td className="px-4 py-3 text-xs">
-                          <div className="max-w-64 truncate" title={r.upstream_name || "未知"}>{r.upstream_name || "未知"}</div>
-                          <div className="mt-0.5 max-w-64 truncate text-[11px] text-muted-foreground" title={r.upstream_model}>{r.upstream_model || "未记录模型"}</div>
                         </td>
                         <td className="px-4 py-3">
                           {r.running && r.first_byte_ms == null ? (
@@ -748,7 +743,6 @@ export function Requests() {
                                     <div><div className="text-muted-foreground">Stream</div><div className="font-mono">{r.stream ? "Yes" : "No"}</div></div>
                                     <div><div className="text-muted-foreground">Protocol</div><div className="font-mono">{r.protocol}</div></div>
                                     <div><div className="text-muted-foreground">转发方式</div><div className="font-mono">{r.execution_mode === "bridge" ? `协议转换 ${r.adapter_id?.replace(/^bridge:/, "") ?? ""}` : r.execution_mode === "native" ? "原样透传" : r.execution_mode || "---"}</div></div>
-                                    <div><div className="text-muted-foreground">实际上游来源</div><div>{r.upstream_name || "未知"}</div><div className="mt-1 text-muted-foreground">直接接入的来源；中转渠道不代表其背后的最终来源。</div></div>
                                     <div><div className="text-muted-foreground">上游模型</div><div className="break-all font-mono">{r.upstream_model || "未记录"}</div></div>
                                     <div><div className="text-muted-foreground">上游路径</div><div className="break-all font-mono">{r.upstream_path || "---"}</div></div>
                                     <div><div className="text-muted-foreground">上游协议</div><div className="font-mono">{r.upstream_protocol || "---"}</div></div>

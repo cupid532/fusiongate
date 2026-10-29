@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.64
+
+- Remove the misleading “actual upstream” source from the request ledger table, expanded details, and CSV export. A direct channel name cannot establish a reseller's ultimate provider.
+- Retain channel information, upstream model/path/protocol diagnostics, and historical ledger data. No database migration or inference routing change.
+
 ## V3.63
 
 - Remove V3.62 synthetic Codex image-tool candidates from authentication model discovery. Discovery now shows only what the upstream actually returns; absent image models are reported as absent, not fabricated from text models.

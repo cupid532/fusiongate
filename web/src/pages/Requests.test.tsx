@@ -101,21 +101,24 @@ describe("request attempt sequences", () => {
 })
 
 describe("Requests filters", () => {
-  it("shows source names instead of URLs and leaves legacy sources unknown", async () => {
+  it("omits the misleading actual upstream source while retaining diagnostic details", async () => {
     const payload = page([5, 4])
     payload.items[0].upstream_address = "https://api.openai.com/v1"
     payload.items[0].upstream_name = "OpenAI"
     payload.items[0].upstream_model = "actual-model"
     list.mockReturnValue(payload)
     mount()
-    await screen.findByText("OpenAI")
+    await screen.findByText("model-5")
     expect(screen.queryByText("https://api.openai.com/v1")).toBeNull()
-    expect(screen.getByRole("columnheader", { name: "实际上游" })).toBeTruthy()
-    expect(screen.getByText("actual-model")).toBeTruthy()
-    expect(screen.getByText("未知")).toBeTruthy()
+    expect(screen.queryByRole("columnheader", { name: "实际上游" })).toBeNull()
+    expect(screen.getByRole("columnheader", { name: "渠道" })).toBeTruthy()
+    expect(screen.queryByText("OpenAI")).toBeNull()
     fireEvent.click(screen.getByText("model-5"))
-    expect(screen.getByText("实际上游来源")).toBeTruthy()
-    expect(screen.getByText("直接接入的来源；中转渠道不代表其背后的最终来源。")).toBeTruthy()
+    expect(screen.queryByText("实际上游来源")).toBeNull()
+    expect(screen.queryByText("OpenAI")).toBeNull()
+    expect(screen.getByText("actual-model")).toBeTruthy()
+    expect(screen.getByText("上游路径")).toBeTruthy()
+    expect(screen.getByText("上游协议")).toBeTruthy()
   })
 
   it("blocks invalid exact times, hides cached rows and discards a pending page", async () => {
