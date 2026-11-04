@@ -6,7 +6,7 @@ require github.com/mattn/go-sqlite3 v1.14.32
 
 require (
 	github.com/refraction-networking/utls v1.8.2
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 )
 
 require (
