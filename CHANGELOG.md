@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.67
+
+- Show only models supported by an enabled API key in channel model counts, the console route list, dashboard model totals, and `/v1/models`. Apply the same inventory, allowlist, fixed-model and exclusion rules used by inference.
+- Retain unsupported route definitions for later reauthorization, preserve legacy and OAuth channel behavior, and keep transient health/cooldown state from changing configured model visibility. Aggregate public model metadata only from permitted routes.
+- Add regressions for stale routes, disabled/re-enabled Keys, restored permissions and shared public model metadata.
+
 ## V3.66
 
 - Display revealed and newly created access keys in a centered, named dialog instead of an off-screen card above long key lists. Keep search, filters and list position intact, with one-click copy and focus restoration without scrolling.

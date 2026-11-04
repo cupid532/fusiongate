@@ -405,27 +405,55 @@ func (a *App) models(w http.ResponseWriter, r *http.Request, k authKey) {
 	// them on the endpoints their own API exposes. Advertise the public name even
 	// when it maps to a different upstream name: inference resolves and rewrites
 	// these mappings, and clients must be able to discover them here.
-	rows, err := a.reader().Query(`SELECT r.public_name,MIN(r.created_at),GROUP_CONCAT(r.capabilities,'|'),GROUP_CONCAT(p.type,'|'),GROUP_CONCAT(r.upstream_model,'|') FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 AND p.type IN ('openai','grok','openrouter','openai_compatible','opencode','anthropic','anthropic_compatible','codex_oauth','claude_oauth','grok_oauth') GROUP BY r.public_name ORDER BY r.public_name`)
+	visibility, err := a.loadModelVisibility(r.Context())
+	if err != nil {
+		fail(w, 500, "database_error", err.Error())
+		return
+	}
+	rows, err := a.reader().Query(`SELECT r.public_name,r.created_at,r.capabilities,p.type,r.upstream_model,p.id FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1 AND p.archived=0 AND p.type IN ('openai','grok','openrouter','openai_compatible','opencode','anthropic','anthropic_compatible','codex_oauth','claude_oauth','grok_oauth') ORDER BY r.public_name,r.created_at`)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "database_error", err.Error())
 		return
 	}
 	defer rows.Close()
-	data := []map[string]any{}
+	type visibleModel struct {
+		created, capabilities, providerTypes, upstreamModels string
+	}
+	models := map[string]*visibleModel{}
 	for rows.Next() {
-		var name, created, routeCapabilities, providerTypes, upstreamModels string
-		if rows.Scan(&name, &created, &routeCapabilities, &providerTypes, &upstreamModels) == nil && allowed(k, name) {
-			createdAt := parseTime(created)
-			var unix int64
-			if createdAt != nil {
-				unix = createdAt.Unix()
-			}
-			metadata := modelMetadata(name, routeCapabilities, providerTypes, upstreamModels)
-			metadata["object"] = "model"
-			metadata["created"] = unix
-			metadata["owned_by"] = "fusiongate"
-			data = append(data, metadata)
+		var name, created, capabilities, providerType, upstream string
+		var providerID int64
+		if err := rows.Scan(&name, &created, &capabilities, &providerType, &upstream, &providerID); err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
 		}
+		if !allowed(k, name) || !visibility.supports(providerID, upstream) {
+			continue
+		}
+		if model := models[name]; model != nil {
+			model.capabilities += "|" + capabilities
+			model.providerTypes += "|" + providerType
+			model.upstreamModels += "|" + upstream
+		} else {
+			models[name] = &visibleModel{created, capabilities, providerType, upstream}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		fail(w, 500, "database_error", err.Error())
+		return
+	}
+	data := []map[string]any{}
+	for name, model := range models {
+		createdAt := parseTime(model.created)
+		var unix int64
+		if createdAt != nil {
+			unix = createdAt.Unix()
+		}
+		metadata := modelMetadata(name, model.capabilities, model.providerTypes, model.upstreamModels)
+		metadata["object"] = "model"
+		metadata["created"] = unix
+		metadata["owned_by"] = "fusiongate"
+		data = append(data, metadata)
 	}
 	sort.Slice(data, func(i, j int) bool { return asString(data[i]["id"]) < asString(data[j]["id"]) })
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})

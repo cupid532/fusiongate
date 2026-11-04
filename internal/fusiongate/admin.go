@@ -291,7 +291,17 @@ func validEditableProviderType(t string) bool {
 func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := a.reader().Query(`SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.stream_start_timeout_ms,p.stream_idle_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),(SELECT COUNT(*) FROM model_routes r WHERE r.provider_id=p.id),p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,p.image_mode,p.image_outer_model,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
+		visibility, err := a.loadModelVisibility(r.Context())
+		if err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
+		}
+		counts, _, err := a.visibleModelCounts(r.Context(), visibility)
+		if err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
+		}
+		rows, err := a.reader().Query(`SELECT p.id,p.name,p.type,p.base_url,p.website_url,p.auth_kind,p.auth_source,p.auth_account_id,p.auth_email,COALESCE(p.auth_expires_at,''),p.auth_status,p.auth_has_refresh,p.enabled,p.archived,p.priority,p.sort_order,p.weight,p.status,p.notes,p.passthrough_mode,p.client_policy,p.max_concurrency,p.request_timeout_ms,p.stream_start_timeout_ms,p.stream_idle_timeout_ms,p.failure_threshold,p.cooldown_seconds,p.health_check_enabled,p.consecutive_failures,COALESCE(p.circuit_open_until,''),p.last_error,p.last_latency_ms,p.last_first_byte_ms,COALESCE(p.last_success_at,''),COALESCE(p.last_failure_at,''),0,p.group_id,p.group_sort_order,COALESCE(p.last_health_check_at,''),p.health_check_status,p.health_check_error,p.health_check_latency_ms,p.health_check_mode,p.health_check_first_byte_ms,p.health_check_model,p.health_check_model_count,p.manual_balance_micros,COALESCE(p.balance_baseline_at,''),p.balance_multiplier_openai,p.balance_multiplier_claude,p.balance_multiplier_grok,p.balance_multiplier_gemini,p.balance_multiplier_other,p.ip_pool_node_id,COALESCE(n.name,''),COALESCE(n.protocol,''),p.default_model,p.key_selection_mode,p.protocol_policy,p.protocol_preference,p.image_mode,p.image_outer_model,(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id),(SELECT COUNT(*) FROM provider_api_keys k WHERE k.provider_id=p.id AND k.enabled=1) FROM providers p LEFT JOIN ip_pool_nodes n ON n.id=p.ip_pool_node_id ORDER BY p.sort_order,p.id`)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
@@ -307,6 +317,7 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
 			}
+			p.ModelCount = counts[p.ID]
 			p.Enabled = strBool(enabled)
 			p.Archived = strBool(archived)
 			p.HealthCheckEnabled = strBool(healthCheckEnabled)
@@ -1420,6 +1431,11 @@ func routeHealthScore(status string, latency int64, failures, inflight int) int 
 func (a *App) routes(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	switch r.Method {
 	case http.MethodGet:
+		visibility, err := a.loadModelVisibility(r.Context())
+		if err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
+		}
 		rows, err := a.db.Query(`
 SELECT r.id,r.provider_id,r.public_name,r.upstream_model,r.capabilities,r.enabled,r.priority,r.sort_order,
 	       r.input_price_micros,r.cached_price_micros,r.output_price_micros,
@@ -1451,6 +1467,9 @@ ORDER BY r.public_name,r.sort_order,r.id`)
 				&x.HealthCheckLatencyMS, &x.HealthCheckFirstByteMS); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
 				return
+			}
+			if !visibility.supports(x.ProviderID, x.UpstreamModel) {
+				continue
 			}
 			x.Enabled = strBool(en)
 			x.ProviderEnabled = strBool(providerEnabled)
@@ -2142,7 +2161,16 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 	var p, m, k, total, today, failures int
 	var input, output, cached, reasoning, costMicros int64
 	a.reader().QueryRow(`SELECT COUNT(*) FROM providers WHERE enabled=1`).Scan(&p)
-	a.reader().QueryRow(`SELECT COUNT(DISTINCT r.public_name) FROM model_routes r JOIN providers p ON p.id=r.provider_id WHERE r.enabled=1 AND p.enabled=1`).Scan(&m)
+	visibility, err := a.loadModelVisibility(r.Context())
+	if err != nil {
+		fail(w, 500, "database_error", err.Error())
+		return
+	}
+	_, m, err = a.visibleModelCounts(r.Context(), visibility)
+	if err != nil {
+		fail(w, 500, "database_error", err.Error())
+		return
+	}
 	a.reader().QueryRow(`SELECT COUNT(*) FROM api_keys WHERE revoked=0 AND (expires_at IS NULL OR expires_at='' OR expires_at>?) AND (budget_micros=0 OR spent_micros<budget_micros)`, now()).Scan(&k)
 	a.reader().QueryRow(`SELECT COUNT(*) FROM request_ledger`).Scan(&total)
 	a.reader().QueryRow(`SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(output_tokens),0),COALESCE(SUM(cached_tokens),0),COALESCE(SUM(reasoning_tokens),0),COALESCE(SUM(cost_micros),0) FROM request_ledger WHERE completed_at IS NOT NULL`).Scan(&input, &output, &cached, &reasoning, &costMicros)
