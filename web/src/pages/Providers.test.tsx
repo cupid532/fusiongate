@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { reorderProviderIDs } from "@/lib/provider-order"
 import { Providers } from "@/pages/Providers"
@@ -8,13 +8,26 @@ import type { Provider } from "@/lib/types"
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); location.hash = "" })
 
-function showProviders() {
-  const providers = [
+function showProviders(options: { providers?: Provider[]; write?: (path: string, init: RequestInit) => Promise<Response> } = {}) {
+  let providers = options.providers ?? [
     { id: 1, name: "First", base_url: "https://first.example/v1", website_url: "https://shop.first.example/account", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 1, sort_order: 0, model_count: 2, failure_threshold: 5, health_check_enabled: true, health_check_status: "pending" },
     { id: 2, name: "Second", base_url: "https://second.example/v1", type: "openai_compatible", auth_kind: "api_key", enabled: true, archived: false, notes: "", priority: 3, sort_order: 1, model_count: 3, failure_threshold: 5, health_check_enabled: true, health_check_status: "healthy" },
   ] as Provider[]
-  vi.stubGlobal("fetch", vi.fn(async (path: string) => new Response(JSON.stringify(path === "/api/admin/providers" ? providers : path === "/api/admin/routing" ? { strategy: "priority_failover" } : []), { status: 200, headers: { "content-type": "application/json" } })))
+  const fetcher = vi.fn(async (path: string, init?: RequestInit) => {
+    const json = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } })
+    if (init?.method && init.method !== "GET") {
+      if (options.write) return options.write(path, init)
+      if (path === "/api/admin/providers/batch") {
+        const body = JSON.parse(String(init.body)) as { provider_ids: number[]; action: string }
+        if (body.action === "delete") providers = providers.filter((provider) => !body.provider_ids.includes(provider.id))
+        return json({ affected: body.provider_ids.length })
+      }
+    }
+    return json(path === "/api/admin/providers" ? providers : path === "/api/admin/routing" ? { strategy: "priority_failover" } : [])
+  })
+  vi.stubGlobal("fetch", fetcher)
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ConfirmProvider><Providers /></ConfirmProvider></QueryClientProvider>)
+  return fetcher
 }
 
 describe("channel management workflow", () => {
@@ -94,6 +107,130 @@ describe("channel management workflow", () => {
       const start = calls.find((call) => call.url === "/api/admin/health-checks" && call.method === "POST")
       expect(start?.body).toEqual({ provider_ids: [1, 2], model_scope: "all" })
     })
+  })
+})
+
+describe("direct channel deletion", () => {
+  it("deletes only the named row and preserves other selected channels", async () => {
+    const fetcher = showProviders()
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择 First" }))
+    fireEvent.click(screen.getByRole("button", { name: "删除 Second" }))
+    const dialog = screen.getByRole("dialog", { name: "删除渠道「Second」？" })
+    expect(dialog.textContent).toContain("渠道、Key 和模型路由将被删除")
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false)
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认删除" }))
+    await waitFor(() => expect(screen.queryByRole("checkbox", { name: "选择 Second" })).toBeNull())
+    expect((screen.getByRole("checkbox", { name: "选择 First" }) as HTMLInputElement).checked).toBe(true)
+    const writes = fetcher.mock.calls.filter(([, init]) => init?.method === "POST")
+    expect(writes).toHaveLength(1)
+    expect(writes[0][0]).toBe("/api/admin/providers/batch")
+    expect(JSON.parse(String(writes[0][1]?.body))).toEqual({ provider_ids: [2], action: "delete" })
+  })
+
+  it("lets a channel be deleted without selecting it and cancels without writing", async () => {
+    const fetcher = showProviders()
+    fireEvent.click(await screen.findByRole("button", { name: "删除 First" }))
+    expect(screen.queryByLabelText("渠道批量操作")).toBeNull()
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "取消" }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false)
+    expect(screen.getByRole("checkbox", { name: "选择 First" })).toBeTruthy()
+  })
+
+  it("exposes batch delete and includes hidden selections in the confirmation and request", async () => {
+    const fetcher = showProviders()
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择当前筛选全部渠道" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索渠道" }), { target: { value: "Second" } })
+    fireEvent.click(screen.getByRole("button", { name: "删除选中的 2 个渠道" }))
+    const dialog = screen.getByRole("dialog", { name: "删除选中的 2 个渠道？" })
+    expect(dialog.textContent).toContain("First、Second")
+    expect(dialog.textContent).toContain("其中 1 项不在当前筛选结果中，也会一并删除")
+    fireEvent.click(within(dialog).getByRole("button", { name: "删除 2 个渠道" }))
+    await waitFor(() => expect(screen.queryByLabelText("渠道批量操作")).toBeNull())
+    expect(screen.queryByRole("checkbox", { name: "选择 Second" })).toBeNull()
+    const writes = fetcher.mock.calls.filter(([, init]) => init?.method === "POST")
+    expect(writes).toHaveLength(1)
+    expect(JSON.parse(String(writes[0][1]?.body))).toEqual({ provider_ids: [1, 2], action: "delete" })
+  })
+
+  it("locks row operations while deletion is pending and prevents duplicate submission", async () => {
+    let finish!: (response: Response) => void
+    const fetcher = showProviders({ write: () => new Promise<Response>((resolve) => { finish = resolve }) })
+    fireEvent.click(await screen.findByRole("button", { name: "删除 First" }))
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认删除" }))
+    await waitFor(() => expect((screen.getByRole("button", { name: "删除 First" }) as HTMLButtonElement).disabled).toBe(true))
+    expect((screen.getByRole("button", { name: "管理 First" }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole("button", { name: "删除 First" }))
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1)
+    await act(async () => finish(new Response(JSON.stringify({ affected: 1 }), { headers: { "content-type": "application/json" } })))
+    await waitFor(() => expect((screen.getByRole("button", { name: "删除 First" }) as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it("preserves the selection after a rejected delete and allows retry", async () => {
+    showProviders({ write: async () => new Response(JSON.stringify({ error: { code: "database_error", message: "删除失败，请稍后重试" } }), { status: 500, headers: { "content-type": "application/json" } }) })
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择 First" }))
+    fireEvent.click(screen.getByRole("button", { name: "删除选中的 1 个渠道" }))
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认删除" }))
+    expect((await screen.findByRole("alert")).textContent).toContain("删除失败，请稍后重试")
+    expect((screen.getByRole("checkbox", { name: "选择 First" }) as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByRole("button", { name: "删除 First" }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it("requires a read after a disconnected deletion and never resubmits it during verification", async () => {
+    const fetcher = showProviders({ write: async () => { throw new TypeError("Failed to fetch") } })
+    fireEvent.click(await screen.findByRole("button", { name: "删除 First" }))
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认删除" }))
+    expect((await screen.findByRole("alert")).textContent).toContain("操作结果待核对")
+    expect((screen.getByRole("button", { name: "删除 First" }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole("button", { name: "读取配置核对" }))
+    expect((await screen.findByRole("status")).textContent).toContain("0 / 1 项与目标一致")
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1)
+    expect((screen.getByRole("button", { name: "删除 First" }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it("reconciles a completed deletion after losing its response without deleting again", async () => {
+    const providers = [1, 2].map((id) => ({ id, name: `Channel ${id}`, base_url: "https://example.com/v1", notes: "", enabled: true, archived: false, priority: 1, sort_order: id, model_count: 1, health_check_enabled: true } as Provider))
+    const fetcher = showProviders({ providers, write: async () => { providers.splice(0, 1); throw new TypeError("Failed to fetch") } })
+    fireEvent.click(await screen.findByRole("checkbox", { name: "选择当前筛选全部渠道" }))
+    fireEvent.click(screen.getByRole("button", { name: "删除 Channel 1" }))
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "确认删除" }))
+    await screen.findByRole("alert")
+    fireEvent.click(screen.getByRole("button", { name: "读取配置核对" }))
+    expect((await screen.findByRole("status")).textContent).toContain("1 / 1 项与目标一致")
+    expect(screen.queryByRole("checkbox", { name: "选择 Channel 1" })).toBeNull()
+    expect((screen.getByRole("checkbox", { name: "选择 Channel 2" }) as HTMLInputElement).checked).toBe(true)
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1)
+  })
+
+  it("does not allow batch deletion above the API limit but still allows deleting one row", async () => {
+    showProviders({ providers: Array.from({ length: 201 }, (_, index) => ({ id: index + 1, name: `Channel ${index + 1}`, base_url: "https://example.com/v1", notes: "", enabled: true, archived: false, priority: 1, sort_order: index, model_count: 1, health_check_enabled: true } as Provider)) })
+    fireEvent.click(await screen.findByLabelText("选择当前筛选全部渠道"))
+    expect((screen.getByLabelText("删除选中的 201 个渠道") as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByLabelText("删除 Channel 1") as HTMLButtonElement).disabled).toBe(false)
+  }, 30_000)
+
+  it("offers an immediate way to reset filters when the search has no results", async () => {
+    showProviders()
+    await screen.findByRole("checkbox", { name: "选择 First" })
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索渠道" }), { target: { value: "missing" } })
+    fireEvent.click(screen.getByRole("button", { name: "重置筛选" }))
+    expect(screen.getByRole("checkbox", { name: "选择 First" })).toBeTruthy()
+    expect((screen.getByRole("textbox", { name: "搜索渠道" }) as HTMLInputElement).value).toBe("")
+    expect(screen.getByRole("button", { name: "全部 2" }).getAttribute("aria-pressed")).toBe("true")
+  })
+
+  it("can reset to the archive when there are no active channels", async () => {
+    showProviders({ providers: [{ id: 1, name: "Archived", base_url: "https://example.com/v1", notes: "", enabled: false, archived: true, priority: 1, sort_order: 1, model_count: 1 } as Provider] })
+    fireEvent.click(await screen.findByRole("button", { name: "重置筛选" }))
+    expect(screen.getByRole("button", { name: "归档 1" }).getAttribute("aria-pressed")).toBe("true")
+    expect(screen.getByRole("button", { name: "删除 Archived" })).toBeTruthy()
+  })
+
+  it("shows switch failures inline instead of leaving the operation without feedback", async () => {
+    showProviders({ write: async () => new Response(JSON.stringify({ error: { message: "保存开关失败" } }), { status: 500, headers: { "content-type": "application/json" } }) })
+    fireEvent.click(await screen.findByRole("switch", { name: "First 开关" }))
+    expect((await screen.findByRole("alert")).textContent).toContain("保存开关失败")
+    expect(screen.getByRole("switch", { name: "First 开关" }).getAttribute("aria-checked")).toBe("true")
   })
 })
 

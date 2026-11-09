@@ -1,5 +1,11 @@
 # Changelog
 
+## V3.68
+
+- Delete an individual upstream channel directly from its row, without selecting it first. Expose batch deletion beside other batch actions; retain a named confirmation and explicitly include selections hidden by filters.
+- Preserve unrelated selections, highlight selected rows, show deletion progress and prevent duplicate submissions. Reuse the transactional batch endpoint for single and multiple deletions, including its 200-channel limit and read-only reconciliation after a lost response.
+- Show channel switch and reorder failures inline, offer a filter reset or first-channel action in empty lists, and display the current result count. Preserve API contracts, inference behavior and database schema.
+
 ## V3.67
 
 - Show only models supported by an enabled API key in channel model counts, the console route list, dashboard model totals, and `/v1/models`. Apply the same inventory, allowlist, fixed-model and exclusion rules used by inference.
