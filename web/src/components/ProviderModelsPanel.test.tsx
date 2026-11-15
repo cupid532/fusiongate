@@ -22,6 +22,31 @@ it("renders explicit display names or upstream basenames while preserving invent
     expect(toggle.getAttribute("aria-checked")).toBe("true")
   }
 })
+it("selects only filtered results, preserves other selections and supports staged removal undo", async () => {
+  const calls: string[] = []
+  const models = [
+    { model: "Alpha", enabled: false, capabilities: "chat,stream" },
+    { model: "Beta", enabled: true, capabilities: "chat,stream" },
+    { model: "Gamma", enabled: false, capabilities: "chat,stream" },
+  ]
+  vi.stubGlobal("fetch", vi.fn(async (path: string, options?: RequestInit) => {
+    if (options?.method && options.method !== "GET") calls.push(path)
+    return new Response(JSON.stringify([{ id: 1, name: "Primary", model_policy: "allowlist", models, enabled: true }]), { status: 200, headers: { "content-type": "application/json" } })
+  }))
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><ProviderModelsPanel open providerId={12} /></QueryClientProvider>)
+  await screen.findByRole("switch", { name: "Primary 模型 Alpha" })
+  fireEvent.change(screen.getByPlaceholderText("搜索模型"), { target: { value: "Alpha" } })
+  fireEvent.click(screen.getByRole("button", { name: "选择当前结果（1）" }))
+  fireEvent.change(screen.getByPlaceholderText("搜索模型"), { target: { value: "" } })
+  expect(screen.getByRole("switch", { name: "Primary 模型 Beta" }).getAttribute("aria-checked")).toBe("true")
+  expect(screen.getByRole("switch", { name: "Primary 模型 Gamma" }).getAttribute("aria-checked")).toBe("false")
+  fireEvent.click(screen.getByRole("button", { name: "删除模型 Beta" }))
+  expect(screen.queryByRole("switch", { name: "Primary 模型 Beta" })).toBeNull()
+  expect(screen.getByText(/待从此 Key 清单移除 1 个模型/)).toBeTruthy()
+  fireEvent.click(screen.getByRole("button", { name: "撤销移除" }))
+  expect(screen.getByRole("switch", { name: "Primary 模型 Beta" }).getAttribute("aria-checked")).toBe("true")
+  expect(calls).toHaveLength(0)
+})
 it("offers manual models for an empty inventory without invoking discovery", async () => {
   const calls: string[] = []
   vi.stubGlobal("fetch", vi.fn(async (path: string) => {

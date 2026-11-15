@@ -1,5 +1,12 @@
 # Changelog
 
+## V3.69
+
+- Create API channels as one task: connection and first Key, debounced draft-only upstream model discovery, explicit selection, then a single transactional save of channel, Key, inventory, permissions and routes. Support manual models and an explicit configuration-only state without granting implicit permissions.
+- Reuse this onboarding for additional Keys. Guard against stale discovery responses and duplicate submissions; persist only keyed request digests for idempotent retries. Preserve existing routes, permissions, egress and legacy API creation behavior.
+- Scope management save buttons to the resource being edited, select only current model search results, show removable drafts with undo, distinguish model-list checks from inference verification, and grant missing Key model support in-place from route configuration.
+- Add regressions for preview cancellation/races, manual fallback, selection, atomic rollback, concurrent retries and unchanged existing route mappings. Add only the provider_setup_requests idempotency table; no rewrite of existing configuration or inference semantics.
+
 ## V3.68
 
 - Delete an individual upstream channel directly from its row, without selecting it first. Expose batch deletion beside other batch actions; retain a named confirmation and explicitly include selections hidden by filters.

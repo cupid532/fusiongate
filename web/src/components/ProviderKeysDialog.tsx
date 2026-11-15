@@ -5,6 +5,7 @@ import { providerKeysApi } from "@/lib/api"
 import { providersApi, refreshProviderViews } from "@/lib/provider-management"
 import type { ProviderKey } from "@/lib/types"
 import { EgressSelect } from "@/components/EgressSelect"
+import { ModelSetupFields, useModelSetup, useSetupRequest } from "@/components/ModelSetup"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -15,7 +16,7 @@ import { QueryError } from "@/components/ui/query-error"
 import { useConfirmDelete } from "@/components/ui/confirm"
 
 function statusBadge(status?: string) {
-  if (status === "healthy") return <Badge variant="success">正常</Badge>
+  if (status === "healthy") return <Badge variant="success">最近检查通过</Badge>
   if (status === "failed" || status === "unhealthy") return <Badge variant="danger">异常</Badge>
   if (status === "pending" || status === "running") return <Badge variant="warning">检测中</Badge>
   return <Badge variant="neutral">未测试</Badge>
@@ -57,20 +58,22 @@ export function ProviderKeysPanel({ open, providerId, onManageModels, onClose, o
   const [error, setError] = useState("")
   const [notice, setNotice] = useState("")
   const [drafts, setDrafts] = useState<Record<number, KeyDraft>>({})
+  const models = useModelSetup(open, { provider_id: providerId, credential: newKey.trim() })
+  const request = useSetupRequest()
   useEffect(() => { setNewKey(""); setNewName(""); setError(""); setNotice(""); setDrafts({}) }, [providerId])
   const nodes = useQuery({ queryKey: ["ippool"], queryFn: ({ signal }) => providersApi.nodes(signal), enabled: open })
   const keys = useQuery({ queryKey: ["provider-keys", providerId], queryFn: ({ signal }) => providerKeysApi.list(providerId, signal), enabled: open })
   const reportError = (reason: unknown) => setError(reason instanceof Error ? reason.message : "Key 操作失败")
   const add = useMutation({
-    mutationFn: () => providerKeysApi.create(providerId, { api_key: newKey.trim(), name: newName.trim() || undefined, health_check_enabled: true }),
-    onSuccess: async () => { setNewKey(""); setNewName(""); setNotice("Key 已添加，默认继承渠道出口。可点击“管理此渠道的模型”继续手动添加模型或配置模型权限。"); await refreshProviderViews(client) }, onError: reportError,
+    mutationFn: () => providerKeysApi.create(providerId, request({ api_key: newKey.trim(), name: newName.trim() || undefined, health_check_enabled: true, setup: models.setup })),
+    onSuccess: async () => { setNewKey(""); setNewName(""); setError(""); setNotice("Key、所选模型权限和同名路由已一起保存。默认继承渠道出口，尚未执行推理检活。"); await refreshProviderViews(client) }, onError: reportError,
   })
   const patch = useMutation({
     mutationFn: ({ key, draft }: { key: ProviderKey; draft: KeyDraft }) => providerKeysApi.patch(providerId, key.id, keyPatch(key, draft)),
     onSuccess: async (_response, { key }) => { setError(""); await refreshProviderViews(client); setDrafts((previous) => { const next = { ...previous }; delete next[key.id]; return next }); setNotice("Key 配置已保存，不影响其他 Key 或渠道参数。") }, onError: reportError,
   })
   const remove = useMutation({ mutationFn: (keyId: number) => providerKeysApi.remove(providerId, keyId), onSuccess: async () => { await refreshProviderViews(client); setNotice("Key 已删除。") }, onError: reportError })
-  const test = useMutation({ mutationFn: (keyId: number) => providerKeysApi.test(providerId, keyId), onSuccess: async () => { await refreshProviderViews(client); setNotice("测试请求已完成，请查看该 Key 的状态与错误详情。") }, onError: reportError })
+  const test = useMutation({ mutationFn: (keyId: number) => providerKeysApi.test(providerId, keyId), onSuccess: async () => { await refreshProviderViews(client); setNotice("模型列表查询已完成，不代表推理验证通过。请查看该 Key 的状态与错误详情。") }, onError: reportError })
   const busy = add.isPending || patch.isPending || remove.isPending || test.isPending
   const dirty = !!newKey.trim() || !!newName.trim() || (keys.data ?? []).some((key) => drafts[key.id] && Object.keys(keyPatch(key, drafts[key.id])).length > 0)
   useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
@@ -81,14 +84,15 @@ export function ProviderKeysPanel({ open, providerId, onManageModels, onClose, o
     setDrafts((previous) => ({ ...previous, [key.id]: { ...(previous[key.id] ?? keyDraft(key)), ...value } }))
   }
   return <div className="space-y-4">
-    <p className="text-xs text-muted-foreground">这里管理上游 API Key，区别于客户端使用的下游访问密钥。配置需点击每行“保存 Key”；测试与删除立即执行。</p>
+    <p className="text-xs text-muted-foreground">这里管理上游 API Key，区别于客户端使用的下游访问密钥。配置需点击每行“保存 Key”；获取列表与删除立即执行；获取列表不会执行推理检活。</p>
     {error && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div>}
     {notice && <p role="status" className="text-xs text-emerald-600">{notice}</p>}
     <fieldset disabled={busy} className="grid gap-2 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
       <div className="space-y-1.5"><Label htmlFor="new-api-key">新 API Key</Label><Input id="new-api-key" type="password" autoComplete="off" data-1p-ignore="true" data-lpignore="true" value={newKey} onChange={(event) => setNewKey(event.target.value)} placeholder="sk-…" className="font-mono text-xs" /></div>
       <div className="space-y-1.5"><Label htmlFor="new-key-name">Key 名称</Label><Input id="new-key-name" value={newName} onChange={(event) => setNewName(event.target.value)} placeholder="例如：备用 Key" /></div>
-      <Button disabled={!newKey.trim() || busy} onClick={() => add.mutate()}><Plus className="h-4 w-4" />{add.isPending ? "添加中…" : "添加 Key"}</Button>
+      <Button disabled={!newKey.trim() || busy || !models.ready} onClick={() => add.mutate()}><Plus className="h-4 w-4" />{add.isPending ? "添加中…" : models.skip ? "仅保存 Key" : `保存 Key 与模型（${models.selected.length}）`}</Button>
     </fieldset>
+    {newKey.trim() && <ModelSetupFields state={models} disabled={busy} />}
     {onManageModels && <Button variant="outline" onClick={onManageModels}><Settings2 className="h-4 w-4" />管理此渠道的模型</Button>}
     {nodes.isError && <QueryError title="无法读取出口节点" error={nodes.error} onRetry={() => void nodes.refetch()} className="p-3" />}
     {keys.isPending ? <p role="status" className="py-6 text-center text-sm text-muted-foreground">读取 Key 中…</p> : keys.isError ? <QueryError title="无法读取 Key" error={keys.error} onRetry={() => void keys.refetch()} /> : !keys.data.length ? <p className="py-6 text-center text-sm text-muted-foreground">尚未添加 Key。</p> : <div className="space-y-3">{keys.data.map((key) => {
@@ -99,7 +103,7 @@ export function ProviderKeysPanel({ open, providerId, onManageModels, onClose, o
       const validEgress = !egressChanged || ["inherit", "direct"].includes(draft.egress) || (nodes.isSuccess && !!nodes.data.find((node) => `node:${node.id}` === draft.egress && node.enabled))
       const nodeName = nodes.data?.find((node) => node.id === key.effective_node_id)?.name ?? (key.effective_node_id ? "节点 #" + key.effective_node_id : "本机直连")
       return <section key={key.id} className="rounded-lg border p-3">
-        <div className="flex flex-wrap items-start justify-between gap-2"><div className="min-w-0"><div className="text-sm font-medium">{key.name || "未命名 Key"} {statusBadge(key.status)}</div><p className="mt-1 font-mono text-xs text-muted-foreground">{key.key_hint}</p><p className="mt-1 text-xs text-muted-foreground">当前有效出口：{key.egress_mode === "inherit" ? "继承渠道 → " : key.egress_mode === "direct" ? "强制直连 → " : "独立节点 → "}{key.effective_egress === "direct" ? "本机直连" : nodeName}</p>{key.last_error && <p className="mt-1 break-words text-xs text-destructive">{key.last_error}</p>}</div><div className="flex gap-1"><Button variant="outline" size="sm" onClick={() => test.mutate(key.id)} disabled={busy || changed} title={changed ? "请先保存或取消此 Key 的草稿" : "使用已保存配置测试，可能产生上游费用"}><Activity className="h-4 w-4" />{test.isPending && test.variables === key.id ? "测试中…" : "测试"}</Button><Button variant="ghost" size="icon" aria-label={"删除 " + (key.name || key.key_hint)} disabled={busy} onClick={async () => { if (await confirmDelete("Key " + (key.name || key.key_hint))) remove.mutate(key.id) }}><Trash2 className="h-4 w-4 text-destructive" /></Button></div></div>
+        <div className="flex flex-wrap items-start justify-between gap-2"><div className="min-w-0"><div className="text-sm font-medium">{key.name || "未命名 Key"} {statusBadge(key.status)}</div><p className="mt-1 font-mono text-xs text-muted-foreground">{key.key_hint}</p><p className="mt-1 text-xs text-muted-foreground">当前有效出口：{key.egress_mode === "inherit" ? "继承渠道 → " : key.egress_mode === "direct" ? "强制直连 → " : "独立节点 → "}{key.effective_egress === "direct" ? "本机直连" : nodeName}</p>{key.last_error && <p className="mt-1 break-words text-xs text-destructive">{key.last_error}</p>}</div><div className="flex gap-1"><Button variant="outline" size="sm" onClick={() => test.mutate(key.id)} disabled={busy || changed} title={changed ? "请先保存或取消此 Key 的草稿" : "使用已保存配置查询模型列表，不执行生成"}><Activity className="h-4 w-4" />{test.isPending && test.variables === key.id ? "获取中…" : "获取列表"}</Button><Button variant="ghost" size="icon" aria-label={"删除 " + (key.name || key.key_hint)} disabled={busy} onClick={async () => { if (await confirmDelete("Key " + (key.name || key.key_hint))) remove.mutate(key.id) }}><Trash2 className="h-4 w-4 text-destructive" /></Button></div></div>
         <fieldset disabled={busy} className="mt-3 grid gap-3 border-t pt-3 sm:grid-cols-2">
           <div className="space-y-1"><Label htmlFor={"key-name-" + key.id}>Key 名称</Label><Input id={"key-name-" + key.id} value={draft.name} onChange={(event) => change(key, { name: event.target.value })} /></div>
           <div className="space-y-1"><Label htmlFor={"key-egress-" + key.id}>出口</Label><EgressSelect id={"key-egress-" + key.id} value={draft.egress} onChange={(egress) => change(key, { egress })} nodes={nodes.data ?? []} inherited disabled={nodes.isPending || nodes.isError || busy} invalid={!validEgress} />{!validEgress && <p className="text-xs text-destructive">请选择已启用的出口节点。</p>}</div>

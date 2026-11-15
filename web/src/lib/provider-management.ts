@@ -115,6 +115,7 @@ export function applyProviderPatches(providers: Array<Pick<Provider, "id" | "nam
 export function providerStatus(provider: Provider) {
   if (provider.archived) return { label: "已归档", variant: "neutral" as const }
   if (!provider.enabled) return { label: "已停用", variant: "neutral" as const }
+  if (provider.auth_kind === "api_key" && provider.model_count === 0) return { label: "待配置模型", variant: "warning" as const }
   if (provider.status === "circuit_open" || (provider.circuit_open_until && new Date(provider.circuit_open_until).getTime() > Date.now())) return { label: "熔断冷却", variant: "warning" as const }
   if (provider.health_check_status === "unhealthy") return { label: "检活失败", variant: "danger" as const }
   if (provider.consecutive_failures > 0) return { label: "不稳定", variant: "warning" as const }

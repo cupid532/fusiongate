@@ -348,39 +348,50 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in struct {
-			Name                 string `json:"name"`
-			Type                 string `json:"type"`
-			BaseURL              string `json:"baseURL"`
-			WebsiteURL           string `json:"website_url"`
-			Credential           string `json:"credential"`
-			Notes                string `json:"notes"`
-			Enabled              *bool  `json:"enabled"`
-			Priority             *int   `json:"priority"`
-			Weight               int    `json:"weight"`
-			PassthroughMode      string `json:"passthrough_mode"`
-			ClientPolicy         string `json:"client_policy"`
-			MaxConcurrency       int    `json:"max_concurrency"`
-			RequestTimeoutMS     int    `json:"request_timeout_ms"`
-			StreamStartTimeoutMS int    `json:"stream_start_timeout_ms"`
-			StreamIdleTimeoutMS  int    `json:"stream_idle_timeout_ms"`
-			FailureThreshold     int    `json:"failure_threshold"`
-			HealthCheckEnabled   *bool  `json:"health_check_enabled"`
-			CooldownSeconds      int    `json:"cooldown_seconds"`
-			AutoDiscover         *bool  `json:"auto_discover"`
-			IPPoolNodeID         *int64 `json:"ip_pool_node_id"`
-			GroupID              *int64 `json:"group_id"`
-			DefaultModel         string `json:"default_model"`
-			KeySelectionMode     string `json:"key_selection_mode"`
-			ProtocolPolicy       string `json:"protocol_policy"`
-			ProtocolPreference   string `json:"protocol_preference"`
-			ImageMode            string `json:"image_mode"`
-			ImageOuterModel      string `json:"image_outer_model"`
-			KeyName              string `json:"key_name"`
+			Name                 string              `json:"name"`
+			Type                 string              `json:"type"`
+			BaseURL              string              `json:"baseURL"`
+			WebsiteURL           string              `json:"website_url"`
+			Credential           string              `json:"credential"`
+			Notes                string              `json:"notes"`
+			Enabled              *bool               `json:"enabled"`
+			Priority             *int                `json:"priority"`
+			Weight               int                 `json:"weight"`
+			PassthroughMode      string              `json:"passthrough_mode"`
+			ClientPolicy         string              `json:"client_policy"`
+			MaxConcurrency       int                 `json:"max_concurrency"`
+			RequestTimeoutMS     int                 `json:"request_timeout_ms"`
+			StreamStartTimeoutMS int                 `json:"stream_start_timeout_ms"`
+			StreamIdleTimeoutMS  int                 `json:"stream_idle_timeout_ms"`
+			FailureThreshold     int                 `json:"failure_threshold"`
+			HealthCheckEnabled   *bool               `json:"health_check_enabled"`
+			CooldownSeconds      int                 `json:"cooldown_seconds"`
+			AutoDiscover         *bool               `json:"auto_discover"`
+			Setup                *providerModelSetup `json:"setup"`
+			RequestID            string              `json:"request_id"`
+			IPPoolNodeID         *int64              `json:"ip_pool_node_id"`
+			GroupID              *int64              `json:"group_id"`
+			DefaultModel         string              `json:"default_model"`
+			KeySelectionMode     string              `json:"key_selection_mode"`
+			ProtocolPolicy       string              `json:"protocol_policy"`
+			ProtocolPreference   string              `json:"protocol_preference"`
+			ImageMode            string              `json:"image_mode"`
+			ImageOuterModel      string              `json:"image_outer_model"`
+			KeyName              string              `json:"key_name"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
+		if len(in.RequestID) > 128 || (in.Setup != nil && in.RequestID == "") {
+			fail(w, 400, "invalid_request", "保存请求标识无效")
+			return
+		}
+		if err := validateModelSetup(in.Setup); err != nil {
+			fail(w, 400, "invalid_model_setup", err.Error())
+			return
+		}
+		digest := a.onboardingDigest(in)
 		in.Name = strings.TrimSpace(in.Name)
 		in.Type = strings.TrimSpace(in.Type)
 		in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
@@ -473,6 +484,9 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		defer tx.Rollback()
+		if a.replayOnboarding(r.Context(), tx, w, in.RequestID, digest, false) {
+			return
+		}
 		var sortOrder int
 		if err := tx.QueryRow(`SELECT COALESCE(MAX(sort_order),-1)+1 FROM providers`).Scan(&sortOrder); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -500,16 +514,29 @@ func (a *App) providers(w http.ResponseWriter, r *http.Request, _ adminCtx) {
 			return
 		}
 		keyName := firstNonEmpty(in.KeyName, "默认 Key")
-		if _, err := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,'','inherit',1,0,'untested',?,?)`, id, encrypted, a.providerKeyFingerprint(in.Credential), providerKeyHint(in.Credential), keyName, now(), now()); err != nil {
+		keyResult, err := tx.Exec(`INSERT INTO provider_api_keys(provider_id,credential,fingerprint,key_hint,name,model,egress_mode,enabled,sort_order,status,created_at,updated_at) VALUES(?,?,?,?,?,'','inherit',1,0,'untested',?,?)`, id, encrypted, a.providerKeyFingerprint(in.Credential), providerKeyHint(in.Credential), keyName, now(), now())
+		if err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
+			return
+		}
+		keyID, _ := keyResult.LastInsertId()
+		added, err := a.applyModelSetupTx(r.Context(), tx, id, keyID, in.Setup)
+		if err == nil {
+			err = rememberOnboarding(r.Context(), tx, in.RequestID, digest, id, keyID)
+		}
+		if err != nil {
+			fail(w, 500, "database_error", "渠道未保存，模型配置已回滚")
 			return
 		}
 		if err := tx.Commit(); err != nil {
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		response := map[string]any{"id": id, "message": "provider created; credential is encrypted at rest"}
-		if in.AutoDiscover == nil || *in.AutoDiscover {
+		if added > 0 {
+			a.triggerPricingSync()
+		}
+		response := map[string]any{"id": id, "key_id": keyID, "message": "provider created; credential is encrypted at rest"}
+		if in.Setup == nil && (in.AutoDiscover == nil || *in.AutoDiscover) {
 			discovery, discoveryErr := a.discoverProviderModels(r.Context(), id)
 			if discoveryErr != nil {
 				failed := map[string]any{"status": "failed", "error": discoveryErr.Error()}

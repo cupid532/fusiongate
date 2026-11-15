@@ -10,6 +10,7 @@ import {
 import { protocolMethodLabel, supportsProtocolMethod } from "@/lib/protocol-methods"
 import { ProtocolMethodSelect } from "@/components/ProtocolMethodSelect"
 import { ProviderManagementCard } from "@/components/ProviderManagementCard"
+import { ProviderCreateDialog } from "@/components/ProviderCreateDialog"
 import { ProviderKeysPanel } from "@/components/ProviderKeysDialog"
 import { ProviderModelsPanel } from "@/components/ProviderModelManagementDialog"
 import { ProviderBalancePanel } from "@/components/BalanceDialog"
@@ -45,7 +46,15 @@ const sections: Array<{ id: ProviderSection; label: string }> = [
   { id: "advanced", label: "高级设置" }, { id: "maintenance", label: "维护" },
 ]
 
-export function ProviderDialog({
+export function ProviderDialog(props: {
+  open: boolean; onOpenChange: (value: boolean) => void; provider: Provider | null;
+  onCreated?: (provider: { id: number; name: string }) => void; initialSection?: ProviderSection;
+}) {
+  if (!props.provider) return props.open ? <ProviderCreateDialog onOpenChange={props.onOpenChange} onCreated={props.onCreated} /> : null
+  return <ProviderEditDialog {...props} />
+}
+
+function ProviderEditDialog({
   open, onOpenChange, provider, onCreated, initialSection = "connection",
 }: {
   open: boolean
@@ -171,7 +180,7 @@ export function ProviderDialog({
       <DialogContent className="flex h-[94dvh] max-h-[94dvh] w-[calc(100vw-1rem)] max-w-6xl flex-col overflow-hidden p-0 sm:p-0">
         <DialogHeader className="shrink-0 border-b px-5 pb-4 pt-5 sm:px-6">
           <DialogTitle>{active ? `管理渠道 · ${active.name}` : "添加 API 渠道"}</DialogTitle>
-          <DialogDescription>渠道参数、Key 与模型分别保存；测试、识别模型和维护操作点击后执行。</DialogDescription>
+          <DialogDescription>当前区域内保存修改；获取模型、检活和维护操作独立执行。Key 与模型区域使用各自的保存按钮。</DialogDescription>
           {active && <div className="flex flex-wrap gap-2 pt-2 text-xs"><Badge variant={providerStatus(active).variant}>{providerStatus(active).label}</Badge><span className="text-muted-foreground">默认出口：{active.ip_pool_node_name || (active.ip_pool_node_id ? `节点 #${active.ip_pool_node_id}` : "本机直连")} · 优先级 {active.priority}</span></div>}
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
@@ -233,7 +242,8 @@ export function ProviderDialog({
           <DialogFooter className="items-center">
             <span className="mr-auto text-xs text-muted-foreground">{dirty ? "渠道参数未保存" : "渠道参数无未保存修改"}{keysDirty ? " · Key 草稿未保存" : ""}{modelsDirty ? " · 模型草稿未保存" : ""} · 各资源分别保存</span>
             <Button variant="outline" disabled={save.isPending || maintenance.isPending || keysBusy || modelsBusy} onClick={() => void close()}>关闭</Button>
-            <Button onClick={() => save.mutate({ ...form })} disabled={!canSave || !dirty || save.isPending || keysBusy || modelsBusy}>{save.isPending ? "保存中…" : active ? "保存渠道参数" : "创建渠道"}</Button>
+            {["connection", "routing", "advanced", "health"].includes(section) && <Button onClick={() => save.mutate({ ...form })} disabled={!canSave || !dirty || save.isPending || keysBusy || modelsBusy}>{save.isPending ? "保存中…" : "保存渠道参数"}</Button>}
+            {!["connection", "routing", "advanced", "health"].includes(section) && dirty && <Button variant="outline" disabled={save.isPending || keysBusy || modelsBusy} onClick={() => setSection("connection")}>返回保存渠道参数</Button>}
           </DialogFooter>
         </div>
       </DialogContent>

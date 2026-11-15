@@ -679,21 +679,35 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var in struct {
-			APIKey             string  `json:"api_key"`
-			Name               string  `json:"name"`
-			Model              string  `json:"model"`
-			EgressMode         string  `json:"egress_mode"`
-			IPPoolNodeID       *int64  `json:"ip_pool_node_id"`
-			Enabled            *bool   `json:"enabled"`
-			HealthCheckEnabled *bool   `json:"health_check_enabled"`
-			ModelPolicy        string  `json:"model_policy"`
-			ModelAllowlist     string  `json:"model_allowlist"`
-			CostMultiplier     float64 `json:"cost_multiplier"`
+			APIKey             string              `json:"api_key"`
+			Name               string              `json:"name"`
+			Model              string              `json:"model"`
+			EgressMode         string              `json:"egress_mode"`
+			IPPoolNodeID       *int64              `json:"ip_pool_node_id"`
+			Enabled            *bool               `json:"enabled"`
+			HealthCheckEnabled *bool               `json:"health_check_enabled"`
+			ModelPolicy        string              `json:"model_policy"`
+			ModelAllowlist     string              `json:"model_allowlist"`
+			CostMultiplier     float64             `json:"cost_multiplier"`
+			Setup              *providerModelSetup `json:"setup"`
+			RequestID          string              `json:"request_id"`
 		}
 		if err := readJSON(r, &in); err != nil {
 			fail(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
+		if len(in.RequestID) > 128 || (in.Setup != nil && in.RequestID == "") {
+			fail(w, 400, "invalid_request", "保存请求标识无效")
+			return
+		}
+		if err := validateModelSetup(in.Setup); err != nil {
+			fail(w, 400, "invalid_model_setup", err.Error())
+			return
+		}
+		digest := a.onboardingDigest(struct {
+			ProviderID int64
+			Input      any
+		}{providerID, in})
 		in.APIKey = strings.TrimSpace(in.APIKey)
 		in.Name = strings.TrimSpace(in.Name)
 		in.Model = normalizeProviderKeyModel(in.Model)
@@ -717,15 +731,6 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			fail(w, http.StatusBadRequest, "invalid_ip_pool_node", err.Error())
 			return
 		}
-		var count, nextOrder int
-		if err := a.db.QueryRow(`SELECT COUNT(*),COALESCE(MAX(sort_order),-1)+1 FROM provider_api_keys WHERE provider_id=?`, providerID).Scan(&count, &nextOrder); err != nil {
-			fail(w, http.StatusInternalServerError, "database_error", err.Error())
-			return
-		}
-		if count >= providerKeySoftLimit {
-			fail(w, http.StatusConflict, "key_limit_reached", fmt.Sprintf("a provider supports at most %d API key cards", providerKeySoftLimit))
-			return
-		}
 		encrypted, err := a.encrypt(in.APIKey)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, "credential_error", err.Error())
@@ -745,6 +750,18 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			return
 		}
 		defer tx.Rollback()
+		if a.replayOnboarding(r.Context(), tx, w, in.RequestID, digest, true) {
+			return
+		}
+		var count, nextOrder int
+		if err := tx.QueryRowContext(r.Context(), `SELECT COUNT(*),COALESCE(MAX(sort_order),-1)+1 FROM provider_api_keys WHERE provider_id=?`, providerID).Scan(&count, &nextOrder); err != nil {
+			fail(w, 500, "database_error", err.Error())
+			return
+		}
+		if count >= providerKeySoftLimit {
+			fail(w, 409, "key_limit_reached", fmt.Sprintf("a provider supports at most %d API key cards", providerKeySoftLimit))
+			return
+		}
 		healthCheckEnabled := true
 		if in.HealthCheckEnabled != nil {
 			healthCheckEnabled = *in.HealthCheckEnabled
@@ -761,6 +778,15 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			}
 			return
 		}
+		id, _ := res.LastInsertId()
+		added, err := a.applyModelSetupTx(r.Context(), tx, providerID, id, in.Setup)
+		if err == nil {
+			err = rememberOnboarding(r.Context(), tx, in.RequestID, digest, providerID, id)
+		}
+		if err != nil {
+			fail(w, 500, "database_error", "Key 未保存，模型配置已回滚")
+			return
+		}
 		if count == 0 {
 			if _, err := tx.Exec(`UPDATE providers SET credential=?,multi_key_initialized=1,updated_at=? WHERE id=?`, encrypted, now(), providerID); err != nil {
 				fail(w, http.StatusInternalServerError, "database_error", err.Error())
@@ -771,8 +797,10 @@ func (a *App) providerKeys(w http.ResponseWriter, r *http.Request, providerID in
 			fail(w, http.StatusInternalServerError, "database_error", err.Error())
 			return
 		}
-		id, _ := res.LastInsertId()
-		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "key_hint": providerKeyHint(in.APIKey)})
+		if added > 0 {
+			a.triggerPricingSync()
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "key_id": id, "key_hint": providerKeyHint(in.APIKey)})
 	default:
 		fail(w, http.StatusMethodNotAllowed, "method_not_allowed", "GET or POST required")
 	}
@@ -943,6 +971,12 @@ func (a *App) saveProviderModelManagementTx(ctx context.Context, tx *sql.Tx, pro
 }
 
 func (a *App) syncProviderModelRoutes(ctx context.Context, tx *sql.Tx, providerID int64, selected []string) (int, error) {
+	return a.syncProviderModelRoutesScoped(ctx, tx, providerID, selected, false)
+}
+
+// Onboarding adds only explicitly selected routes, leaving all pre-existing
+// mappings, capabilities and unsupported manual routes untouched.
+func (a *App) syncProviderModelRoutesScoped(ctx context.Context, tx *sql.Tx, providerID int64, selected []string, createOnly bool) (int, error) {
 	type keyModels struct {
 		policy, allowlist, fixed string
 		inventory, exclusions    map[string]bool
@@ -1047,6 +1081,9 @@ func (a *App) syncProviderModelRoutes(ctx context.Context, tx *sql.Tx, providerI
 	}
 	sort.Strings(models)
 	for _, model := range models {
+		if createOnly && !explicit[model] {
+			continue
+		}
 		if !supports(model) {
 			continue
 		}
@@ -1054,8 +1091,10 @@ func (a *App) syncProviderModelRoutes(ctx context.Context, tx *sql.Tx, providerI
 			if _, err := tx.ExecContext(ctx, `DELETE FROM model_route_exclusions WHERE provider_id=? AND (LOWER(public_name)=? OR LOWER(upstream_model)=?)`, providerID, model, model); err != nil {
 				return 0, err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, capabilities[model], stamp, providerID, model); err != nil {
-				return 0, err
+			if !createOnly {
+				if _, err := tx.ExecContext(ctx, `UPDATE model_routes SET capabilities=?,updated_at=? WHERE provider_id=? AND LOWER(upstream_model)=?`, capabilities[model], stamp, providerID, model); err != nil {
+					return 0, err
+				}
 			}
 		}
 		res, err := tx.ExecContext(ctx, `INSERT INTO model_routes(public_name,provider_id,upstream_model,capabilities,enabled,priority,sort_order,input_price_micros,output_price_micros,created_at,updated_at)
@@ -1070,6 +1109,9 @@ AND NOT EXISTS(SELECT 1 FROM model_route_exclusions WHERE provider_id=? AND (LOW
 			return 0, err
 		}
 		added += int(n)
+	}
+	if createOnly {
+		return added, nil
 	}
 	// A public route must describe something this channel can actually serve.
 	// When the last Key permission for a model is withdrawn, the route is

@@ -175,25 +175,25 @@ describe("ProviderDialog passthrough", () => {
     await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers/7")?.body).toMatchObject({ website_url: "https://shop.example.com/topup" }))
   })
 
-  it("creates with the first Key and continues in model configuration", async () => {
+  it("creates channel and first Key with an explicit configuration-only choice", async () => {
     setup()
     show(null)
     fireEvent.change(screen.getByRole("textbox", { name: "名称" }), { target: { value: "新渠道" } })
     fireEvent.change(screen.getByRole("textbox", { name: "API 地址" }), { target: { value: "https://new.example" } })
     fireEvent.change(screen.getByRole("textbox", { name: "商家地址（选填）" }), { target: { value: "https://merchant.example/credit" } })
-    fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
     fireEvent.change(screen.getByLabelText("首张 API Key"), { target: { value: "sk-first" } })
-    fireEvent.click(screen.getByRole("button", { name: "创建渠道" }))
+    fireEvent.click(screen.getByLabelText("仅保存配置，暂不接入模型"))
+    const save = screen.getByRole("button", { name: "仅保存配置" })
+    await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false), { timeout: 2000 })
+    fireEvent.click(save)
     await waitFor(() => expect(requests.find((r) => r.url === "/api/admin/providers")?.body).toMatchObject({ credential: "sk-first", name: "新渠道", website_url: "https://merchant.example/credit" }))
-    await waitFor(() => expect(screen.getByRole("heading", { name: "管理渠道 · 新渠道" })).toBeTruthy())
-    expect(screen.getByRole("button", { name: "手动添加 / 批量添加模型" })).toBeTruthy()
-    expect(screen.getByRole("button", { name: "模型管理" }).getAttribute("aria-current")).toBe("page")
+    expect(requests.find((r) => r.url === "/api/admin/providers")?.body).toMatchObject({ setup: { inventory: [], selected: [] }, auto_discover: false })
+    expect(requests.find((r) => r.url === "/api/admin/providers")?.body.request_id).toBeTruthy()
   })
 
   it("keeps the first channel API Key masked and out of password managers", () => {
     setup()
     show(null)
-    fireEvent.click(screen.getByRole("button", { name: /API Keys/ }))
     const initial = screen.getByLabelText("首张 API Key") as HTMLInputElement
     // Masked for shoulder-surfing, but an upstream credential rather than a
     // website password, so no password manager should offer to save or fill it.

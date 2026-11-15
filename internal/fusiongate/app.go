@@ -681,6 +681,11 @@ func (a *App) migrate(ctx context.Context) error {
     last_error TEXT NOT NULL DEFAULT '', last_tested_at TEXT, cooldown_until TEXT,
     last_test_latency_ms INTEGER NOT NULL DEFAULT 0, model_policy TEXT NOT NULL DEFAULT 'fallback', model_allowlist TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     UNIQUE(provider_id,fingerprint));
+  CREATE TABLE IF NOT EXISTS provider_setup_requests (
+    request_id TEXT PRIMARY KEY, digest TEXT NOT NULL,
+    provider_id INTEGER REFERENCES providers(id) ON DELETE SET NULL,
+    key_id INTEGER REFERENCES provider_api_keys(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS provider_api_key_models (
     provider_key_id INTEGER NOT NULL REFERENCES provider_api_keys(id) ON DELETE CASCADE,
     model TEXT NOT NULL, display_name TEXT NOT NULL DEFAULT '', capabilities TEXT NOT NULL DEFAULT 'chat,stream',
@@ -1197,6 +1202,7 @@ func (a *App) Router() http.Handler {
 	mux.HandleFunc("/api/admin/session", a.admin(a.session))
 	mux.HandleFunc("/api/admin/providers", a.admin(a.providers))
 	mux.HandleFunc("/api/admin/providers/reorder", a.admin(a.reorderProviders))
+	mux.HandleFunc("/api/admin/providers/preview-models", a.admin(a.previewProviderModels))
 	mux.HandleFunc("/api/admin/providers/export", a.admin(a.providerBackupExport))
 	mux.HandleFunc("/api/admin/providers/import", a.admin(a.providerBackupImport))
 	mux.HandleFunc("/api/admin/providers/batch", a.admin(a.providerBatch))

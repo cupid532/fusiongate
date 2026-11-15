@@ -13,9 +13,9 @@ import { Switch } from "@/components/ui/switch"
 import { parseManualModels } from "@/lib/manual-models"
 import { modelDisplayName } from "@/lib/model-display-name"
 
-export function ManualModelDialog({ open, onOpenChange, providerId, keys, selectedKeyId, editing, initialModels = "", onBusyChange }: {
+export function ManualModelDialog({ open, onOpenChange, providerId, keys, selectedKeyId, editing, initialModels = "", defaultCreateRoutes = true, title, onBusyChange }: {
   open: boolean; onOpenChange: (open: boolean) => void; providerId: number; keys: ProviderKey[]; selectedKeyId: number | null
-  editing?: ProviderKeyModel | null; initialModels?: string; onBusyChange?: (busy: boolean) => void
+  editing?: ProviderKeyModel | null; initialModels?: string; defaultCreateRoutes?: boolean; title?: string; onBusyChange?: (busy: boolean) => void
 }) {
   const qc = useQueryClient()
   const [names, setNames] = useState("")
@@ -35,11 +35,11 @@ export function ManualModelDialog({ open, onOpenChange, providerId, keys, select
     setCapabilities(editing?.capabilities ?? "chat,stream")
     setKeyIds(selectedKeyId ? [selectedKeyId] : [])
     setEnabled(editing?.enabled ?? true)
-    setCreateRoutes(!editing)
+    setCreateRoutes(!editing && defaultCreateRoutes)
     setPublicName("")
     setSyncRoutes(false)
     setError("")
-  }, [open, editing, initialModels, selectedKeyId])
+  }, [open, editing, initialModels, selectedKeyId, defaultCreateRoutes])
   const models = parseManualModels(names)
   const renamed = !!editing && models[0] !== editing.model
   const affected = routes.filter((route) => route.provider_id === providerId && route.upstream_model.toLowerCase() === editing?.model.toLowerCase())
@@ -59,7 +59,7 @@ export function ManualModelDialog({ open, onOpenChange, providerId, keys, select
   const valid = models.length > 0 && models.length <= 200 && keyIds.length > 0 && (!editing || models.length === 1) && !!capabilities.trim() && !(renamed && syncRoutes && (otherKeys.length > 0 || routesFailed))
   return <Dialog open={open} onOpenChange={(value) => { if (!save.isPending) onOpenChange(value) }}>
     <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
-      <DialogHeader><DialogTitle>{editing ? "编辑上游模型" : initialModels ? "复制模型到其他 Key" : "手动添加模型"}</DialogTitle><DialogDescription>无需上游模型列表接口。只修改所选 Key 的模型权限，保存不会发起付费生成请求。</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>{title ?? (editing ? "编辑上游模型" : initialModels ? "复制模型到其他 Key" : "手动添加模型")}</DialogTitle><DialogDescription>无需上游模型列表接口。只修改所选 Key 的模型权限，保存不会发起付费生成请求。</DialogDescription></DialogHeader>
       <div className="space-y-4">
         <div className="space-y-1.5"><Label htmlFor="manual-model-names">{editing ? "上游模型名" : "上游模型名（每行一个，最多 200 个）"}</Label><Textarea id="manual-model-names" value={names} onChange={(event) => setNames(event.target.value)} rows={editing ? 1 : 4} placeholder="vendor/model-v2" className="font-mono text-xs" /></div>
         {models.length === 1 && <div className="space-y-1.5"><Label htmlFor="manual-model-display">显示名称（选填，不改变转发名称）</Label><Input id="manual-model-display" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={`留空默认去掉渠道前缀：${modelDisplayName(models[0])}`} /></div>}
