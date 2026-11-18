@@ -213,7 +213,7 @@ The `revision` and `origin/main` values must be identical. If they are not, the 
 
 ## OAuth production notes
 
-Codex and Claude browser authorization use the official CLI-compatible `localhost` redirect URIs. The production server does **not** need to expose ports 1455 or 54545: after authorization, copy the full localhost callback URL from the browser address bar and paste it into the FusionGate management console. Grok uses device authorization and does not require a callback port. Pending authorization sessions are held in memory for 15 minutes and can be consumed only once.
+Codex and Claude browser authorization use the official CLI-compatible `localhost` redirect URIs. The production server does **not** need to expose ports 1455 or 54545: after authorization, copy the full localhost callback URL from the browser address bar and paste it into the FusionGate management console. For Grok, select Grok (xAI) under 添加授权, generate a device code, open the xAI verification page, and authorize there. Then select 我已授权，检查状态; FusionGate retries while xAI reports authorization pending and only confirms success after the encrypted credential is saved. No callback port or pasted callback is needed. Authorization sessions are kept in memory for at most 15 minutes; a restart invalidates them.
 
 Imported OAuth credentials are encrypted with `FUSIONGATE_MASTER_KEY`. Before every update or migration, back up the following together:
 

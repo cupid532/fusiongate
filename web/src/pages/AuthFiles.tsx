@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useAutoAnimate } from "@formkit/auto-animate/react"
 import { motion } from "motion/react"
@@ -26,6 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { AuthOAuthDialog } from "@/components/AuthOAuthDialog"
 import { CodexCard } from "@/components/CodexCard"
 import { ProviderPassthroughLabel } from "@/components/ProviderPassthroughLabel"
 import { InlinePriorityEditor } from "@/components/InlinePriorityEditor"
@@ -581,7 +582,7 @@ export function AuthFiles() {
 
       {/* ---- Dialogs ---- */}
       <AuthImportDialog open={importOpen} onOpenChange={setImportOpen} />
-      <AuthOAuthDialog open={oauthOpen} onOpenChange={(v) => { setOauthOpen(v); if (!v) setReauthPlatform("") }} defaultPlatform={reauthPlatform || undefined} />
+      {oauthOpen && <AuthOAuthDialog defaultPlatform={reauthPlatform} onClose={() => { setOauthOpen(false); setReauthPlatform("") }} />}
       {modelPickerProvider && (
         <ModelPicker
           open={modelPickerOpen}
@@ -777,106 +778,6 @@ function AuthImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
           ) : (
             <Button onClick={() => commit.mutate()} disabled={selected.size === 0 || commit.isPending}>
               {commit.isPending ? "导入中…" : "导入"}
-            </Button>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function AuthOAuthDialog({ open, onOpenChange, defaultPlatform }: { open: boolean; onOpenChange: (v: boolean) => void; defaultPlatform?: string }) {
-  const qc = useQueryClient()
-  const [platform, setPlatform] = useState(defaultPlatform || "codex")
-
-  // Sync platform when defaultPlatform changes (e.g. reauth from a specific provider)
-  useEffect(() => { if (defaultPlatform) setPlatform(defaultPlatform) }, [defaultPlatform])
-  const [authUrl, setAuthUrl] = useState("")
-  const [sessionId, setSessionId] = useState("")
-  const [callback, setCallback] = useState("")
-  const [name, setName] = useState("")
-  const [priority, setPriority] = useState(1)
-
-  const start = useMutation({
-    mutationFn: async () =>
-      api<{ session_id: string; auth_url: string }>("/api/admin/auth/oauth/start", {
-        method: "POST",
-        body: JSON.stringify({ platform }),
-      }),
-    onSuccess: (r) => {
-      setSessionId(r.session_id)
-      setAuthUrl(r.auth_url)
-      setName(`${platformLabels[platform]} 账号`)
-    },
-  })
-
-  const complete = useMutation({
-    mutationFn: async () =>
-      api("/api/admin/auth/oauth/complete", {
-        method: "POST",
-        body: JSON.stringify({ session_id: sessionId, callback, name, priority }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["providers"] })
-      qc.invalidateQueries({ queryKey: ["routes"] })
-      onOpenChange(false)
-      setAuthUrl("")
-      setSessionId("")
-      setCallback("")
-    },
-  })
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
-          <DialogTitle>添加 OAuth 授权</DialogTitle>
-          <DialogDescription>选择平台后，在浏览器完成授权，再把回调地址粘贴回来。</DialogDescription>
-        </DialogHeader>
-
-        {!authUrl ? (
-          <div className="flex flex-col gap-1.5">
-            <Label>平台</Label>
-            <select value={platform} onChange={(e) => setPlatform(e.target.value)} className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm">
-              <option value="codex">Codex (ChatGPT)</option>
-              <option value="claude">Claude</option>
-              <option value="grok">Grok (xAI)</option>
-            </select>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div className="rounded-lg bg-muted p-3">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">授权地址</div>
-              <a href={authUrl} target="_blank" rel="noreferrer" className="mt-1 block break-all font-mono text-xs text-primary underline">
-                {authUrl}
-              </a>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>名称</Label>
-              <Input value={name} onChange={(e) => setName(e.target.value)} />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>优先级（数字越大越优先）</Label>
-              <Input type="number" min={0} value={priority} onChange={(e) => setPriority(Number(e.target.value))} />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>回调地址（授权后从浏览器地址栏复制）</Label>
-              <Input value={callback} onChange={(e) => setCallback(e.target.value)} placeholder="http://localhost:…?code=…" className="font-mono text-xs" />
-            </div>
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          {!authUrl ? (
-            <Button onClick={() => start.mutate()} disabled={start.isPending}>
-              {start.isPending ? "生成中…" : "生成授权地址"}
-            </Button>
-          ) : (
-            <Button onClick={() => complete.mutate()} disabled={!callback.trim() || complete.isPending}>
-              {complete.isPending ? "验证中…" : "完成授权"}
             </Button>
           )}
         </DialogFooter>

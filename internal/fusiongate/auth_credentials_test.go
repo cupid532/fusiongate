@@ -807,23 +807,26 @@ func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
 	a.client = &http.Client{Transport: authRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		switch r.URL.String() {
 		case xaiOIDCDiscoveryURL:
-			return authJSONResponse(http.StatusOK, `{"device_authorization_endpoint":"https://auth.x.ai/oauth/device/code","token_endpoint":"https://auth.x.ai/oauth/token"}`), nil
-		case "https://auth.x.ai/oauth/device/code":
+			return authJSONResponse(http.StatusOK, `{"device_authorization_endpoint":"https://auth.x.ai/oauth2/device/code","token_endpoint":"https://auth.x.ai/oauth2/token"}`), nil
+		case "https://auth.x.ai/oauth2/device/code":
 			if err := r.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
 			if r.Form.Get("client_id") != xaiOAuthClientID || r.Form.Get("scope") != xaiOAuthScope {
 				t.Fatalf("device form=%v", r.Form)
 			}
-			return authJSONResponse(http.StatusOK, `{"device_code":"device-super-secret","user_code":"ABCD-EFGH","verification_uri":"https://auth.x.ai/device","verification_uri_complete":"https://auth.x.ai/device?user_code=ABCD-EFGH","expires_in":900,"interval":2}`), nil
-		case "https://auth.x.ai/oauth/token":
+			return authJSONResponse(http.StatusOK, `{"device_code":"device-super-secret","user_code":"ABCD-EFGH","verification_uri":"https://accounts.x.ai/device","verification_uri_complete":"https://accounts.x.ai/device?user_code=ABCD-EFGH","expires_in":1800,"interval":5}`), nil
+		case "https://auth.x.ai/oauth2/token":
 			if err := r.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
 			if r.Form.Get("device_code") != "device-super-secret" || r.Form.Get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code" {
 				t.Fatalf("poll form=%v", r.Form)
 			}
-			if polls.Add(1) == 1 {
+			switch polls.Add(1) {
+			case 1:
+				return authJSONResponse(http.StatusBadRequest, `{"error":"slow_down"}`), nil
+			case 2:
 				return authJSONResponse(http.StatusBadRequest, `{"error":"authorization_pending"}`), nil
 			}
 			jwt := unsignedJWT(map[string]any{"sub": "grok-user-1", "email": "grok@example.com", "exp": time.Now().Add(time.Hour).Unix()})
@@ -846,14 +849,16 @@ func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
 		t.Fatalf("start response leaked device code: %s", startRec.Body.String())
 	}
 	var started struct {
-		SessionID string `json:"session_id"`
-		Flow      string `json:"flow"`
-		UserCode  string `json:"user_code"`
+		SessionID       string `json:"session_id"`
+		Flow            string `json:"flow"`
+		UserCode        string `json:"user_code"`
+		VerificationURL string `json:"verification_url_complete"`
+		ExpiresIn       int    `json:"expires_in"`
 	}
 	if err := json.Unmarshal(startRec.Body.Bytes(), &started); err != nil {
 		t.Fatal(err)
 	}
-	if started.Flow != "device" || started.UserCode != "ABCD-EFGH" || started.SessionID == "" {
+	if started.Flow != "device" || started.UserCode != "ABCD-EFGH" || started.SessionID == "" || started.ExpiresIn != int(authSessionTTL.Seconds()) || started.VerificationURL != "https://accounts.x.ai/device?user_code=ABCD-EFGH" {
 		t.Fatalf("start=%#v", started)
 	}
 
@@ -867,11 +872,38 @@ func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
 		t.Fatal("pending device session was consumed")
 	}
 
-	a.authMu.Lock()
-	session := a.oauthSessions[started.SessionID]
-	session.LastPoll = time.Time{}
-	a.oauthSessions[started.SessionID] = session
-	a.authMu.Unlock()
+	var providers int
+	if err := a.db.QueryRow(`SELECT COUNT(*) FROM providers`).Scan(&providers); err != nil || providers != 0 {
+		t.Fatalf("device polling created a provider before consent: count=%d err=%v", providers, err)
+	}
+	for range 2 {
+		a.authMu.Lock()
+		session := a.oauthSessions[started.SessionID]
+		if session.Polling || session.PollInterval != 10*time.Second {
+			a.authMu.Unlock()
+			t.Fatalf("session did not retain the slow_down interval: %#v", session)
+		}
+		session.LastPoll = time.Now().Add(-6 * time.Second)
+		a.oauthSessions[started.SessionID] = session
+		a.authMu.Unlock()
+		before := polls.Load()
+		tooEarly := httptest.NewRecorder()
+		a.oauthComplete(tooEarly, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(completeBody))), adminCtx{})
+		if tooEarly.Code != http.StatusAccepted || polls.Load() != before {
+			t.Fatalf("slow_down ignored: status=%d upstream polls=%d", tooEarly.Code, polls.Load())
+		}
+		a.authMu.Lock()
+		session.LastPoll = time.Time{}
+		a.oauthSessions[started.SessionID] = session
+		a.authMu.Unlock()
+		if before == 1 {
+			stillPending := httptest.NewRecorder()
+			a.oauthComplete(stillPending, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(completeBody))), adminCtx{})
+			if stillPending.Code != http.StatusAccepted || polls.Load() != 2 || !strings.Contains(stillPending.Body.String(), `"retry_after":10`) {
+				t.Fatalf("pending status=%d body=%s upstream polls=%d", stillPending.Code, stillPending.Body.String(), polls.Load())
+			}
+		}
+	}
 	completeRec := httptest.NewRecorder()
 	a.oauthComplete(completeRec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(completeBody))), adminCtx{})
 	if completeRec.Code != http.StatusCreated {
@@ -881,6 +913,11 @@ func TestXAIDeviceAuthorizationPendingThenCreatesProvider(t *testing.T) {
 		if strings.Contains(completeRec.Body.String(), secret) {
 			t.Fatalf("complete response leaked %q: %s", secret, completeRec.Body.String())
 		}
+	}
+	replay := httptest.NewRecorder()
+	a.oauthComplete(replay, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(completeBody))), adminCtx{})
+	if replay.Code != http.StatusBadRequest || polls.Load() != 3 {
+		t.Fatalf("device grant could be replayed: status=%d upstream polls=%d", replay.Code, polls.Load())
 	}
 	var providerType, baseURL, authKind string
 	if err := a.db.QueryRow(`SELECT type,base_url,auth_kind FROM providers`).Scan(&providerType, &baseURL, &authKind); err != nil {

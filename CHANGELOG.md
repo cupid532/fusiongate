@@ -1,5 +1,10 @@
 # Changelog
 
+## V3.70
+
+- Use the official xAI device authorization URL and user code when adding a Grok account. Poll only the gateway, keep the dialog open while authorization is pending, and report success only after a credential is saved. Keep the Codex and Claude browser callback flow.
+- Stop polling when the dialog closes, distinguish denied and expired device grants, and enforce upstream poll intervals and slow-down responses. No database migration or credential changes are required.
+
 ## V3.69
 
 - Create API channels as one task: connection and first Key, debounced draft-only upstream model discovery, explicit selection, then a single transactional save of channel, Key, inventory, permissions and routes. Support manual models and an explicit configuration-only state without granting implicit permissions.

@@ -65,6 +65,7 @@ type oauthSession struct {
 	TokenEndpoint string
 	PollInterval  time.Duration
 	LastPoll      time.Time
+	Polling       bool
 	ExpiresAt     time.Time
 }
 
@@ -319,7 +320,7 @@ func (a *App) startXAIDeviceAuthorization(ctx context.Context) (oauthSession, ma
 	if json.Unmarshal(body, &device) != nil || strings.TrimSpace(device.DeviceCode) == "" || strings.TrimSpace(device.UserCode) == "" || !isTrustedXAIEndpoint(device.VerificationURI) {
 		return oauthSession{}, nil, errors.New("xAI device authorization response is invalid")
 	}
-	if device.ExpiresIn <= 0 || time.Duration(device.ExpiresIn)*time.Second > authSessionTTL {
+	if device.ExpiresIn <= 0 || device.ExpiresIn > int(authSessionTTL.Seconds()) {
 		device.ExpiresIn = int(authSessionTTL.Seconds())
 	}
 	if device.Interval < 2 {
@@ -494,32 +495,49 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	if session.Platform == "grok" {
 		nowTime := time.Now()
 		a.authMu.Lock()
-		// Check and update under one lock so parallel requests cannot over-poll the device endpoint.
 		session, ok = a.oauthSessions[sessionID]
-		retryAfter := 0
-		if ok && !session.LastPoll.IsZero() && nowTime.Sub(session.LastPoll) < session.PollInterval {
-			wait := session.PollInterval - nowTime.Sub(session.LastPoll)
-			retryAfter = max(1, int(wait.Seconds())+1)
-		} else if ok {
-			session.LastPoll = nowTime
-			a.oauthSessions[sessionID] = session
-		}
-		a.authMu.Unlock()
-		if !ok {
+		if !ok || !nowTime.Before(session.ExpiresAt) {
+			a.authMu.Unlock()
 			fail(w, http.StatusBadRequest, "oauth_session_expired", "authorization session expired; start again")
 			return
 		}
-		if retryAfter > 0 {
-			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "retry_after": retryAfter})
+		wait := session.PollInterval - nowTime.Sub(session.LastPoll)
+		if session.Polling || wait > 0 {
+			a.authMu.Unlock()
+			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "retry_after": max(1, int((wait+time.Second-1)/time.Second))})
 			return
 		}
+		session.Polling = true
+		session.LastPoll = nowTime
+		a.oauthSessions[sessionID] = session
+		a.authMu.Unlock()
+
 		credential, pending, retryAfter, err := a.pollXAIDeviceAuthorization(r.Context(), session)
-		if err != nil {
-			fail(w, http.StatusBadGateway, "oauth_exchange_failed", "xAI authorization could not be completed; start a new login and try again")
-			return
-		}
+		a.authMu.Lock()
 		if pending {
+			if current, exists := a.oauthSessions[sessionID]; exists {
+				current.Polling = false
+				// RFC 8628 slow_down increases this and all subsequent poll intervals.
+				current.PollInterval = max(current.PollInterval, time.Duration(retryAfter)*time.Second)
+				a.oauthSessions[sessionID] = current
+			}
+		} else {
+			// A token response consumes the device grant; terminal errors need a new grant.
+			delete(a.oauthSessions, sessionID)
+		}
+		a.authMu.Unlock()
+		switch {
+		case pending:
 			writeJSON(w, http.StatusAccepted, map[string]any{"pending": true, "retry_after": retryAfter})
+			return
+		case errors.Is(err, errXAIDeviceExpired):
+			fail(w, http.StatusBadRequest, "oauth_session_expired", "authorization session expired; start again")
+			return
+		case errors.Is(err, errXAIDeviceDenied):
+			fail(w, http.StatusBadRequest, "oauth_access_denied", "xAI authorization was denied")
+			return
+		case err != nil:
+			fail(w, http.StatusBadGateway, "oauth_exchange_failed", "xAI authorization could not be completed; start a new login and try again")
 			return
 		}
 		id, createdName, err := a.saveOAuthProvider(r.Context(), strings.TrimSpace(in.Name), priority, credential, 0, false)
@@ -532,9 +550,6 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 			}
 			return
 		}
-		a.authMu.Lock()
-		delete(a.oauthSessions, sessionID)
-		a.authMu.Unlock()
 		modelSync := a.syncOAuthModelTargets(r.Context(), []authModelSyncTarget{{ID: id, Name: createdName, Type: oauthProviderType(credential.Platform)}})
 		writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": oauthModelSyncResult(modelSync, id, createdName)})
 		return
@@ -575,6 +590,11 @@ func (a *App) oauthComplete(w http.ResponseWriter, r *http.Request, _ adminCtx) 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id, "name": createdName, "platform": credential.Platform, "message": "authorization stored encrypted", "model_sync": oauthModelSyncResult(modelSync, id, createdName)})
 }
 
+var (
+	errXAIDeviceExpired = errors.New("xAI device authorization expired")
+	errXAIDeviceDenied  = errors.New("xAI device authorization denied")
+)
+
 func (a *App) pollXAIDeviceAuthorization(ctx context.Context, session oauthSession) (ProviderCredential, bool, int, error) {
 	if !isTrustedXAIEndpoint(session.TokenEndpoint) || strings.TrimSpace(session.DeviceCode) == "" {
 		return ProviderCredential{}, false, 0, errors.New("xAI authorization session is invalid")
@@ -607,8 +627,10 @@ func (a *App) pollXAIDeviceAuthorization(ctx context.Context, session oauthSessi
 			return ProviderCredential{}, true, max(2, int(session.PollInterval.Seconds())), nil
 		case "slow_down":
 			return ProviderCredential{}, true, max(5, int(session.PollInterval.Seconds())+5), nil
-		case "expired_token", "access_denied":
-			return ProviderCredential{}, false, 0, errors.New("xAI device authorization was not completed")
+		case "expired_token":
+			return ProviderCredential{}, false, 0, errXAIDeviceExpired
+		case "access_denied":
+			return ProviderCredential{}, false, 0, errXAIDeviceDenied
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
