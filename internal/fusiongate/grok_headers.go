@@ -10,9 +10,9 @@ import (
 // OAuth bearer token. FusionGate is an API gateway, so it must provide the
 // same compatibility metadata when it calls cli-chat-proxy.grok.com.
 //
-// Keep these defaults aligned with the official Grok shell client. Mismatched
-// client metadata can cause upstream auth failures even with a valid token.
-const defaultGrokCLIVersion = "1.0.4"
+// Pin a tested version from https://x.ai/cli/stable. Older client versions
+// can receive HTTP 426 even with a valid OAuth token.
+const defaultGrokCLIVersion = "1.0.89"
 const defaultGrokClientIdentifier = "grok-shell"
 
 func grokCLIVersion() string {

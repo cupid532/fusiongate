@@ -977,6 +977,7 @@ func TestTrustedXAIEndpointRejectsDiscoveryInjection(t *testing.T) {
 }
 
 func TestGrokOAuthProxyUsesBearerAndSingleV1Prefix(t *testing.T) {
+	t.Setenv("FUSIONGATE_GROK_CLI_VERSION", "")
 	z := resolvedRoute{Provider: Provider{Type: "grok_oauth", BaseURL: oauthProviderBaseURL("grok")}, Credential: "grok-secret"}
 	req := httptest.NewRequest(http.MethodPost, "https://gateway.example/v1/responses", nil)
 	upstream, err := joinURLQuery(z.Provider.BaseURL, "/v1/responses", "")
@@ -996,10 +997,12 @@ func TestGrokOAuthProxyUsesBearerAndSingleV1Prefix(t *testing.T) {
 	if got := req.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
 		t.Fatalf("X-XAI-Token-Auth=%q", got)
 	}
-	if got := req.Header.Get("X-Grok-Client-Version"); got != defaultGrokCLIVersion {
-		t.Fatalf("X-Grok-Client-Version=%q", got)
+	// An assertion against the config constant alone would miss the stale-version regression.
+	const supportedClient = "1.0.89"
+	if got := req.Header.Get("X-Grok-Client-Version"); got != supportedClient {
+		t.Fatalf("X-Grok-Client-Version=%q, want %s", got, supportedClient)
 	}
-	if got := req.Header.Get("User-Agent"); got != "grok-shell/"+defaultGrokCLIVersion+" (linux; x86_64)" {
+	if got := req.Header.Get("User-Agent"); got != "grok-shell/"+supportedClient+" (linux; x86_64)" {
 		t.Fatalf("User-Agent=%q", got)
 	}
 }

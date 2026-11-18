@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.71
+
+- Update the Grok OAuth client metadata to the tested official Grok CLI stable version 1.0.89. xAI now rejects version 1.0.4 with HTTP 426; existing OAuth credentials do not need reauthorization. Inference, model discovery, and health checks share the updated metadata.
+
 ## V3.70
 
 - Use the official xAI device authorization URL and user code when adding a Grok account. Poll only the gateway, keep the dialog open while authorization is pending, and report success only after a credential is saved. Keep the Codex and Claude browser callback flow.
