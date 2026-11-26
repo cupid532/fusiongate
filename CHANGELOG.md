@@ -1,5 +1,9 @@
 # Changelog
 
+## V3.72
+
+- Preselect image generation and audio (TTS and transcription) when creating a downstream access key in the console. Either option can be unchecked, and existing keys are unchanged.
+
 ## V3.71
 
 - Update the Grok OAuth client metadata to the tested official Grok CLI stable version 1.0.89. xAI now rejects version 1.0.4 with HTTP 426; existing OAuth credentials do not need reauthorization. Inference, model discovery, and health checks share the updated metadata.
